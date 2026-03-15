@@ -1,6 +1,4 @@
 """
-feature_engineering.py
-
 Pure math on clean price data — no downloads, no file paths.
 Takes a raw OHLCV DataFrame, returns it enriched with signal columns.
 Import these functions anywhere: backtester, live trading, notebooks.

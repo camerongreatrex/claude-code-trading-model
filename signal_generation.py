@@ -1,6 +1,4 @@
 """
-signal_generation.py
-
 Takes feature-engineered data and produces trade signals.
 Output is a DataFrame of scores and discrete signals (+1 long, -1 short, 0 flat)
 for each ticker on each day.

@@ -1,6 +1,4 @@
 """
-data_pipeline.py
-
 Talks to the outside world: downloads, cleans, and saves raw OHLCV data.
 Nothing here does any signal math — that lives in feature_engineering.py.
 Run this once to build your dataset, then re-run periodically to refresh it.
