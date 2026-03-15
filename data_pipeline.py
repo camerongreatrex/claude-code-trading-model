@@ -11,8 +11,8 @@ from pathlib import Path
 # Small multi-asset universe for testing. In real research this might be hundreds or thousands of tickers.
 TICKERS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
 
-START = "2015-01-01"
-END = "2025-01-01"
+START = "2016-01-01"
+END = "2026-03-14"
 
 DATA_DIR = Path("data/raw")  # pathlib avoids OS-specific slash issues (Windows "\" vs Mac/Linux "/")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
