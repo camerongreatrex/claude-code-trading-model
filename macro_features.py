@@ -71,10 +71,13 @@ def fetch_yield_curve() -> pd.DataFrame:
         except Exception as e:
             print(f"  FRED failed ({e}), using VIX proxy")
 
-    print("  Using VIX-based yield curve proxy")
+    # Do NOT use VIX to proxy the yield curve — that creates circular correlation
+    # (macro_score would then be 2/3 VIX-driven instead of 1/3).
+    # Return a neutral flat curve (0 spread) so macro_score degrades gracefully.
+    print("  FRED unavailable — yield curve set to neutral (0). Install pandas-datareader for real data.")
     vix = fetch_vix()
     proxy = pd.DataFrame(index=vix.index)
-    proxy["yield_curve"] = (1.5 - (vix["vix"] - 15) * 0.05).clip(-1.5, 3.0)
+    proxy["yield_curve"] = 0.0
     return proxy
 
 

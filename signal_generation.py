@@ -1,24 +1,37 @@
 """
 signal_generation.py
 
-Asset-class-aware signal generation.
-Different assets need different strategies:
-  equity  — MA+ADX regime switch between momentum and mean reversion
-  bond    — momentum only (TLT trends with rate direction for months/years)
-  commodity — momentum in fear regimes, mean reversion in calm regimes
-  sector  — same as equity but slower MA windows (sector trends are slower)
+Asset-class and stock-aware signal generation.
+
+Routing logic:
+  equity_index  — MA50/200 + ADX regime switch
+  sector_etf    — MA100/300 + ADX (slower, sector rotations take longer)
+  stock         — MA50/200 + ADX + volatility filter
+                  high-vol stocks (XOM, AMZN) use wider zscore thresholds
+  bond          — momentum only, never mean reversion
+  commodity     — momentum in fear regime, mean reversion in calm
+
+Individual stocks also get a liquidity gate: if dollar_volume is below
+the 20-day average, signals are suppressed — thin days produce noise.
 """
 
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from data_pipeline import TICKER_LIST, ASSET_CLASS
+from data_pipeline import TICKER_LIST, ASSET_CLASS, EQUITY_LIKE
 
 FEATURE_DIR = Path("data/features")
 SIGNAL_DIR  = Path("data/signals")
 MACRO_DIR   = Path("data/macro")
 SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
+
+# stocks with structurally higher volatility — widen mean reversion thresholds
+# so we don't fade every normal daily swing as if it were an extreme
+HIGH_VOL_STOCKS = {"XOM", "AMZN", "GS"}
+
+# defensive stocks tend to mean-revert strongly — tighten thresholds for faster signals
+DEFENSIVE_STOCKS = {"JNJ", "COST", "NEE", "BRK-B"}
 
 
 def load_macro() -> pd.DataFrame:
@@ -29,15 +42,11 @@ def load_macro() -> pd.DataFrame:
     return pd.read_parquet(path)
 
 # -----------------------------------------------------------------------------
-# Regime filters — one per asset class
+# Regime filters
 # -----------------------------------------------------------------------------
 
-def equity_regime(df: pd.DataFrame) -> pd.Series:
-    """
-    MA50/200 + ADX confirmation for equities.
-    trending = MA50 > MA200 AND ADX > 25 (both must agree).
-    ADX prevents false trending signals in choppy uptrends.
-    """
+def equity_index_regime(df: pd.DataFrame) -> pd.Series:
+    """MA50/200 + ADX > 25. Standard regime filter for broad indices."""
     ma50  = df["Close"].rolling(50).mean()
     ma200 = df["Close"].rolling(200).mean()
     return ((ma50 > ma200) & (df["adx"] > 25)).astype(int)
@@ -45,69 +54,69 @@ def equity_regime(df: pd.DataFrame) -> pd.Series:
 
 def sector_regime(df: pd.DataFrame) -> pd.Series:
     """
-    Slower MA windows for sectors — sector rotations take longer than individual stocks.
-    MA100/300 reduces whipsawing on sector ETFs that move more slowly.
+    Slower MA100/300 for sector ETFs — sector rotations develop over months not weeks.
+    Tighter ADX threshold (20 vs 25) because sectors trend less strongly than indices.
     """
     ma100 = df["Close"].rolling(100).mean()
     ma300 = df["Close"].rolling(300).mean()
     return ((ma100 > ma300) & (df["adx"] > 20)).astype(int)
 
 
+def stock_regime(df: pd.DataFrame, ticker: str) -> pd.Series:
+    """
+    Individual stocks: MA50/200 + ADX, same as equity index.
+    Defensive stocks (JNJ, COST) spend more time in mean-reversion mode —
+    their businesses are stable so prices revert to fair value quickly.
+    High-vol stocks (XOM, AMZN) need stronger ADX confirmation before we
+    call it a trend, because they have more noise in their price action.
+    """
+    ma50  = df["Close"].rolling(50).mean()
+    ma200 = df["Close"].rolling(200).mean()
+
+    # high-vol stocks require stronger trend confirmation before going momentum
+    adx_threshold = 30 if ticker in HIGH_VOL_STOCKS else 25
+
+    return ((ma50 > ma200) & (df["adx"] > adx_threshold)).astype(int)
+
+
 def bond_regime(df: pd.DataFrame) -> pd.Series:
-    """
-    Bonds (TLT) are momentum-only — they trend with rate direction for months or years.
-    Mean reversion on bonds is dangerous: a rate-hike cycle can push TLT down 40%.
-    regime=1 always here means the momentum signal always fires, never reverts.
-    The momentum signal itself will be negative when TLT is falling.
-    """
-    # bonds always get momentum treatment — never mean reversion
+    """Bonds always get momentum treatment. Mean reversion on TLT is dangerous."""
     return pd.Series(1, index=df.index)
 
 
 def commodity_regime(df: pd.DataFrame, macro: pd.DataFrame) -> pd.Series:
     """
-    Gold (GLD) trends during fear, mean-reverts during calm.
-    Fear regime (VIX > 25): momentum — gold can trend for months during crises.
-    Calm regime (VIX < 20): mean reversion — gold oscillates around fair value.
+    Gold: momentum in fear (VIX > 25), mean reversion in calm.
+    Fear = gold trends for months as a safe haven.
+    Calm = gold oscillates around real-rate fair value.
     """
     if macro.empty:
-        return equity_regime(df)  # fall back to equity regime if no macro
-
+        return equity_index_regime(df)
     vix = macro["vix"].reindex(df.index, method="ffill").fillna(20)
-    # 1 = use momentum (fear), 0 = use mean reversion (calm)
-    return (vix > 25).astype(int)
+    return (vix > 25).astype(int)  # 1 = fear = use momentum
 
 # -----------------------------------------------------------------------------
-# Signal rules
+# Liquidity gate for individual stocks
 # -----------------------------------------------------------------------------
 
-def momentum_rule(df: pd.DataFrame) -> pd.Series:
-    # three-way confirmation: mom_20, mom_60, and MACD must all agree
-    long  = (df["mom_20"] > 0) & (df["mom_60"] > 0) & (df["macd_hist"] > 0)
-    short = (df["mom_20"] < 0) & (df["mom_60"] < 0) & (df["macd_hist"] < 0)
-    return pd.Series(np.select([long, short], [1, -1], default=0), index=df.index)
-
-
-def mean_reversion_rule(df: pd.DataFrame) -> pd.Series:
-    # two independent signals must agree: zscore and RSI both extreme in same direction
-    long  = (df["zscore_20"] < -1.5) & (df["rsi_14"] < 35)
-    short = (df["zscore_20"] >  1.5) & (df["rsi_14"] > 65)
-    return pd.Series(np.select([long, short], [1, -1], default=0), index=df.index)
-
-
-def volume_filter(df: pd.DataFrame, threshold: float = 1.0) -> pd.Series:
-    # elevated volume = market conviction behind the move
-    return (df["volume_zscore"] > threshold).astype(int).rename("volume_filter")
+def liquidity_gate(df: pd.DataFrame) -> pd.Series:
+    """
+    Suppress signals on days when dollar volume is below its 20-day average.
+    Thin trading days produce unreliable signals — spreads widen and price
+    moves are more likely to reverse. Only matters for individual stocks.
+    """
+    # shift(1): today's volume must exceed yesterday's 20-day average — no lookahead
+    avg_dv = df["dollar_volume"].rolling(20).mean().shift(1)
+    return (df["dollar_volume"] >= avg_dv).astype(int)
 
 # -----------------------------------------------------------------------------
-# VIX gate — sits flat on extreme fear spike days
+# VIX spike gate
 # -----------------------------------------------------------------------------
 
 def vix_gate(macro: pd.DataFrame, index: pd.Index) -> pd.Series:
     """
-    Hard gate: 0 on days when VIX z-score > 2.5 (extreme fear spike, ~top 2% of days).
-    On these days every technical signal breaks down — fear, not fundamentals, drives prices.
-    Sitting flat on these days costs almost nothing in normal returns but cuts crash losses.
+    Hard gate: 0 on extreme VIX spike days (z-score > 2.5, ~top 2% of days).
+    Fear drives prices on these days — technical signals break down.
     """
     if macro.empty:
         return pd.Series(1, index=index)
@@ -115,15 +124,51 @@ def vix_gate(macro: pd.DataFrame, index: pd.Index) -> pd.Series:
     return (vix_z < 2.5).astype(int)
 
 # -----------------------------------------------------------------------------
+# Signal rules — with ticker-aware thresholds
+# -----------------------------------------------------------------------------
+
+def momentum_rule(df: pd.DataFrame) -> pd.Series:
+    """Three-way confirmation: mom_20, mom_60, and MACD all agree."""
+    long  = (df["mom_20"] > 0) & (df["mom_60"] > 0) & (df["macd_hist"] > 0)
+    short = (df["mom_20"] < 0) & (df["mom_60"] < 0) & (df["macd_hist"] < 0)
+    return pd.Series(np.select([long, short], [1, -1], default=0), index=df.index)
+
+
+def mean_reversion_rule(df: pd.DataFrame, ticker: str = "") -> pd.Series:
+    """
+    Two independent signals agree on extreme: zscore and RSI.
+
+    High-vol stocks (XOM, AMZN, GS): wider thresholds (2.0 / 1.5)
+      because normal daily swings are large — we only want extreme dislocations.
+
+    Defensive stocks (JNJ, COST, NEE, BRK-B): tighter thresholds (1.2 / 30)
+      because their stable businesses mean even moderate dislocations revert quickly.
+
+    Default: 1.5 zscore / 35 RSI
+    """
+    if ticker in HIGH_VOL_STOCKS:
+        z_thresh, rsi_lo, rsi_hi = 2.0, 30, 70
+    elif ticker in DEFENSIVE_STOCKS:
+        z_thresh, rsi_lo, rsi_hi = 1.2, 38, 62
+    else:
+        z_thresh, rsi_lo, rsi_hi = 1.5, 35, 65
+
+    long  = (df["zscore_20"] < -z_thresh) & (df["rsi_14"] < rsi_lo)
+    short = (df["zscore_20"] >  z_thresh) & (df["rsi_14"] > rsi_hi)
+    return pd.Series(np.select([long, short], [1, -1], default=0), index=df.index)
+
+
+def volume_filter(df: pd.DataFrame, threshold: float = 1.0) -> pd.Series:
+    return (df["volume_zscore"] > threshold).astype(int).rename("volume_filter")
+
+# -----------------------------------------------------------------------------
 # Score computation
 # -----------------------------------------------------------------------------
 
-def compute_scores(df: pd.DataFrame, regime: pd.Series) -> pd.DataFrame:
+def compute_scores(df: pd.DataFrame, regime: pd.Series, ticker: str = "") -> pd.DataFrame:
     """
-    Normalised composite score. Regime-aware weighting:
-      regime=1 → 80% momentum weight
-      regime=0 → 80% mean reversion weight
-    No macro dampening here — applied once in portfolio.py.
+    Normalised composite score with regime-aware weighting.
+    No macro dampening — applied once in portfolio.py.
     """
     scores = pd.DataFrame(index=df.index)
 
@@ -135,8 +180,7 @@ def compute_scores(df: pd.DataFrame, regime: pd.Series) -> pd.DataFrame:
     scores["s_zscore"] = -_roll_zscore(df["zscore_20"], 60)
     scores["s_rsi"]    = -_roll_zscore(df["rsi_14"],    60)
     scores["s_bb"]     = -_roll_zscore(df["bb_pct_b"],  60)
-
-    scores["s_obv"] = _roll_zscore(df["obv_zscore"], 60)
+    scores["s_obv"]    =  _roll_zscore(df["obv_zscore"], 60)
 
     scores["score_momentum"] = scores[["s_mom20", "s_mom60", "s_macd"]].mean(axis=1)
     scores["score_mean_rev"] = scores[["s_zscore", "s_rsi", "s_bb"]].mean(axis=1)
@@ -167,46 +211,77 @@ def scores_to_signal(score: pd.Series, long_thresh: float = 0.5,
     return signal
 
 # -----------------------------------------------------------------------------
-# Master generate — asset-class-aware routing
+# Master generate — routes each ticker to the right logic
 # -----------------------------------------------------------------------------
 
 def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame:
-    """
-    Route each ticker to its appropriate regime and signal logic.
-    Same features computed for all assets — only the strategy applied differs.
-    """
     asset_class = ASSET_CLASS[ticker]
     out  = df[["Close", "log_return"]].copy()
     gate = vix_gate(macro, df.index)
 
-    # choose regime based on asset class
-    if asset_class == "equity":
-        regime = equity_regime(df)
-    elif asset_class == "sector":
+    # asset-class-aware regime selection
+    if asset_class == "equity_index":
+        regime = equity_index_regime(df)
+    elif asset_class == "sector_etf":
         regime = sector_regime(df)
+    elif asset_class == "stock":
+        regime = stock_regime(df, ticker)
     elif asset_class == "bond":
         regime = bond_regime(df)
     elif asset_class == "commodity":
         regime = commodity_regime(df, macro)
     else:
-        regime = equity_regime(df)  # default
+        regime = equity_index_regime(df)
 
-    out["regime"]       = regime
-    out["asset_class"]  = asset_class
-    out["volume_filter"] = volume_filter(df)
+    out["regime"]      = regime
+    out["asset_class"] = asset_class
 
     mom = momentum_rule(df)
-    rev = mean_reversion_rule(df)
+    rev = mean_reversion_rule(df, ticker)  # ticker-aware thresholds
 
-    # regime-switched signal — bonds always get momentum, others switch
-    out["signal_regime"] = (
-        pd.Series(np.where(regime == 1, mom, rev), index=df.index) * gate
-    )
+    # Two separate gates:
+    # - regime_gate  : VIX only. MA crossover is a multi-week position signal;
+    #   filtering on daily volume would block ~60% of days and starve it of returns.
+    # - composite_gate: VIX + liquidity. Composite scores are day-level timing signals
+    #   where below-average volume is genuinely a warning of unreliable price action.
+    if asset_class == "stock":
+        liq_gate       = liquidity_gate(df)
+        regime_gate    = gate               # regime  : VIX gate only
+        composite_gate = gate * liq_gate    # composite: both gates
+    else:
+        regime_gate    = gate
+        composite_gate = gate
 
-    # score-based composite
-    scores = compute_scores(df, regime)
+    out["volume_filter"] = volume_filter(df)
+
+    # ── Revised signal routing ──────────────────────────────────────────────
+    if asset_class in {"equity_index", "sector_etf", "stock", "commodity"}:
+        # Long-only: equities and gold have structural upward drift over the long run.
+        # Equity risk premium + central bank gold buying make both assets net-long.
+        # MA golden cross (MA50 > MA200) avoids noisy short-term momentum flips.
+        # No shorts — being short these in secular uptrends consistently loses and
+        # ignores structural demand. In flat/down regimes: be in cash, not short.
+        ma50  = df["Close"].rolling(50).mean()
+        ma200 = df["Close"].rolling(200).mean()
+        signal_r = (ma50 > ma200).astype(int) * regime_gate
+
+    else:
+        # Bonds: two-sided momentum. Rate cycles genuinely go both ways.
+        signal_r = pd.Series(np.where(regime == 1, mom, rev), index=df.index) * regime_gate
+
+    out["signal_regime"] = signal_r
+
+    scores = compute_scores(df, regime, ticker)
     out    = pd.concat([out, scores], axis=1)
-    out["signal_composite"] = scores_to_signal(scores["score_composite"]) * gate
+
+    raw_composite = scores_to_signal(scores["score_composite"])
+    if asset_class in {"equity_index", "sector_etf", "stock", "commodity"}:
+        # Long-only for equity and commodity: convert short signals to flat (cash).
+        # The mean-reversion score components are already positive when the
+        # asset is oversold, so they act as dip-buying signals — compatible
+        # with a long-only mandate.
+        raw_composite = raw_composite.clip(lower=0)
+    out["signal_composite"] = raw_composite * composite_gate
 
     return out.dropna()
 
@@ -226,12 +301,16 @@ def main():
         out = SIGNAL_DIR / f"{ticker}.parquet"
         sig.to_parquet(out, engine="pyarrow", compression="snappy")
 
-        n = len(sig)
-        print(f"  {ticker} ({ASSET_CLASS[ticker]})  {n} days  |  trending {sig['regime'].mean()*100:.0f}%")
+        n  = len(sig)
+        ac = ASSET_CLASS[ticker]
+        print(f"  {ticker:<6} ({ac:<14})  {n} days  |  "
+              f"trending {sig['regime'].mean()*100:.0f}%")
+
         for name in ["signal_regime", "signal_composite"]:
             l = (sig[name] ==  1).sum()
             s = (sig[name] == -1).sum()
-            print(f"    {name:<22}: {l:>4} long  {s:>4} short  ({(l+s)/n*100:.1f}% active)")
+            print(f"    {name:<22}: {l:>4} long  {s:>4} short  "
+                  f"({(l+s)/n*100:.1f}% active)")
         print()
 
         all_signals[ticker] = sig

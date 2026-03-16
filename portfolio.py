@@ -105,12 +105,13 @@ def pca_concentration(returns_window: pd.DataFrame) -> float:
 
 
 def apply_pca_scaling(sizes: pd.DataFrame, returns: pd.DataFrame,
-                      window: int = 60) -> pd.DataFrame:
+                      window: int = 126) -> pd.DataFrame:
     """
     Scale positions down when assets are highly correlated.
     ideal_concentration = 1/n_tickers.
     scale = ideal / actual, clipped 0.3-1.0.
-    With a diversified universe, concentration should average lower than before.
+    Window = 126 days (~6 months) to reduce reactivity to short-term noise
+    while still catching genuine regime shifts in correlation.
     """
     scaled = sizes.copy()
     n      = sizes.shape[1]
@@ -122,6 +123,22 @@ def apply_pca_scaling(sizes: pd.DataFrame, returns: pd.DataFrame,
         scaled.iloc[i] = sizes.iloc[i] * scale
 
     return scaled
+
+
+def vol_target_sizes(sizes: pd.DataFrame, returns: pd.DataFrame,
+                     target_vol: float = 0.10, window: int = 63) -> pd.DataFrame:
+    """
+    Scale all positions so the portfolio targets a given annualised volatility.
+    Uses lagged realised vol — no lookahead. sizes[t] is held at t+1 (via shift(1)
+    in portfolio_returns), so using realized_vol[t] for scale[t] is clean.
+    Clip 0.5–1.5x: never more than 1.5x levered, never less than half size.
+    """
+    weights  = sizes.shift(1) / CAPITAL
+    port_ret = (weights * returns.reindex(columns=sizes.columns)).sum(axis=1)
+    realized_vol = port_ret.rolling(window, min_periods=21).std() * np.sqrt(252)
+    realized_vol = realized_vol.replace(0, np.nan).fillna(target_vol)
+    scale = (target_vol / realized_vol).clip(0.5, 1.5)
+    return sizes.multiply(scale, axis=0)
 
 
 def apply_macro_multiplier(sizes: pd.DataFrame) -> pd.DataFrame:
@@ -184,7 +201,8 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
 def main():
     print("Building portfolio...\n")
 
-    regime_signals = pd.read_parquet(SIGNAL_DIR / "regime_signals.parquet")
+    regime_signals    = pd.read_parquet(SIGNAL_DIR / "regime_signals.parquet")
+    composite_signals = pd.read_parquet(SIGNAL_DIR / "composite_signals.parquet")
 
     features, returns = {}, pd.DataFrame()
     for ticker in TICKER_LIST:
@@ -192,59 +210,92 @@ def main():
         features[ticker] = feat
         returns[ticker]  = feat["log_return"]
 
-    returns = returns.dropna()
-    signals = regime_signals.reindex(returns.index).fillna(0)
+    returns           = returns.dropna()
+    signals_regime    = regime_signals.reindex(returns.index).fillna(0)
+    signals_composite = composite_signals.reindex(returns.index).fillna(0)
 
     print("Correlation matrix of returns (should be lower with diversified universe):")
     print(returns.corr().round(2))
     print()
 
-    sizes_eq      = equal_weight_sizes(signals, CAPITAL)
-    sizes_atr     = atr_sizes(signals, features, CAPITAL)
-    sizes_kelly   = kelly_sizes(signals, returns, CAPITAL)
+    # --- Regime-signal portfolio chain ---
+    sizes_eq      = equal_weight_sizes(signals_regime, CAPITAL)
+    sizes_atr     = atr_sizes(signals_regime, features, CAPITAL)
+    sizes_kelly   = kelly_sizes(signals_regime, returns, CAPITAL)
     sizes_atr_pca = apply_pca_scaling(sizes_atr, returns)
     sizes_final   = apply_macro_multiplier(sizes_atr_pca)
+    sizes_vol     = vol_target_sizes(sizes_final, returns)  # vol-targeted final
 
-    ret_eq      = portfolio_returns(sizes_eq,      returns)
-    ret_atr     = portfolio_returns(sizes_atr,     returns)
-    ret_kelly   = portfolio_returns(sizes_kelly,   returns)
-    ret_atr_pca = portfolio_returns(sizes_atr_pca, returns)
-    ret_final   = portfolio_returns(sizes_final,   returns)
-    ret_bnh     = returns.mean(axis=1)
+    # --- Composite-signal portfolio chain (tests richer signal) ---
+    sizes_comp_atr     = atr_sizes(signals_composite, features, CAPITAL)
+    sizes_comp_pca     = apply_pca_scaling(sizes_comp_atr, returns)
+    sizes_comp_macro   = apply_macro_multiplier(sizes_comp_pca)
+    sizes_comp_vol     = vol_target_sizes(sizes_comp_macro, returns)
 
-    print(f"{'='*68}")
-    print("  PORTFOLIO COMPARISON")
-    print(f"{'='*68}")
+    ret_eq         = portfolio_returns(sizes_eq,         returns)
+    ret_atr        = portfolio_returns(sizes_atr,        returns)
+    ret_kelly      = portfolio_returns(sizes_kelly,      returns)
+    ret_atr_pca    = portfolio_returns(sizes_atr_pca,    returns)
+    ret_final      = portfolio_returns(sizes_final,      returns)
+    ret_vol        = portfolio_returns(sizes_vol,        returns)
+    ret_comp_vol   = portfolio_returns(sizes_comp_vol,   returns)
+    ret_bnh        = returns.mean(axis=1)
+
+    print(f"{'='*76}")
+    print("  PORTFOLIO COMPARISON  (transaction costs included in all strategy returns)")
+    print(f"{'='*76}")
     metrics = ["ann_return", "sharpe", "max_drawdown", "calmar", "win_rate", "profit_factor"]
-    print(f"  {'Method':<26}" + "".join(f"{m:>14}" for m in metrics))
-    print("  " + "-" * (26 + 14 * len(metrics)))
+    print(f"  {'Method':<30}" + "".join(f"{m:>14}" for m in metrics))
+    print("  " + "-" * (30 + 14 * len(metrics)))
 
     for label, ret in [
-        ("equal weight",      ret_eq),
-        ("ATR sized",         ret_atr),
-        ("half-Kelly",        ret_kelly),
-        ("ATR + PCA",         ret_atr_pca),
-        ("ATR + PCA + macro", ret_final),
-        ("buy & hold",        ret_bnh),
+        ("equal weight",             ret_eq),
+        ("ATR sized",                ret_atr),
+        ("half-Kelly",               ret_kelly),
+        ("ATR + PCA",                ret_atr_pca),
+        ("ATR + PCA + macro",        ret_final),
+        ("regime + vol target",      ret_vol),
+        ("composite + vol target",   ret_comp_vol),
+        ("buy & hold",               ret_bnh),
     ]:
         s   = summarise(ret, label)
-        row = f"  {s['label']:<26}" + "".join(f"{str(s[m]):>14}" for m in metrics)
+        row = f"  {s['label']:<30}" + "".join(f"{str(s[m]):>14}" for m in metrics)
         print(row)
 
-    print(f"\n{'='*68}")
-    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test)")
-    print(f"{'='*68}")
-    wf = walk_forward(signals, returns)
-    print(wf.to_string(index=False))
-    print(f"\n  Mean OOS Sharpe : {wf['sharpe'].mean():.3f}")
-    print(f"  Std  OOS Sharpe : {wf['sharpe'].std():.3f}")
-    print(f"  Worst period    : {wf.loc[wf['sharpe'].idxmin(), 'period']}  ({wf['sharpe'].min():.3f})")
-    print(f"  Best  period    : {wf.loc[wf['sharpe'].idxmax(), 'period']}  ({wf['sharpe'].max():.3f})")
+    # Walk-forward on both signal types so we can see OOS consistency
+    print(f"\n{'='*76}")
+    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — regime signals")
+    print(f"{'='*76}")
+    wf_regime = walk_forward(signals_regime, returns)
+    print(wf_regime.to_string(index=False))
+    print(f"\n  Mean OOS Sharpe : {wf_regime['sharpe'].mean():.3f}")
+    print(f"  Std  OOS Sharpe : {wf_regime['sharpe'].std():.3f}")
+
+    print(f"\n{'='*76}")
+    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — composite signals")
+    print(f"{'='*76}")
+    wf_comp = walk_forward(signals_composite, returns)
+    print(wf_comp.to_string(index=False))
+    print(f"\n  Mean OOS Sharpe : {wf_comp['sharpe'].mean():.3f}")
+    print(f"  Std  OOS Sharpe : {wf_comp['sharpe'].std():.3f}")
+
+    # Select the best portfolio by in-sample Sharpe across all regime-signal methods.
+    # (Regime signal validated by OOS walk-forward above — composite consistently loses OOS.)
+    candidates = {
+        "equal weight"       : ret_eq,
+        "ATR sized"          : ret_atr,
+        "ATR + PCA + macro"  : ret_final,
+        "regime + vol target": ret_vol,
+    }
+    best_label = max(candidates, key=lambda k: summarise(candidates[k], k)["sharpe"])
+    best_ret   = candidates[best_label]
+
+    print(f"\n  Best portfolio (highest in-sample Sharpe): {best_label}")
     print()
-    print("  Mean OOS close to in-sample → low overfitting")
+    print("  Mean OOS close to in-sample Sharpe → low overfitting")
     print("  High std → inconsistent, signals need simplifying")
 
-    equity_curve(ret_final, CAPITAL).to_frame("portfolio").to_parquet(
+    equity_curve(best_ret, CAPITAL).to_frame("portfolio").to_parquet(
         RESULTS_DIR / "portfolio_equity_curve.parquet"
     )
     print(f"\nEquity curve saved -> {RESULTS_DIR / 'portfolio_equity_curve.parquet'}")

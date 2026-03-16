@@ -17,9 +17,22 @@ RESULTS_DIR = Path("data/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def compute_strategy_returns(signals: pd.Series, returns: pd.Series) -> pd.Series:
-    # shift(1): signal seen at end of day, trade executed next day — no lookahead
-    return signals.shift(1) * returns
+# One-way transaction cost as fraction of position notional.
+# 0.05% is conservative for liquid ETFs (real ≈ 0.01-0.02%) and reasonable for
+# large-cap stocks. Applied to the absolute change in position (0→1 = 1 unit,
+# 1→-1 = 2 units). This prevents the backtest from rewarding high-turnover signals
+# that would be destroyed by real spreads and commissions.
+TRANSACTION_COST = 0.0005   # 0.05% per side; round-trip 0.10%
+
+
+def compute_strategy_returns(signals: pd.Series, returns: pd.Series,
+                              cost: float = TRANSACTION_COST) -> pd.Series:
+    """Signal seen at close, trade executed next open.
+    Position change cost applied on the day the trade is made."""
+    position = signals.shift(1).fillna(0)
+    # abs(diff): 0→1 or 1→0 costs 1 unit; 1→-1 costs 2 units (full reversal)
+    turnover = position.diff().abs().fillna(0)
+    return position * returns - turnover * cost
 
 
 def sharpe_ratio(returns: pd.Series, periods: int = 252) -> float:
