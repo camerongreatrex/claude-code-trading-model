@@ -98,8 +98,13 @@ def equity_curve(strategy_returns: pd.Series, starting_capital: float = 10_000) 
 
 
 def backtest_ticker(ticker: str) -> dict:
-    sig_df  = pd.read_parquet(SIGNAL_DIR  / f"{ticker}.parquet")
-    feat_df = pd.read_parquet(FEATURE_DIR / f"{ticker}.parquet")
+    sig_path  = SIGNAL_DIR  / f"{ticker}.parquet"
+    feat_path = FEATURE_DIR / f"{ticker}.parquet"
+    if not sig_path.exists() or not feat_path.exists():
+        print(f"  {ticker}: signal or feature data missing — skipped")
+        return {}
+    sig_df  = pd.read_parquet(sig_path)
+    feat_df = pd.read_parquet(feat_path)
 
     df = sig_df.join(feat_df[["log_return"]], how="inner", rsuffix="_feat")
     df = df.dropna(subset=["log_return", "signal_regime", "signal_composite"])
@@ -143,6 +148,8 @@ def main():
 
     for ticker in TICKER_LIST:
         results = backtest_ticker(ticker)
+        if not results:
+            continue
         all_results[ticker] = results
         print_results(ticker, results)
 

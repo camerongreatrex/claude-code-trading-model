@@ -12,7 +12,7 @@ from pathlib import Path
 
 # ── Page configuration ────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Quant Strategy Dashboard",
+    page_title="Greatrex Quant Strategy Dashboard",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -131,6 +131,16 @@ def load_ticker_curves() -> dict:
 @st.cache_data
 def load_walk_forward() -> pd.DataFrame:
     path = Path("data/results/walk_forward_regime.parquet")
+    return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+@st.cache_data
+def load_walk_forward_atr() -> pd.DataFrame:
+    path = Path("data/results/walk_forward_atr_pca.parquet")
+    return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+@st.cache_data
+def load_oos_selection() -> pd.DataFrame:
+    path = Path("data/results/oos_selection.parquet")
     return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
 @st.cache_data
@@ -445,26 +455,31 @@ def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
 
 # ── Main layout ───────────────────────────────────────────────────────────────
 def main():
+    # Load all data first so n_assets is available before header renders
+    df_port       = load_portfolio_curves()
+    ticker_curves = load_ticker_curves()
+    wf            = load_walk_forward()
+    wf_atr        = load_walk_forward_atr()
+    oos_sel       = load_oos_selection()
+    macro         = load_macro()
+    n_assets      = len(ticker_curves) if ticker_curves else 20
+
     # Header
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.markdown("## 📈 Strategy Performance Dashboard")
         st.markdown(
-            "<span style='color:#666;font-size:.82rem'>"
-            "Multi-asset systematic strategy · 2015–2025 · 16 assets · "
-            "0.1% round-trip transaction costs · MA50/200 golden-cross signals"
-            "</span>",
+            f"<span style='color:#666;font-size:.82rem'>"
+            f"Multi-asset systematic strategy · 2015–2025 · {n_assets} assets "
+            f"(incl. survivorship-bias anchors GE/INTC/WBA/VZ) · "
+            f"0.1% round-trip transaction costs · MA50/200 golden-cross signals"
+            f"</span>",
             unsafe_allow_html=True,
         )
 
-    df_port = load_portfolio_curves()
     if df_port.empty:
         st.error("Run `python run.py portfolio` first to generate portfolio data.")
         return
-
-    ticker_curves = load_ticker_curves()
-    wf            = load_walk_forward()
-    macro         = load_macro()
 
     # ── Top metrics ──────────────────────────────────────────────────────────
     st.markdown('<div class="section-head">Equal-weight strategy vs buy & hold</div>',
@@ -482,15 +497,33 @@ def main():
         return s
 
     with c1: st.metric("Ann. Return",  f"{m_eq['ann_r']*100:.1f}%",
-                        delta=delta_str(m_eq['ann_r'], m_bnh['ann_r']))
+                        delta=delta_str(m_eq['ann_r'], m_bnh['ann_r']),
+                        help="Compound Annual Growth Rate (CAGR) — the annualised return "
+                             "if capital was invested for the full period. Delta shows "
+                             "outperformance vs buy & hold.")
     with c2: st.metric("Sharpe Ratio", f"{m_eq['sharpe']:.2f}",
-                        delta=delta_str(m_eq['sharpe'], m_bnh['sharpe'], pct=False))
+                        delta=delta_str(m_eq['sharpe'], m_bnh['sharpe'], pct=False),
+                        help="(Annualised return) / (Annualised volatility). A risk-adjusted "
+                             "return score. >1.0 is good; >2.0 is exceptional. Higher = "
+                             "more return earned per unit of risk taken.")
     with c3: st.metric("Volatility",   f"{m_eq['vol']*100:.1f}%",
-                        delta=delta_str(m_eq['vol'], m_bnh['vol']), delta_color="inverse")
+                        delta=delta_str(m_eq['vol'], m_bnh['vol']), delta_color="inverse",
+                        help="Annualised standard deviation of daily returns. Measures how "
+                             "much returns vary day-to-day. Lower is better for a given "
+                             "level of return. Delta (inverse): green = lower vol than B&H.")
     with c4: st.metric("Max Drawdown", f"{m_eq['max_dd']*100:.1f}%",
-                        delta=delta_str(m_eq['max_dd'], m_bnh['max_dd']), delta_color="inverse")
-    with c5: st.metric("Calmar Ratio", f"{m_eq['calmar']:.2f}")
-    with c6: st.metric("Win Rate",     f"{m_eq['win_rate']*100:.0f}%")
+                        delta=delta_str(m_eq['max_dd'], m_bnh['max_dd']), delta_color="inverse",
+                        help="Largest peak-to-trough decline in the equity curve. −20% means "
+                             "the strategy fell 20% from its peak before recovering. Lower "
+                             "magnitude = better. Delta (inverse): green = shallower DD than B&H.")
+    with c5: st.metric("Calmar Ratio", f"{m_eq['calmar']:.2f}",
+                        help="Annualised return divided by the absolute maximum drawdown. "
+                             "Measures how much return you earned relative to the worst loss. "
+                             ">1.0 is considered good; institutional target is often >0.5.")
+    with c6: st.metric("Win Rate",     f"{m_eq['win_rate']*100:.0f}%",
+                        help="Percentage of active trading days where the strategy had a "
+                             "positive return. Even a 50% win rate can be very profitable "
+                             "if winning days are larger than losing days (see Profit Factor).")
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -556,18 +589,46 @@ def main():
             st.markdown('<div class="section-head">Monte Carlo terminal statistics</div>',
                         unsafe_allow_html=True)
             mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-            with mc1: st.metric("5th pct",    f"{(p5-1)*100:.0f}%")
-            with mc2: st.metric("25th pct",   f"{(p25-1)*100:.0f}%")
-            with mc3: st.metric("Median",     f"{(p50-1)*100:.0f}%")
-            with mc4: st.metric("75th pct",   f"{(p75-1)*100:.0f}%")
-            with mc5: st.metric("95th pct",   f"{(p95-1)*100:.0f}%")
+            with mc1: st.metric("5th pct",  f"{(p5-1)*100:.0f}%",
+                                 help="Only 5% of simulated paths ended below this total return. "
+                                      "Rough stress-test floor — the near-worst-case outcome "
+                                      "based on the historical return distribution.")
+            with mc2: st.metric("25th pct", f"{(p25-1)*100:.0f}%",
+                                 help="25% of paths ended below this return. The pessimistic "
+                                      "quartile — represents a plausible unfavourable scenario.")
+            with mc3: st.metric("Median",   f"{(p50-1)*100:.0f}%",
+                                 help="50th percentile total return across all simulated paths. "
+                                      "The expected central outcome under the historical edge.")
+            with mc4: st.metric("75th pct", f"{(p75-1)*100:.0f}%",
+                                 help="75% of paths ended below this return. The optimistic "
+                                      "quartile — a favourable but plausible outcome.")
+            with mc5: st.metric("95th pct", f"{(p95-1)*100:.0f}%",
+                                 help="Only 5% of paths exceeded this return. Near the "
+                                      "best-case scenario — do not plan around this number.")
 
             mc6, mc7, _ = st.columns([1, 1, 2])
-            with mc6: st.metric("Prob. positive return",   f"{(finals>1).mean()*100:.0f}%")
-            with mc7: st.metric("Prob. 2× capital",        f"{(finals>2).mean()*100:.0f}%")
+            with mc6: st.metric("Prob. positive return", f"{(finals>1).mean()*100:.0f}%",
+                                 help="Fraction of simulated paths that ended with a positive "
+                                      "total return. High % = strategy edge is robust to "
+                                      "different orderings of the historical returns.")
+            with mc7: st.metric("Prob. 2× capital",      f"{(finals>2).mean()*100:.0f}%",
+                                 help="Fraction of paths that doubled the starting capital. "
+                                      "A measure of upside potential under block-bootstrap "
+                                      "resampling of the observed return stream.")
 
     # ── Tab 3: Walk-forward + per-asset ──────────────────────────────────────
     with tab3:
+        st.markdown(
+            "<span style='color:#888;font-size:.82rem'>"
+            "<b>Walk-forward validation</b>: train on 3 years, test on the next 1 year (rolling). "
+            "Each test period is genuinely unseen data. "
+            "Mean OOS Sharpe close to in-sample = low overfitting. "
+            "A large IS→OOS gap means the method overfit the training period."
+            "</span>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
         left, right = st.columns([1, 2])
         with left:
             if wf.empty:
@@ -578,6 +639,7 @@ def main():
                 color  = "#50fa7b" if mean_s > 0 else "#ff5555"
                 st.markdown(f"""
 <div style="background:#252525;border-radius:10px;padding:14px 16px;font-size:.82rem;color:#c0c0c0;line-height:1.8">
+  <b>Equal-weight signal OOS</b><br>
   <b>Mean OOS Sharpe</b> <span style="color:{color};font-weight:600">{mean_s:.3f}</span><br>
   <b>Std  OOS Sharpe</b>  {wf['sharpe'].std():.3f}<br>
   <b>Worst period</b>  {wf.loc[wf['sharpe'].idxmin(),'period']}
@@ -586,10 +648,60 @@ def main():
     (<span style="color:{PALETTE['pos']}">{wf['sharpe'].max():.2f}</span>)
 </div>""", unsafe_allow_html=True)
 
+            if not wf_atr.empty:
+                st.markdown("")
+                mean_s_atr = wf_atr["sharpe"].mean()
+                color_atr  = "#50fa7b" if mean_s_atr > 0 else "#ff5555"
+                st.markdown(f"""
+<div style="background:#252525;border-radius:10px;padding:14px 16px;font-size:.82rem;color:#c0c0c0;line-height:1.8">
+  <b>ATR+PCA+Macro sizing OOS</b><br>
+  <b>Mean OOS Sharpe</b> <span style="color:{color_atr};font-weight:600">{mean_s_atr:.3f}</span><br>
+  <b>Std  OOS Sharpe</b>  {wf_atr['sharpe'].std():.3f}
+</div>""", unsafe_allow_html=True)
+
         with right:
             if ticker_curves:
                 st.plotly_chart(chart_asset_sharpe(ticker_curves),
                                 use_container_width=True)
+
+        # OOS selection comparison table
+        if not oos_sel.empty:
+            st.markdown("")
+            st.markdown(
+                '<div class="section-head">Portfolio method selection — in-sample vs out-of-sample Sharpe</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "<span style='color:#888;font-size:.82rem'>"
+                "<b>IS Sharpe</b>: full in-sample (2015–2025). "
+                "<b>OOS Sharpe</b>: mean Sharpe across walk-forward test windows. "
+                "The method with the highest OOS Sharpe is selected — not the highest IS Sharpe. "
+                "A large IS→OOS drop signals overfitting of that method."
+                "</span>",
+                unsafe_allow_html=True,
+            )
+            display_oos = oos_sel.rename(columns={
+                "method"    : "Method",
+                "is_sharpe" : "IS Sharpe (full period)",
+                "oos_sharpe": "OOS Sharpe (walk-fwd mean)",
+            })
+            # Highlight the selected (best OOS) row
+            best_oos_method = oos_sel.loc[oos_sel["oos_sharpe"].idxmax(), "method"]
+            def _highlight_best(row):
+                return ["background-color:#1a3a1a" if row["Method"] == best_oos_method
+                        else "" for _ in row]
+            st.dataframe(
+                display_oos.style.apply(_highlight_best, axis=1).format({
+                    "IS Sharpe (full period)"   : "{:.3f}",
+                    "OOS Sharpe (walk-fwd mean)": "{:.3f}",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+            st.markdown(
+                f"<span style='color:#50fa7b;font-size:.82rem'>"
+                f"✓ Selected method: <b>{best_oos_method}</b></span>",
+                unsafe_allow_html=True,
+            )
 
     # ── Tab 4: Macro overlay ─────────────────────────────────────────────────
     with tab4:
@@ -610,10 +722,21 @@ def main():
             st.markdown('<div class="section-head">Macro regime statistics (full history)</div>',
                         unsafe_allow_html=True)
             r1, r2, r3, r4 = st.columns(4)
-            with r1: st.metric("VIX calm days (<20)",  f"{(macro['vix']<20).mean()*100:.0f}%")
-            with r2: st.metric("VIX fear days (>30)",  f"{(macro['vix']>30).mean()*100:.0f}%")
-            with r3: st.metric("Curve inverted (<0)",  f"{(macro['yield_curve']<0).mean()*100:.0f}%")
-            with r4: st.metric("Curve steep (>1)",     f"{(macro['yield_curve']>1).mean()*100:.0f}%")
+            with r1: st.metric("VIX calm days (<20)",  f"{(macro['vix']<20).mean()*100:.0f}%",
+                                 help="Days where VIX < 20 — low fear environment. Signals "
+                                      "are not gated; normal position sizing applies.")
+            with r2: st.metric("VIX fear days (>30)",  f"{(macro['vix']>30).mean()*100:.0f}%",
+                                 help="Days where VIX > 30 — elevated fear. Macro score "
+                                      "multiplier reduces position sizes. VIX z-score > 2.5 "
+                                      "triggers a hard gate (all signals blocked).")
+            with r3: st.metric("Curve inverted (<0)",  f"{(macro['yield_curve']<0).mean()*100:.0f}%",
+                                 help="Days where 10Y−2Y Treasury spread < 0 (inverted). "
+                                      "Historically precedes recessions. Macro multiplier "
+                                      "reduces sizing when the curve is inverted.")
+            with r4: st.metric("Curve steep (>1)",     f"{(macro['yield_curve']>1).mean()*100:.0f}%",
+                                 help="Days where 10Y−2Y spread > 1% (steep). Historically "
+                                      "associated with early-cycle expansion. Macro multiplier "
+                                      "slightly increases sizing in steep environments.")
 
 
 if __name__ == "__main__":

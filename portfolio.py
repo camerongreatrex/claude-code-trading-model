@@ -186,10 +186,14 @@ def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
 
 
 def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
-                 train_years: int = 3, test_years: int = 1) -> pd.DataFrame:
+                 train_years: int = 3, test_years: int = 1,
+                 sizing_fn=None) -> pd.DataFrame:
     """
-    Rolling out-of-sample validation. Each test period is genuinely unseen.
-    Equal-weight used here to isolate signal quality from sizing effects.
+    Rolling OOS validation. Each test period is genuinely unseen.
+
+    sizing_fn: callable(signals, returns) -> pd.DataFrame of dollar sizes.
+        If None, uses equal-weight (equal fraction per active signal) to
+        isolate signal quality from sizing effects.
     Mean OOS Sharpe close to in-sample = low overfitting.
     """
     train_days = train_years * 252
@@ -198,14 +202,21 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
     start      = train_days
 
     while start + test_days <= len(signals):
-        test_sig   = signals.iloc[start : start + test_days]
-        test_ret   = returns.iloc[start : start + test_days]
-        period_ret = pd.Series(0.0, index=test_sig.index)
+        test_sig = signals.iloc[start : start + test_days]
+        test_ret = returns.iloc[start : start + test_days]
 
-        for ticker in test_sig.columns:
-            if ticker in test_ret.columns:
-                strat = compute_strategy_returns(test_sig[ticker], test_ret[ticker])
-                period_ret += strat / len(test_sig.columns)
+        if sizing_fn is None:
+            # Equal-weight: each ticker contributes equally via strategy returns
+            # (compute_strategy_returns handles the shift(1) and transaction costs)
+            period_ret = pd.Series(0.0, index=test_sig.index)
+            for ticker in test_sig.columns:
+                if ticker in test_ret.columns:
+                    strat = compute_strategy_returns(test_sig[ticker], test_ret[ticker])
+                    period_ret += strat / len(test_sig.columns)
+        else:
+            # Custom sizing chain: portfolio_returns applies shift(1) internally
+            sizes      = sizing_fn(test_sig, test_ret)
+            period_ret = portfolio_returns(sizes, test_ret)
 
         y0, y1 = test_sig.index[0].year, test_sig.index[-1].year
         results.append({
@@ -228,7 +239,11 @@ def main():
 
     features, returns = {}, pd.DataFrame()
     for ticker in TICKER_LIST:
-        feat             = pd.read_parquet(FEATURE_DIR / f"{ticker}.parquet")
+        feat_path = FEATURE_DIR / f"{ticker}.parquet"
+        if not feat_path.exists():
+            print(f"  {ticker}: feature file missing — skipped")
+            continue
+        feat             = pd.read_parquet(feat_path)
         features[ticker] = feat
         returns[ticker]  = feat["log_return"]
 
@@ -290,14 +305,30 @@ def main():
         row = f"  {s['label']:<30}" + "".join(f"{str(s[m]):>14}" for m in metrics)
         print(row)
 
-    # Walk-forward on both signal types so we can see OOS consistency
+    # Walk-forward on regime signals — equal-weight to isolate signal quality
     print(f"\n{'='*76}")
-    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — regime signals")
+    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — regime signals, equal-weight")
     print(f"{'='*76}")
     wf_regime = walk_forward(signals_regime, returns)
     print(wf_regime.to_string(index=False))
     print(f"\n  Mean OOS Sharpe : {wf_regime['sharpe'].mean():.3f}")
     print(f"  Std  OOS Sharpe : {wf_regime['sharpe'].std():.3f}")
+
+    # Walk-forward on regime signals with the full ATR+PCA+macro sizing chain
+    print(f"\n{'='*76}")
+    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — regime signals, ATR+PCA+macro")
+    print(f"{'='*76}")
+
+    def _atr_pca_macro_fn(sig, ret):
+        s = atr_sizes(sig, features, CAPITAL)
+        s = apply_pca_scaling(s, ret)
+        s = apply_macro_multiplier(s)
+        return s
+
+    wf_regime_full = walk_forward(signals_regime, returns, sizing_fn=_atr_pca_macro_fn)
+    print(wf_regime_full.to_string(index=False))
+    print(f"\n  Mean OOS Sharpe : {wf_regime_full['sharpe'].mean():.3f}")
+    print(f"  Std  OOS Sharpe : {wf_regime_full['sharpe'].std():.3f}")
 
     print(f"\n{'='*76}")
     print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — composite signals")
@@ -307,8 +338,10 @@ def main():
     print(f"\n  Mean OOS Sharpe : {wf_comp['sharpe'].mean():.3f}")
     print(f"  Std  OOS Sharpe : {wf_comp['sharpe'].std():.3f}")
 
-    # Select the best portfolio by in-sample Sharpe across all regime-signal methods.
-    # (Regime signal validated by OOS walk-forward above — composite consistently loses OOS.)
+    # ── Portfolio method selection by mean OOS Sharpe (not in-sample) ─────────
+    # Running walk-forward for each candidate eliminates in-sample selection bias:
+    # the winner is the one that generalises best to unseen data, not just the
+    # one that fit the training period best.
     candidates = {
         "equal weight"          : ret_eq,
         "ATR sized"             : ret_atr,
@@ -316,13 +349,42 @@ def main():
         "ATR + PCA + DD control": ret_dd,
         "regime + vol target"   : ret_vol,
     }
-    best_label = max(candidates, key=lambda k: summarise(candidates[k], k)["sharpe"])
+
+    candidate_sizing_fns = {
+        "equal weight"          : lambda sig, ret: equal_weight_sizes(sig, CAPITAL),
+        "ATR sized"             : lambda sig, ret: atr_sizes(sig, features, CAPITAL),
+        "ATR + PCA + macro"     : lambda sig, ret: apply_macro_multiplier(
+                                      apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)),
+        "ATR + PCA + DD control": lambda sig, ret: apply_drawdown_control(
+                                      equal_weight_sizes(sig, CAPITAL), ret),
+        "regime + vol target"   : lambda sig, ret: vol_target_sizes(
+                                      apply_macro_multiplier(
+                                          apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)
+                                      ), ret),
+    }
+
+    print(f"\n{'='*76}")
+    print("  PORTFOLIO SELECTION — In-Sample vs Mean OOS Sharpe  (OOS = walk-forward)")
+    print(f"{'='*76}")
+    print(f"  {'Method':<30} {'IS Sharpe':>12} {'OOS Sharpe':>12}")
+    print("  " + "-" * 54)
+
+    is_sharpes  = {}
+    oos_sharpes = {}
+    for label in candidates:
+        is_sharpes[label] = summarise(candidates[label], label)["sharpe"]
+        wf_cand           = walk_forward(signals_regime, returns,
+                                         sizing_fn=candidate_sizing_fns[label])
+        oos_sharpes[label] = round(wf_cand["sharpe"].mean(), 3)
+        print(f"  {label:<30} {is_sharpes[label]:>12.3f} {oos_sharpes[label]:>12.3f}")
+
+    best_label = max(oos_sharpes, key=lambda k: oos_sharpes[k])
     best_ret   = candidates[best_label]
 
-    print(f"\n  Best portfolio (highest in-sample Sharpe): {best_label}")
+    print(f"\n  Best portfolio (highest mean OOS Sharpe): {best_label}")
     print()
-    print("  Mean OOS close to in-sample Sharpe → low overfitting")
-    print("  High std → inconsistent, signals need simplifying")
+    print("  OOS Sharpe close to IS Sharpe → low overfitting")
+    print("  Large IS-OOS gap → overfit; consider simplifying that method")
 
     # ── Persist all equity curves for dashboard.py ────────────────────────────
     comparison_df = pd.DataFrame({
@@ -335,12 +397,21 @@ def main():
     })
     comparison_df.to_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
     wf_regime.to_parquet(RESULTS_DIR / "walk_forward_regime.parquet", index=False)
+    wf_regime_full.to_parquet(RESULTS_DIR / "walk_forward_atr_pca.parquet", index=False)
+
+    # OOS selection table — used by dashboard for the IS vs OOS comparison panel
+    oos_df = pd.DataFrame([
+        {"method": lbl, "is_sharpe": is_sharpes[lbl], "oos_sharpe": oos_sharpes[lbl]}
+        for lbl in candidates
+    ])
+    oos_df.to_parquet(RESULTS_DIR / "oos_selection.parquet", index=False)
 
     equity_curve(best_ret, CAPITAL).to_frame("portfolio").to_parquet(
         RESULTS_DIR / "portfolio_equity_curve.parquet"
     )
-    print(f"\nEquity curves saved -> {RESULTS_DIR / 'portfolio_comparison.parquet'}")
-    print(f"Walk-forward saved  -> {RESULTS_DIR / 'walk_forward_regime.parquet'}")
+    print(f"\nEquity curves saved    -> {RESULTS_DIR / 'portfolio_comparison.parquet'}")
+    print(f"Walk-forward saved     -> {RESULTS_DIR / 'walk_forward_regime.parquet'}")
+    print(f"OOS selection saved    -> {RESULTS_DIR / 'oos_selection.parquet'}")
 
 
 if __name__ == "__main__":

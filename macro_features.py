@@ -1,6 +1,4 @@
 """
-macro_features.py
-
 Fetches VIX, VIX9D, and yield curve data.
 Produces a daily macro regime DataFrame consumed by signal_generation.py
 and portfolio.py.

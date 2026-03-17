@@ -5,6 +5,10 @@ Downloads, cleans, and saves raw OHLCV data.
 Universe spans asset classes AND individual stocks with genuinely different
 economic drivers — the combination gives both macro diversification and
 idiosyncratic alpha opportunities.
+
+Survivorship-bias anchors (GE, INTC, WBA, VZ) are included deliberately.
+A realistic 2015 investor would have held these names. Excluding losers
+inflates backtest returns by 2-4% p.a. — a well-known data-mining trap.
 """
 
 import numpy as np
@@ -49,6 +53,13 @@ TICKERS = {
     "BRK-B": "stock",         # Conglomerate — insurance, railroads, consumer brands, near-uncorrelated
     "GS"  : "stock",          # Investment banking — M&A volumes, capital markets, trading revenue
     "COST": "stock",          # Consumer staples — defensive, membership model, recession resistant
+
+    # --- Survivorship-bias anchors: underperformers 2015-2025 ---
+    # A 2015 investor would have held these large-cap names. Excluding them
+    # would inflate backtest returns by omitting known losers (survivorship bias).
+    "GE"  : "stock",          # Industrial conglomerate — power write-downs, breakup, secular decline
+    "INTC": "stock",          # Semiconductor — lost process leadership to TSMC/AMD, share loss
+    "VZ"  : "stock",          # Telecom — 5G capex drag, subscriber pressure, near-zero real return
 }
 
 # Equity-like assets that can use momentum + mean reversion regime switching
@@ -63,6 +74,11 @@ END   = "2025-01-01"
 
 DATA_DIR = Path("data/raw")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Minimum trading days required to include a ticker in the universe.
+# Tickers below this threshold are skipped with a warning so a mid-period
+# delisting or recent IPO degrades gracefully instead of crashing downstream.
+MIN_TRADING_DAYS = 1000
 
 
 def download(ticker: str) -> pd.DataFrame:
@@ -108,11 +124,20 @@ def main():
         "BRK-B":"insurance float, railroads, consumer brands",
         "GS"  : "M&A volumes, IPO market, trading revenue",
         "COST": "membership model, consumer staples, defensive",
+        # survivorship-bias anchors
+        "GE"  : "industrial restructuring, power write-downs, long-term decline",
+        "INTC": "process node lag vs TSMC/AMD, fab investment overhang",
+        "WBA" : "PBM margin pressure, opioid litigation, store-closure cycle",
+        "VZ"  : "5G capex drag, subscriber pressure, near-zero real return",
     }
 
     for ticker in TICKER_LIST:
         df = download(ticker)
         df = clean(df)
+
+        if len(df) < MIN_TRADING_DAYS:
+            print(f"  {ticker:<8} {'SKIPPED':<16} {len(df):<8} rows < {MIN_TRADING_DAYS} minimum — excluded from universe")
+            continue
 
         path = DATA_DIR / f"{ticker}.parquet"
         df.to_parquet(path, engine="pyarrow", compression="snappy")
@@ -133,7 +158,7 @@ def main():
     print(corr)
 
     # average pairwise correlation — lower is better
-    n    = len(TICKER_LIST)
+    n    = len(corr)   # use actual matrix size, not TICKER_LIST (some may be skipped)
     mask = np.ones((n, n), dtype=bool)
     np.fill_diagonal(mask, False)
     avg_corr = corr.values[mask].mean()

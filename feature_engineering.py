@@ -148,7 +148,11 @@ def main():
     all_data = {}
 
     for ticker in TICKER_LIST:
-        df  = pd.read_parquet(DATA_DIR / f"{ticker}.parquet")
+        raw_path = DATA_DIR / f"{ticker}.parquet"
+        if not raw_path.exists():
+            print(f"  {ticker}: raw parquet missing — skipped (run data_pipeline.py first)")
+            continue
+        df  = pd.read_parquet(raw_path)
         df  = engineer(df)
         out = FEATURE_DIR / f"{ticker}.parquet"
         df.to_parquet(out, engine="pyarrow", compression="snappy")
@@ -160,7 +164,7 @@ def main():
 
     print(f"\nReturns matrix: {returns.shape}")
     print("\nAnnualised volatility:")
-    for t in TICKER_LIST:
+    for t in returns.columns:
         ann_vol = returns[t].std() * (252 ** 0.5) * 100
         print(f"  {t} ({ASSET_CLASS[t]}): {ann_vol:.1f}%")
 

@@ -7,7 +7,7 @@ Routing logic:
   equity_index  — MA50/200 + ADX regime switch
   sector_etf    — MA100/300 + ADX (slower, sector rotations take longer)
   stock         — MA50/200 + ADX + volatility filter
-                  high-vol stocks (XOM, AMZN) use wider zscore thresholds
+                  thresholds adapt to each asset's trailing realized vol
   bond          — momentum only, never mean reversion
   commodity     — momentum in fear regime, mean reversion in calm
 
@@ -25,13 +25,6 @@ FEATURE_DIR = Path("data/features")
 SIGNAL_DIR  = Path("data/signals")
 MACRO_DIR   = Path("data/macro")
 SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
-
-# stocks with structurally higher volatility — widen mean reversion thresholds
-# so we don't fade every normal daily swing as if it were an extreme
-HIGH_VOL_STOCKS = {"XOM", "AMZN", "GS"}
-
-# defensive stocks tend to mean-revert strongly — tighten thresholds for faster signals
-DEFENSIVE_STOCKS = {"JNJ", "COST", "NEE", "BRK-B"}
 
 
 def load_macro() -> pd.DataFrame:
@@ -62,19 +55,23 @@ def sector_regime(df: pd.DataFrame) -> pd.Series:
     return ((ma100 > ma300) & (df["adx"] > 20)).astype(int)
 
 
-def stock_regime(df: pd.DataFrame, ticker: str) -> pd.Series:
+def stock_regime(df: pd.DataFrame) -> pd.Series:
     """
-    Individual stocks: MA50/200 + ADX, same as equity index.
-    Defensive stocks (JNJ, COST) spend more time in mean-reversion mode —
-    their businesses are stable so prices revert to fair value quickly.
-    High-vol stocks (XOM, AMZN) need stronger ADX confirmation before we
-    call it a trend, because they have more noise in their price action.
+    Individual stocks: MA50/200 + ADX with a data-driven ADX threshold.
+    More volatile stocks have noisier price action and require stronger trend
+    confirmation — computed from trailing 60-day realized vol, not hardcoded
+    per-ticker. Removes ticker-specific overfitting.
     """
     ma50  = df["Close"].rolling(50).mean()
     ma200 = df["Close"].rolling(200).mean()
 
-    # high-vol stocks require stronger trend confirmation before going momentum
-    adx_threshold = 30 if ticker in HIGH_VOL_STOCKS else 25
+    # Trailing 60-day realized vol (annualized) drives the ADX bar.
+    # Higher vol → higher ADX required before calling it a trend.
+    trailing_vol = df["log_return"].rolling(60, min_periods=20).std() * np.sqrt(252)
+    trailing_vol = trailing_vol.fillna(
+        df["log_return"].expanding(min_periods=10).std() * np.sqrt(252)
+    ).fillna(0.20)
+    adx_threshold = (20 + (trailing_vol * 50).astype(int)).clip(20, 35)
 
     return ((ma50 > ma200) & (df["adx"] > adx_threshold)).astype(int)
 
@@ -134,24 +131,29 @@ def momentum_rule(df: pd.DataFrame) -> pd.Series:
     return pd.Series(np.select([long, short], [1, -1], default=0), index=df.index)
 
 
-def mean_reversion_rule(df: pd.DataFrame, ticker: str = "") -> pd.Series:
+def mean_reversion_rule(df: pd.DataFrame) -> pd.Series:
     """
     Two independent signals agree on extreme: zscore and RSI.
 
-    High-vol stocks (XOM, AMZN, GS): wider thresholds (2.0 / 1.5)
-      because normal daily swings are large — we only want extreme dislocations.
+    Thresholds are computed dynamically from the asset's own trailing 252-day
+    realized volatility — volatile assets get wider bands automatically so we
+    only fade genuine dislocations, not routine daily noise. No ticker-specific
+    hardcoding; new tickers inherit correct thresholds without any code changes.
 
-    Defensive stocks (JNJ, COST, NEE, BRK-B): tighter thresholds (1.2 / 30)
-      because their stable businesses mean even moderate dislocations revert quickly.
-
-    Default: 1.5 zscore / 35 RSI
+      z_thresh = 1.0 + realized_vol  clipped to [1.0, 2.5]
+      rsi_lo   = 30 + int(realized_vol * 20)  clipped to [28, 40]
+      rsi_hi   = 100 - rsi_lo
     """
-    if ticker in HIGH_VOL_STOCKS:
-        z_thresh, rsi_lo, rsi_hi = 2.0, 30, 70
-    elif ticker in DEFENSIVE_STOCKS:
-        z_thresh, rsi_lo, rsi_hi = 1.2, 38, 62
-    else:
-        z_thresh, rsi_lo, rsi_hi = 1.5, 35, 65
+    # Trailing 252-day realized vol (annualized) — no lookahead.
+    # Fall back to expanding vol for the first ~63 days of history.
+    trailing_rvol = df["log_return"].rolling(252, min_periods=63).std() * np.sqrt(252)
+    trailing_rvol = trailing_rvol.fillna(
+        df["log_return"].expanding(min_periods=10).std() * np.sqrt(252)
+    ).fillna(0.20)
+
+    z_thresh = (1.0 + trailing_rvol).clip(1.0, 2.5)
+    rsi_lo   = (30 + (trailing_rvol * 20).astype(int)).clip(28, 40)
+    rsi_hi   = 100 - rsi_lo
 
     long  = (df["zscore_20"] < -z_thresh) & (df["rsi_14"] < rsi_lo)
     short = (df["zscore_20"] >  z_thresh) & (df["rsi_14"] > rsi_hi)
@@ -185,7 +187,11 @@ def compute_scores(df: pd.DataFrame, regime: pd.Series, ticker: str = "") -> pd.
     scores["score_momentum"] = scores[["s_mom20", "s_mom60", "s_macd"]].mean(axis=1)
     scores["score_mean_rev"] = scores[["s_zscore", "s_rsi", "s_bb"]].mean(axis=1)
 
-    mom_weight = regime * 0.6 + 0.2   # 0.8 trending, 0.2 ranging
+    # Structural design weights — NOT optimized per-ticker or per-period.
+    # 0.6/0.2 reflects the strategic choice to weight momentum more heavily
+    # in trending regimes and mean-reversion in ranging regimes. Changing
+    # these would require full framework re-evaluation, not per-asset tuning.
+    mom_weight = regime * 0.6 + 0.2   # 0.8 in trend, 0.2 in range
     rev_weight = 1 - mom_weight
 
     adx_boost = (1 + 0.15 * scores["s_adx"].clip(-2, 2)) * regime
@@ -225,7 +231,7 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     elif asset_class == "sector_etf":
         regime = sector_regime(df)
     elif asset_class == "stock":
-        regime = stock_regime(df, ticker)
+        regime = stock_regime(df)
     elif asset_class == "bond":
         regime = bond_regime(df)
     elif asset_class == "commodity":
@@ -237,7 +243,7 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     out["asset_class"] = asset_class
 
     mom = momentum_rule(df)
-    rev = mean_reversion_rule(df, ticker)  # ticker-aware thresholds
+    rev = mean_reversion_rule(df)  # thresholds adapt to trailing realized vol
 
     # Two separate gates:
     # - regime_gate  : VIX only. MA crossover is a multi-week position signal;
@@ -295,7 +301,11 @@ def main():
     all_signals = {}
 
     for ticker in TICKER_LIST:
-        df  = pd.read_parquet(FEATURE_DIR / f"{ticker}.parquet")
+        feat_path = FEATURE_DIR / f"{ticker}.parquet"
+        if not feat_path.exists():
+            print(f"  {ticker}: feature parquet missing — skipped")
+            continue
+        df  = pd.read_parquet(feat_path)
         sig = generate(df, ticker, macro)
 
         out = SIGNAL_DIR / f"{ticker}.parquet"
