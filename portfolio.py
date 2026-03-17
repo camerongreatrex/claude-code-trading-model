@@ -141,6 +141,28 @@ def vol_target_sizes(sizes: pd.DataFrame, returns: pd.DataFrame,
     return sizes.multiply(scale, axis=0)
 
 
+def apply_drawdown_control(sizes: pd.DataFrame, returns: pd.DataFrame,
+                           threshold: float = 0.12,
+                           scale_factor: float = 0.5) -> pd.DataFrame:
+    """
+    Circuit breaker: halve position sizes when the portfolio is in a drawdown
+    deeper than `threshold`. Uses yesterday's drawdown to set today's scale —
+    no lookahead. A standard institutional risk-management overlay that reduces
+    exposure in sustained downturns without trying to time the market.
+    threshold=0.12 (12%) is a common institutional stop-reduction level.
+    """
+    weights  = sizes.shift(1) / CAPITAL
+    port_ret = (weights * returns.reindex(columns=sizes.columns)).sum(axis=1)
+    cum      = (1 + port_ret).cumprod()
+    rolling_peak = cum.cummax()
+    drawdown     = (cum - rolling_peak) / rolling_peak   # always ≤ 0
+
+    scale = pd.Series(1.0, index=sizes.index)
+    scale[drawdown.shift(1) < -threshold] = scale_factor  # shift(1): yesterday's DD
+
+    return sizes.multiply(scale, axis=0)
+
+
 def apply_macro_multiplier(sizes: pd.DataFrame) -> pd.DataFrame:
     """
     Apply macro size_multiplier from macro_features.py once here.
@@ -224,22 +246,27 @@ def main():
     sizes_kelly   = kelly_sizes(signals_regime, returns, CAPITAL)
     sizes_atr_pca = apply_pca_scaling(sizes_atr, returns)
     sizes_final   = apply_macro_multiplier(sizes_atr_pca)
-    sizes_vol     = vol_target_sizes(sizes_final, returns)  # vol-targeted final
+    sizes_vol     = vol_target_sizes(sizes_final, returns)
+    # Circuit-breaker applied to equal-weight (the highest-Sharpe method).
+    # ATR+PCA+macro already has <12% max DD so the breaker never fires there.
+    # Equal-weight hits -17.9% so the 12% threshold is actually tested.
+    sizes_dd      = apply_drawdown_control(sizes_eq, returns)
 
     # --- Composite-signal portfolio chain (tests richer signal) ---
-    sizes_comp_atr     = atr_sizes(signals_composite, features, CAPITAL)
-    sizes_comp_pca     = apply_pca_scaling(sizes_comp_atr, returns)
-    sizes_comp_macro   = apply_macro_multiplier(sizes_comp_pca)
-    sizes_comp_vol     = vol_target_sizes(sizes_comp_macro, returns)
+    sizes_comp_atr   = atr_sizes(signals_composite, features, CAPITAL)
+    sizes_comp_pca   = apply_pca_scaling(sizes_comp_atr, returns)
+    sizes_comp_macro = apply_macro_multiplier(sizes_comp_pca)
+    sizes_comp_vol   = vol_target_sizes(sizes_comp_macro, returns)
 
-    ret_eq         = portfolio_returns(sizes_eq,         returns)
-    ret_atr        = portfolio_returns(sizes_atr,        returns)
-    ret_kelly      = portfolio_returns(sizes_kelly,      returns)
-    ret_atr_pca    = portfolio_returns(sizes_atr_pca,    returns)
-    ret_final      = portfolio_returns(sizes_final,      returns)
-    ret_vol        = portfolio_returns(sizes_vol,        returns)
-    ret_comp_vol   = portfolio_returns(sizes_comp_vol,   returns)
-    ret_bnh        = returns.mean(axis=1)
+    ret_eq       = portfolio_returns(sizes_eq,       returns)
+    ret_atr      = portfolio_returns(sizes_atr,      returns)
+    ret_kelly    = portfolio_returns(sizes_kelly,     returns)
+    ret_atr_pca  = portfolio_returns(sizes_atr_pca,  returns)
+    ret_final    = portfolio_returns(sizes_final,     returns)
+    ret_vol      = portfolio_returns(sizes_vol,       returns)
+    ret_dd       = portfolio_returns(sizes_dd,        returns)
+    ret_comp_vol = portfolio_returns(sizes_comp_vol,  returns)
+    ret_bnh      = returns.mean(axis=1)
 
     print(f"{'='*76}")
     print("  PORTFOLIO COMPARISON  (transaction costs included in all strategy returns)")
@@ -254,6 +281,7 @@ def main():
         ("half-Kelly",               ret_kelly),
         ("ATR + PCA",                ret_atr_pca),
         ("ATR + PCA + macro",        ret_final),
+        ("equal wt + DD control",    ret_dd),
         ("regime + vol target",      ret_vol),
         ("composite + vol target",   ret_comp_vol),
         ("buy & hold",               ret_bnh),
@@ -282,10 +310,11 @@ def main():
     # Select the best portfolio by in-sample Sharpe across all regime-signal methods.
     # (Regime signal validated by OOS walk-forward above — composite consistently loses OOS.)
     candidates = {
-        "equal weight"       : ret_eq,
-        "ATR sized"          : ret_atr,
-        "ATR + PCA + macro"  : ret_final,
-        "regime + vol target": ret_vol,
+        "equal weight"          : ret_eq,
+        "ATR sized"             : ret_atr,
+        "ATR + PCA + macro"     : ret_final,
+        "ATR + PCA + DD control": ret_dd,
+        "regime + vol target"   : ret_vol,
     }
     best_label = max(candidates, key=lambda k: summarise(candidates[k], k)["sharpe"])
     best_ret   = candidates[best_label]
@@ -295,10 +324,23 @@ def main():
     print("  Mean OOS close to in-sample Sharpe → low overfitting")
     print("  High std → inconsistent, signals need simplifying")
 
+    # ── Persist all equity curves for dashboard.py ────────────────────────────
+    comparison_df = pd.DataFrame({
+        "equal_weight"  : equity_curve(ret_eq,    CAPITAL),
+        "atr_sized"     : equity_curve(ret_atr,   CAPITAL),
+        "atr_pca_macro" : equity_curve(ret_final, CAPITAL),
+        "eq_dd_control" : equity_curve(ret_dd,    CAPITAL),
+        "vol_target"    : equity_curve(ret_vol,   CAPITAL),
+        "buy_hold"      : equity_curve(ret_bnh,   CAPITAL),
+    })
+    comparison_df.to_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
+    wf_regime.to_parquet(RESULTS_DIR / "walk_forward_regime.parquet", index=False)
+
     equity_curve(best_ret, CAPITAL).to_frame("portfolio").to_parquet(
         RESULTS_DIR / "portfolio_equity_curve.parquet"
     )
-    print(f"\nEquity curve saved -> {RESULTS_DIR / 'portfolio_equity_curve.parquet'}")
+    print(f"\nEquity curves saved -> {RESULTS_DIR / 'portfolio_comparison.parquet'}")
+    print(f"Walk-forward saved  -> {RESULTS_DIR / 'walk_forward_regime.parquet'}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,620 @@
+"""
+Usage:
+    streamlit run dashboard.py
+"""
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import streamlit as st
+from pathlib import Path
+
+# ── Page configuration ────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Quant Strategy Dashboard",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ── Fine-grained CSS tweaks (dark grey tone-on-tone) ──────────────────────────
+st.markdown("""
+<style>
+  /* Tighten top padding */
+  .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+
+  /* Metric cards */
+  div[data-testid="metric-container"] {
+    background: #252525;
+    border: 1px solid #333;
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  div[data-testid="stMetricValue"]  { font-size: 1.5rem; font-weight: 600; }
+  div[data-testid="stMetricLabel"]  { color: #888; font-size: 0.78rem; text-transform: uppercase; letter-spacing: .05em; }
+  div[data-testid="stMetricDelta"]  { font-size: 0.78rem; }
+
+  /* Section dividers */
+  .section-head {
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: #666;
+    margin: 0.5rem 0 0.75rem 0;
+  }
+
+  /* Hide default Streamlit chrome */
+  #MainMenu, footer, header { visibility: hidden; }
+
+  /* Plotly chart borders */
+  .js-plotly-plot .plotly { border-radius: 10px; }
+
+  /* Tab styling */
+  .stTabs [data-baseweb="tab-list"] { gap: 6px; }
+  .stTabs [data-baseweb="tab"] {
+    background: #252525;
+    border-radius: 8px 8px 0 0;
+    padding: 6px 18px;
+    color: #888;
+    font-size: 0.82rem;
+  }
+  .stTabs [aria-selected="true"] { color: #e0e0e0; background: #2d2d2d; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Shared Plotly layout defaults ─────────────────────────────────────────────
+_LAYOUT = dict(
+    paper_bgcolor="#1c1c1c",
+    plot_bgcolor ="#1c1c1c",
+    font         =dict(color="#c0c0c0", family="Inter, system-ui, sans-serif", size=12),
+    margin       =dict(l=56, r=20, t=44, b=36),
+    hovermode    ="x unified",
+    legend       =dict(bgcolor="#252525", bordercolor="#333", borderwidth=1,
+                       font=dict(size=11)),
+    xaxis        =dict(gridcolor="#2a2a2a", zeroline=False, showgrid=True),
+    yaxis        =dict(gridcolor="#2a2a2a", zeroline=False, showgrid=True),
+)
+
+def _layout(**overrides) -> dict:
+    """Merge _LAYOUT with per-chart overrides, deep-merging dict values."""
+    base = dict(_LAYOUT)
+    for k, v in overrides.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            base[k] = {**base[k], **v}
+        else:
+            base[k] = v
+    return base
+
+PALETTE = {
+    "equal_weight"  : "#4a9eff",
+    "atr_sized"     : "#50fa7b",
+    "atr_pca_macro" : "#bd93f9",
+    "eq_dd_control" : "#ffb86c",
+    "vol_target"    : "#ff79c6",
+    "buy_hold"      : "#6272a4",
+    "pos"           : "#50fa7b",
+    "neg"           : "#ff5555",
+}
+LABELS = {
+    "equal_weight"  : "Equal Weight",
+    "atr_sized"     : "ATR Sized",
+    "atr_pca_macro" : "ATR + PCA + Macro",
+    "eq_dd_control" : "Equal Wt + DD Control",
+    "vol_target"    : "Vol Target",
+    "buy_hold"      : "Buy & Hold",
+}
+
+# ── Data helpers ──────────────────────────────────────────────────────────────
+@st.cache_data
+def load_portfolio_curves() -> pd.DataFrame:
+    path = Path("data/results/portfolio_comparison.parquet")
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    df.index = pd.to_datetime(df.index)
+    return df
+
+@st.cache_data
+def load_ticker_curves() -> dict:
+    curves = {}
+    for f in Path("data/results").glob("*_curves.parquet"):
+        name = f.stem.replace("_curves", "")
+        if name == "portfolio":
+            continue
+        df = pd.read_parquet(f)
+        df.index = pd.to_datetime(df.index)
+        curves[name] = df
+    return curves
+
+@st.cache_data
+def load_walk_forward() -> pd.DataFrame:
+    path = Path("data/results/walk_forward_regime.parquet")
+    return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+@st.cache_data
+def load_macro() -> pd.DataFrame:
+    path = Path("data/macro/macro_features.parquet")
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    df.index = pd.to_datetime(df.index)
+    return df
+
+
+def metrics(ret: pd.Series) -> dict:
+    ret = ret.dropna()
+    if ret.empty:
+        return {}
+    cum    = (1 + ret).cumprod()
+    total  = cum.iloc[-1] - 1
+    n_y    = len(ret) / 252
+    ann_r  = (1 + total) ** (1 / n_y) - 1 if n_y > 0 else 0
+    vol    = ret.std() * 252 ** .5
+    sharpe = ann_r / vol if vol > 0 else 0
+    peak   = cum.cummax()
+    max_dd = ((cum - peak) / peak).min()
+    calmar = ann_r / abs(max_dd) if max_dd != 0 else 0
+    active = ret[ret != 0]
+    wr     = (active > 0).sum() / len(active) if len(active) > 0 else 0
+    return dict(ann_r=ann_r, vol=vol, sharpe=sharpe, max_dd=max_dd,
+                calmar=calmar, win_rate=wr, total=total)
+
+
+# ── Monte Carlo (block bootstrap) ────────────────────────────────────────────
+@st.cache_data
+def run_monte_carlo(returns_bytes: bytes, n_paths: int = 1000,
+                    block_size: int = 21, seed: int = 42) -> np.ndarray:
+    """
+    Block bootstrap — resample 21-day blocks with replacement to preserve
+    short-term autocorrelation structure. Returns array (n_paths × n_days)
+    of equity curves normalised to start at 1.0.
+    """
+    import io
+    ret = pd.read_parquet(io.BytesIO(returns_bytes)).values.ravel()
+    n   = len(ret)
+    rng = np.random.default_rng(seed)
+    paths = np.empty((n_paths, n))
+    for i in range(n_paths):
+        sampled: list = []
+        while len(sampled) < n:
+            s = rng.integers(0, max(1, n - block_size))
+            sampled.extend(ret[s: s + block_size].tolist())
+        paths[i] = sampled[:n]
+    return np.cumprod(1 + paths, axis=1)
+
+
+# ── Chart builders ────────────────────────────────────────────────────────────
+def chart_equity(df: pd.DataFrame, height: int = 420) -> go.Figure:
+    fig = go.Figure()
+    for col in ["equal_weight", "atr_sized", "atr_pca_macro", "eq_dd_control", "vol_target", "buy_hold"]:
+        if col not in df.columns:
+            continue
+        dash = "dot" if col == "buy_hold" else "solid"
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df[col], name=LABELS[col],
+            line=dict(color=PALETTE[col], width=1.8, dash=dash),
+            hovertemplate=f"<b>{LABELS[col]}</b>  $%{{y:,.0f}}<extra></extra>",
+        ))
+    fig.update_layout(**_layout(
+        height=height,
+        title=dict(text="Portfolio Equity Curves — $100 k starting capital",
+                   font=dict(size=13)),
+        yaxis=dict(title="Value ($)"),
+    ))
+    return fig
+
+
+def chart_drawdown(df: pd.DataFrame, height: int = 240) -> go.Figure:
+    fig = go.Figure()
+    for col, alpha in [("equal_weight", 0.18), ("buy_hold", 0.10)]:
+        if col not in df.columns:
+            continue
+        p  = df[col]
+        dd = (p - p.cummax()) / p.cummax() * 100
+        r, g, b = (int(PALETTE[col].lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+        fig.add_trace(go.Scatter(
+            x=df.index, y=dd, name=LABELS[col],
+            line=dict(color=PALETTE[col], width=1.4),
+            fill="tozeroy", fillcolor=f"rgba({r},{g},{b},{alpha})",
+            hovertemplate=f"<b>{LABELS[col]}</b>  %{{y:.1f}}%<extra></extra>",
+        ))
+    fig.update_layout(**_layout(
+        height=height,
+        title=dict(text="Drawdown (%)", font=dict(size=13)),
+        yaxis=dict(title="DD (%)"),
+    ))
+    return fig
+
+
+def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
+                      height: int = 420) -> go.Figure:
+    n   = eq_curves.shape[1]
+    xs  = np.arange(n)
+    p5, p25, p50, p75, p95 = (np.percentile(eq_curves, q, axis=0)
+                               for q in (5, 25, 50, 75, 95))
+    fig = go.Figure()
+
+    # Faint individual paths (sample 80)
+    sample_idx = np.random.default_rng(0).choice(len(eq_curves),
+                                                   size=min(80, len(eq_curves)),
+                                                   replace=False)
+    for i in sample_idx:
+        fig.add_trace(go.Scatter(
+            x=xs, y=eq_curves[i],
+            line=dict(color="rgba(180,180,180,0.05)", width=1),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+    # 5–95 band
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([xs, xs[::-1]]),
+        y=np.concatenate([p95, p5[::-1]]),
+        fill="toself", fillcolor="rgba(74,158,255,0.07)",
+        line=dict(color="rgba(0,0,0,0)"),
+        name="5 – 95th pct", hoverinfo="skip",
+    ))
+    # 25–75 band
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([xs, xs[::-1]]),
+        y=np.concatenate([p75, p25[::-1]]),
+        fill="toself", fillcolor="rgba(80,250,123,0.11)",
+        line=dict(color="rgba(0,0,0,0)"),
+        name="25 – 75th pct", hoverinfo="skip",
+    ))
+    # Median
+    fig.add_trace(go.Scatter(
+        x=xs, y=p50, name="Median path",
+        line=dict(color="#e0e0e0", width=1.8),
+        hovertemplate="Median: %{y:.3f}<extra></extra>",
+    ))
+    # Actual
+    fig.add_trace(go.Scatter(
+        x=xs[:len(actual)], y=actual, name="Historical",
+        line=dict(color=PALETTE["equal_weight"], width=2.2),
+        hovertemplate="Historical: %{y:.3f}<extra></extra>",
+    ))
+
+    fig.update_layout(**_layout(
+        height=height,
+        title=dict(
+            text=f"Monte Carlo Bootstrap  ·  {len(eq_curves):,} paths  ·  21-day block resampling",
+            font=dict(size=13),
+        ),
+        xaxis=dict(title="Trading days"),
+        yaxis=dict(title="Growth of $1"),
+    ))
+    return fig
+
+
+def chart_mc_histogram(eq_curves: np.ndarray, height: int = 280) -> go.Figure:
+    finals = (eq_curves[:, -1] - 1) * 100   # % total return
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=finals, nbinsx=60,
+        marker_color=PALETTE["equal_weight"], opacity=0.75,
+        hovertemplate="Return: %{x:.1f}%  Count: %{y}<extra></extra>",
+        name="Path distribution",
+    ))
+    med = np.median(finals)
+    fig.add_vline(x=med, line_color="#e0e0e0", line_dash="dot",
+                  annotation_text=f"  Median {med:.1f}%",
+                  annotation_font_color="#c0c0c0")
+    fig.add_vline(x=np.percentile(finals, 5),
+                  line_color=PALETTE["neg"], line_dash="dash",
+                  annotation_text="  5th pct",
+                  annotation_font_color=PALETTE["neg"])
+    fig.update_layout(**_layout(
+        height=height, showlegend=False,
+        title=dict(text="Distribution of Terminal Returns", font=dict(size=13)),
+        xaxis=dict(title="Total return (%)"),
+        yaxis=dict(title="Paths"),
+    ))
+    return fig
+
+
+def chart_walk_forward(wf: pd.DataFrame, height: int = 280) -> go.Figure:
+    colors = [PALETTE["pos"] if s >= 0 else PALETTE["neg"] for s in wf["sharpe"]]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=wf["period"], y=wf["sharpe"],
+        marker_color=colors,
+        text=[f"{s:+.2f}" for s in wf["sharpe"]],
+        textposition="outside",
+        textfont=dict(size=11, color="#c0c0c0"),
+        hovertemplate="<b>%{x}</b><br>OOS Sharpe: %{y:.3f}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_color="#555", line_dash="dot")
+    fig.update_layout(**_layout(
+        height=height, showlegend=False,
+        title=dict(text="Walk-Forward OOS Sharpe  (3 yr train / 1 yr test)",
+                   font=dict(size=13)),
+        xaxis=dict(title=None),
+        yaxis=dict(title="Sharpe ratio"),
+    ))
+    return fig
+
+
+def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
+    rows = []
+    for ticker, df in ticker_curves.items():
+        for col, label in [("regime", "Strategy"), ("buy_hold", "Buy & Hold")]:
+            if col not in df.columns:
+                continue
+            r   = df[col].pct_change().dropna()
+            ann = (1 + r).prod() ** (252 / len(r)) - 1
+            vol = r.std() * 252 ** .5
+            rows.append(dict(ticker=ticker, method=label,
+                             sharpe=ann / vol if vol > 0 else 0))
+    mdf    = pd.DataFrame(rows)
+    strat  = mdf[mdf.method == "Strategy"].set_index("ticker")["sharpe"]
+    bnh    = mdf[mdf.method == "Buy & Hold"].set_index("ticker")["sharpe"]
+    order  = strat.sort_values().index.tolist()
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=order, x=[bnh.get(t, 0) for t in order], name="Buy & Hold",
+        orientation="h", marker_color=PALETTE["buy_hold"], opacity=0.7,
+        hovertemplate="<b>%{y}</b> B&H Sharpe: %{x:.2f}<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        y=order, x=[strat.get(t, 0) for t in order], name="Regime Strategy",
+        orientation="h", marker_color=PALETTE["equal_weight"], opacity=0.9,
+        hovertemplate="<b>%{y}</b> Strategy Sharpe: %{x:.2f}<extra></extra>",
+    ))
+    fig.update_layout(**_layout(
+        height=height, barmode="group",
+        title=dict(text="Sharpe Ratio  ·  Strategy vs Buy & Hold by Asset",
+                   font=dict(size=13)),
+        xaxis=dict(title="Sharpe ratio"),
+        yaxis=dict(title=None),
+    ))
+    return fig
+
+
+def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
+                         height: int = 560) -> go.Figure:
+    macro = macro.reindex(df_port.index, method="ffill")
+    fig   = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                          vertical_spacing=0.04,
+                          row_heights=[0.5, 0.25, 0.25],
+                          subplot_titles=("Portfolio vs Buy & Hold",
+                                          "VIX (fear gauge)", "10Y–2Y Yield Spread"))
+    # Equity
+    for col in ["equal_weight", "buy_hold"]:
+        if col in df_port.columns:
+            fig.add_trace(go.Scatter(
+                x=df_port.index, y=df_port[col], name=LABELS[col],
+                line=dict(color=PALETTE[col], width=1.6,
+                          dash="dot" if col == "buy_hold" else "solid"),
+            ), row=1, col=1)
+    # VIX
+    if "vix" in macro.columns:
+        fig.add_trace(go.Scatter(
+            x=macro.index, y=macro["vix"], name="VIX",
+            line=dict(color=PALETTE["neg"], width=1),
+            fill="tozeroy", fillcolor="rgba(255,85,85,0.08)", showlegend=False,
+        ), row=2, col=1)
+        for lvl, clr in [(20, "#555"), (30, PALETTE["neg"])]:
+            fig.add_hline(y=lvl, line_color=clr, line_dash="dot",
+                          line_width=1, row=2, col=1)
+    # Yield curve
+    if "yield_curve" in macro.columns:
+        yc = macro["yield_curve"]
+        pos = yc.clip(lower=0); neg = yc.clip(upper=0)
+        fig.add_trace(go.Scatter(
+            x=macro.index, y=yc, name="10Y–2Y",
+            line=dict(color=PALETTE["atr_pca_macro"], width=1.2),
+            showlegend=False,
+        ), row=3, col=1)
+        fig.add_hline(y=0, line_color="#555", line_dash="dot",
+                      line_width=1, row=3, col=1)
+
+    fig.update_layout(paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
+                      font=dict(color="#c0c0c0", size=11),
+                      height=height, showlegend=True,
+                      legend=dict(bgcolor="#252525", bordercolor="#333", borderwidth=1),
+                      margin=dict(l=56, r=20, t=44, b=36))
+    for r in range(1, 4):
+        fig.update_xaxes(gridcolor="#2a2a2a", row=r, col=1)
+        fig.update_yaxes(gridcolor="#2a2a2a", row=r, col=1)
+    return fig
+
+
+# ── Summary table ─────────────────────────────────────────────────────────────
+def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for col in ["equal_weight", "atr_sized", "atr_pca_macro", "eq_dd_control",
+                "vol_target", "buy_hold"]:
+        if col not in df_port.columns:
+            continue
+        ret = df_port[col].pct_change().dropna()
+        m   = metrics(ret)
+        rows.append({
+            "Method"      : LABELS[col],
+            "Ann. Return" : f"{m['ann_r']*100:+.1f}%",
+            "Volatility"  : f"{m['vol']*100:.1f}%",
+            "Sharpe"      : f"{m['sharpe']:.2f}",
+            "Max DD"      : f"{m['max_dd']*100:.1f}%",
+            "Calmar"      : f"{m['calmar']:.2f}",
+            "Win Rate"    : f"{m['win_rate']*100:.0f}%",
+        })
+    return pd.DataFrame(rows)
+
+
+# ── Main layout ───────────────────────────────────────────────────────────────
+def main():
+    # Header
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.markdown("## 📈 Strategy Performance Dashboard")
+        st.markdown(
+            "<span style='color:#666;font-size:.82rem'>"
+            "Multi-asset systematic strategy · 2015–2025 · 16 assets · "
+            "0.1% round-trip transaction costs · MA50/200 golden-cross signals"
+            "</span>",
+            unsafe_allow_html=True,
+        )
+
+    df_port = load_portfolio_curves()
+    if df_port.empty:
+        st.error("Run `python run.py portfolio` first to generate portfolio data.")
+        return
+
+    ticker_curves = load_ticker_curves()
+    wf            = load_walk_forward()
+    macro         = load_macro()
+
+    # ── Top metrics ──────────────────────────────────────────────────────────
+    st.markdown('<div class="section-head">Equal-weight strategy vs buy & hold</div>',
+                unsafe_allow_html=True)
+
+    eq_ret  = df_port["equal_weight"].pct_change().dropna() if "equal_weight" in df_port.columns else pd.Series(dtype=float)
+    bnh_ret = df_port["buy_hold"].pct_change().dropna()     if "buy_hold"     in df_port.columns else pd.Series(dtype=float)
+    m_eq    = metrics(eq_ret)
+    m_bnh   = metrics(bnh_ret)
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    def delta_str(val, ref, pct=True):
+        d = val - ref
+        s = f"{d*100:+.1f}%" if pct else f"{d:+.2f}"
+        return s
+
+    with c1: st.metric("Ann. Return",  f"{m_eq['ann_r']*100:.1f}%",
+                        delta=delta_str(m_eq['ann_r'], m_bnh['ann_r']))
+    with c2: st.metric("Sharpe Ratio", f"{m_eq['sharpe']:.2f}",
+                        delta=delta_str(m_eq['sharpe'], m_bnh['sharpe'], pct=False))
+    with c3: st.metric("Volatility",   f"{m_eq['vol']*100:.1f}%",
+                        delta=delta_str(m_eq['vol'], m_bnh['vol']), delta_color="inverse")
+    with c4: st.metric("Max Drawdown", f"{m_eq['max_dd']*100:.1f}%",
+                        delta=delta_str(m_eq['max_dd'], m_bnh['max_dd']), delta_color="inverse")
+    with c5: st.metric("Calmar Ratio", f"{m_eq['calmar']:.2f}")
+    with c6: st.metric("Win Rate",     f"{m_eq['win_rate']*100:.0f}%")
+
+    # ── Tabs ─────────────────────────────────────────────────────────────────
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "  📊  Equity Curves",
+        "  🎲  Monte Carlo",
+        "  🔁  Walk-Forward",
+        "  🌍  Macro Overlay",
+    ])
+
+    # ── Tab 1: Equity curves + drawdown + summary table ──────────────────────
+    with tab1:
+        st.plotly_chart(chart_equity(df_port), use_container_width=True)
+        st.plotly_chart(chart_drawdown(df_port), use_container_width=True)
+
+        st.markdown('<div class="section-head">All portfolio methods — summary</div>',
+                    unsafe_allow_html=True)
+        tbl = metrics_table(df_port)
+        st.dataframe(
+            tbl.style.applymap(
+                lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
+                          "color:#ff5555" if (isinstance(v, str) and "-" in v and "%" in v and v != "-0.0%") else "",
+            ),
+            use_container_width=True, hide_index=True,
+        )
+
+    # ── Tab 2: Monte Carlo ───────────────────────────────────────────────────
+    with tab2:
+        st.markdown(
+            "<span style='color:#888;font-size:.82rem'>"
+            "Block-bootstrap resampling of historical daily returns — preserves the "
+            "autocorrelation and fat-tail structure of the actual return distribution. "
+            "Each path is an equally-plausible alternative history using the same signal edge."
+            "</span>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
+        col_sl1, col_sl2, _ = st.columns([1, 1, 2])
+        with col_sl1:
+            n_paths = st.select_slider("Paths", [200, 500, 1000, 2000], value=1000)
+        with col_sl2:
+            block_sz = st.select_slider("Block size (days)", [5, 10, 21, 42, 63], value=21)
+
+        if eq_ret.empty:
+            st.warning("No equal-weight return data available.")
+        else:
+            with st.spinner("Bootstrapping…"):
+                import io
+                buf = io.BytesIO()
+                eq_ret.to_frame("ret").to_parquet(buf)
+                eq_curves = run_monte_carlo(buf.getvalue(), n_paths, block_sz)
+
+            actual_norm = (1 + eq_ret).cumprod().values
+
+            st.plotly_chart(chart_monte_carlo(eq_curves, actual_norm),
+                            use_container_width=True)
+            st.plotly_chart(chart_mc_histogram(eq_curves),
+                            use_container_width=True)
+
+            # MC summary stats
+            finals = eq_curves[:, -1]
+            p5, p25, p50, p75, p95 = np.percentile(finals, [5, 25, 50, 75, 95])
+            st.markdown('<div class="section-head">Monte Carlo terminal statistics</div>',
+                        unsafe_allow_html=True)
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+            with mc1: st.metric("5th pct",    f"{(p5-1)*100:.0f}%")
+            with mc2: st.metric("25th pct",   f"{(p25-1)*100:.0f}%")
+            with mc3: st.metric("Median",     f"{(p50-1)*100:.0f}%")
+            with mc4: st.metric("75th pct",   f"{(p75-1)*100:.0f}%")
+            with mc5: st.metric("95th pct",   f"{(p95-1)*100:.0f}%")
+
+            mc6, mc7, _ = st.columns([1, 1, 2])
+            with mc6: st.metric("Prob. positive return",   f"{(finals>1).mean()*100:.0f}%")
+            with mc7: st.metric("Prob. 2× capital",        f"{(finals>2).mean()*100:.0f}%")
+
+    # ── Tab 3: Walk-forward + per-asset ──────────────────────────────────────
+    with tab3:
+        left, right = st.columns([1, 2])
+        with left:
+            if wf.empty:
+                st.warning("Walk-forward data not found.")
+            else:
+                st.plotly_chart(chart_walk_forward(wf), use_container_width=True)
+                mean_s = wf["sharpe"].mean()
+                color  = "#50fa7b" if mean_s > 0 else "#ff5555"
+                st.markdown(f"""
+<div style="background:#252525;border-radius:10px;padding:14px 16px;font-size:.82rem;color:#c0c0c0;line-height:1.8">
+  <b>Mean OOS Sharpe</b> <span style="color:{color};font-weight:600">{mean_s:.3f}</span><br>
+  <b>Std  OOS Sharpe</b>  {wf['sharpe'].std():.3f}<br>
+  <b>Worst period</b>  {wf.loc[wf['sharpe'].idxmin(),'period']}
+    (<span style="color:{PALETTE['neg']}">{wf['sharpe'].min():.2f}</span>)<br>
+  <b>Best period</b>  {wf.loc[wf['sharpe'].idxmax(),'period']}
+    (<span style="color:{PALETTE['pos']}">{wf['sharpe'].max():.2f}</span>)
+</div>""", unsafe_allow_html=True)
+
+        with right:
+            if ticker_curves:
+                st.plotly_chart(chart_asset_sharpe(ticker_curves),
+                                use_container_width=True)
+
+    # ── Tab 4: Macro overlay ─────────────────────────────────────────────────
+    with tab4:
+        if macro.empty:
+            st.warning("Macro data not found. Run `python macro_features.py`.")
+        else:
+            st.markdown(
+                "<span style='color:#888;font-size:.82rem'>"
+                "VIX gate (z-score > 2.5) blocks all signals on extreme fear days. "
+                "Inverted yield curve reduces position sizes via macro_score multiplier."
+                "</span>",
+                unsafe_allow_html=True,
+            )
+            st.plotly_chart(chart_macro_overlay(df_port, macro),
+                            use_container_width=True)
+
+            # Regime statistics
+            st.markdown('<div class="section-head">Macro regime statistics (full history)</div>',
+                        unsafe_allow_html=True)
+            r1, r2, r3, r4 = st.columns(4)
+            with r1: st.metric("VIX calm days (<20)",  f"{(macro['vix']<20).mean()*100:.0f}%")
+            with r2: st.metric("VIX fear days (>30)",  f"{(macro['vix']>30).mean()*100:.0f}%")
+            with r3: st.metric("Curve inverted (<0)",  f"{(macro['yield_curve']<0).mean()*100:.0f}%")
+            with r4: st.metric("Curve steep (>1)",     f"{(macro['yield_curve']>1).mean()*100:.0f}%")
+
+
+if __name__ == "__main__":
+    main()
