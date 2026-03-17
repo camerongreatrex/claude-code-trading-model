@@ -6,7 +6,7 @@ Universe spans asset classes AND individual stocks with genuinely different
 economic drivers — the combination gives both macro diversification and
 idiosyncratic alpha opportunities.
 
-Survivorship-bias anchors (GE, INTC, WBA, VZ) are included deliberately.
+Survivorship-bias anchors (GE, INTC, VZ) are included deliberately.
 A realistic 2015 investor would have held these names. Excluding losers
 inflates backtest returns by 2-4% p.a. — a well-known data-mining trap.
 """
@@ -127,7 +127,6 @@ def main():
         # survivorship-bias anchors
         "GE"  : "industrial restructuring, power write-downs, long-term decline",
         "INTC": "process node lag vs TSMC/AMD, fab investment overhang",
-        "WBA" : "PBM margin pressure, opioid litigation, store-closure cycle",
         "VZ"  : "5G capex drag, subscriber pressure, near-zero real return",
     }
 
