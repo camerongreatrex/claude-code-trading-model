@@ -303,7 +303,9 @@ def init_positions():
                      reason="init_golden_cross", trade_date=today_str)
 
     pv = _portfolio_value(state, prices)
-    state["portfolio_value"] = pv
+    # Store INITIAL_CAPITAL as the baseline so "Portfolio Today" on day 1
+    # is measured from $100k, not the post-commission entry value.
+    state["portfolio_value"] = INITIAL_CAPITAL
 
     _append_csv(HISTORY_FILE, {
         "date": today_str, "portfolio_value": round(pv, 2),

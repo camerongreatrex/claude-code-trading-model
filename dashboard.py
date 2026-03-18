@@ -949,7 +949,7 @@ def main():
                 lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
                           "color:#ff5555" if (isinstance(v, str) and "-" in v and "%" in v and v != "-0.0%") else "",
             ),
-            width="stretch", hide_index=True,
+            use_container_width=True, hide_index=True,
         )
 
         # Monthly returns heatmap
@@ -1105,7 +1105,7 @@ def main():
                     "IS Sharpe (full period)"   : "{:.3f}",
                     "OOS Sharpe (walk-fwd mean)": "{:.3f}",
                 }),
-                width="stretch", hide_index=True,
+                use_container_width=True, hide_index=True,
             )
             st.markdown(
                 f"<span style='color:#50fa7b;font-size:.82rem'>"
@@ -1243,12 +1243,12 @@ def main():
                     all_realized   = 0.0
                     today_realized = 0.0
 
-                # today_unrealized = change in position market value vs yesterday
-                # (prev_pv - cash = yesterday's positions value, cash unchanged if no trades)
-                # This matches tot_unreal on day 1 and shows daily drift on later days.
+                # today_unrealized dollar = change vs prev close position value
+                # today_unrealized_pct uses cost_basis denominator (tot_invested)
+                # so it matches the positions table unrealized % exactly.
                 prev_positions_val   = prev_pv - cash
                 today_unrealized     = tot_cur_val - prev_positions_val
-                today_unrealized_pct = (today_unrealized / abs(prev_positions_val) * 100) if prev_positions_val else 0.0
+                today_unrealized_pct = (tot_cur_val / tot_invested - 1) * 100 if tot_invested else 0.0
 
                 # ── GROUP 1: Portfolio Overview ───────────────────────────────
                 st.markdown('<div class="section-head">Portfolio Overview</div>', unsafe_allow_html=True)
@@ -1385,7 +1385,7 @@ def main():
                         .format({"Invested": "${:,.2f}", "Entry $": "${:.2f}",
                                  "Current $": "${:.2f}", "Chg %": "{:+.2f}%",
                                  "Unreal P&L": "${:+,.2f}"}),
-                        width="stretch", hide_index=True,
+                        use_container_width=True, hide_index=True,
                     )
 
 
@@ -1400,7 +1400,7 @@ def main():
                         return ""
                     st.dataframe(
                         recent.style.map(_color_action, subset=["action"]),
-                        width="stretch", hide_index=True,
+                        use_container_width=True, hide_index=True,
                     )
 
                 # ── Kill switch + order sheet ─────────────────────────────────
@@ -1431,7 +1431,7 @@ def main():
                             return ""
                         st.dataframe(
                             orders_df.style.map(_color_order, subset=["action"]),
-                            width="stretch", hide_index=True,
+                            use_container_width=True, hide_index=True,
                         )
                 else:
                     st.caption(
@@ -1504,7 +1504,7 @@ def main():
                              "MA Spread %": "{:+.2f}%", "RSI": "{:.1f}",
                              "20d Ret %": "{:+.1f}%", "60d Ret %": "{:+.1f}%",
                              "Dist High %": "{:+.1f}%"}),
-                    width="stretch", hide_index=True,
+                    use_container_width=True, hide_index=True,
                 )
 
         _live_section()
@@ -1555,14 +1555,15 @@ def main():
 
             cash    = pt_state["cash"]
             prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
+            tot_invested = sum(pos["cost_basis"] for pos in pt_state.get("positions", {}).values())
             tot_cur_val = sum(
                 pos["shares"] * (live_prices.get(t) or pos["entry_price"])
                 for t, pos in pt_state.get("positions", {}).items()
             )
             pv = (tot_cur_val + cash) if live_prices else prev_pv
 
-            # Portfolio today %
-            port_today_pct = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
+            # Portfolio today % — uses cost_basis denominator to match positions table.
+            port_today_pct = (tot_cur_val / tot_invested - 1) * 100 if tot_invested else 0.0
 
             # SPY % from yesterday's close (matches TradingView / Yahoo Finance display).
             # spy_pct_from_prev is None when the daily fetch failed — fall back to
@@ -1779,7 +1780,7 @@ def main():
                             .map(_color_beat, subset=["Beating S&P"])
                             .format({"Portfolio %": "{:+.2f}%", "S&P 500 %": "{:+.2f}%",
                                      "Alpha": "{:+.2f}%"}),
-                            width="stretch", hide_index=True,
+                            use_container_width=True, hide_index=True,
                         )
 
                     st.caption(

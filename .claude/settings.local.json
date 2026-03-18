@@ -20,7 +20,9 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\(''dashboard.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''dashboard.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''dashboard.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''dashboard.py''\\).read\\(\\)\\); ast.parse\\(open\\(''paper_trader.py''\\).read\\(\\)\\); print\\(''OK''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''dashboard.py''\\).read\\(\\)\\); ast.parse\\(open\\(''paper_trader.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(python3 -c \"import json; s=json.load\\(open\\(''data/paper_trading/state.json''\\)\\); print\\(''portfolio_value:'', s[''portfolio_value'']\\); print\\(''cash:'', s[''cash'']\\)\")",
+      "Bash(python3 -c \":*)"
     ]
   }
 }
