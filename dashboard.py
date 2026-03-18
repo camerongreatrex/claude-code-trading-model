@@ -658,12 +658,30 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             decreasing=dict(line=dict(color="#ff5555", width=1),
                             fillcolor="rgba(255,85,85,0.7)"),
         ))
+        # After the last real candle, draw a flat dotted line to current time so
+        # the chart never looks "cut off" — market closed = straight horizontal line.
+        if now is not None and now > intraday_df.index[-1]:
+            _lv = float(intraday_df["close"].iloc[-1])
+            fig.add_trace(go.Scatter(
+                x=[intraday_df.index[-1], now],
+                y=[_lv, _lv],
+                mode="lines",
+                line=dict(color="#4a9eff", width=1.5, dash="dot"),
+                showlegend=False,
+                hovertemplate="<b>Portfolio</b> (market closed)<br>%{x|%H:%M} $%{y:,.0f}<extra></extra>",
+            ))
 
     # ── S&P 500 benchmark (subtle dashed line, normalized to same start) ──────
     if spy_curve is not None and not spy_curve.empty:
+        # Extend SPY benchmark to current time (flat after close)
+        _spy_x = list(spy_curve.index)
+        _spy_y = list(spy_curve.values)
+        if now is not None and now > pd.Timestamp(_spy_x[-1]):
+            _spy_x.append(now)
+            _spy_y.append(_spy_y[-1])
         fig.add_trace(go.Scatter(
-            x=spy_curve.index,
-            y=spy_curve.values,
+            x=_spy_x,
+            y=_spy_y,
             name="S&P 500",
             line=dict(color="#7878aa", width=1.2, dash="dot"),
             opacity=0.6,
@@ -767,13 +785,11 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             xanchor="left",
         )
 
-    # x_range is computed once on page load (session_state) and passed in.
-    # Keeping it constant across 5s fragment refreshes is what allows uirevision
-    # to actually preserve user zoom — a changing range overrides it every time.
     if x_range is None:
         _now = now or pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
         _today = _now.strftime('%Y-%m-%d')
-        x_range = [f"{_today}T09:25:00", f"{_today}T16:05:00"]
+        _right = max(_now, pd.Timestamp(_today + " 16:05:00"))
+        x_range = [f"{_today}T09:25:00", _right.strftime('%Y-%m-%dT%H:%M:00')]
 
     fig.update_layout(**_layout(
         height=height,
@@ -1285,15 +1301,16 @@ def main():
                     )
 
                 # ── Equity chart ──────────────────────────────────────────────
-                # x_range cached once per page load → constant across 5s refreshes
-                # → uirevision can actually preserve user zoom (changing range overrides it)
                 _today = now.strftime('%Y-%m-%d')
-                # Reset range if it's a new day (dashboard left open overnight)
+                # Right edge tracks current time (or 16:05 if before close),
+                # so the flat post-close line is always visible.
+                _right = max(now, pd.Timestamp(_today + " 16:05:00"))
+                _right_str = _right.strftime('%Y-%m-%dT%H:%M:00')
                 _cached = st.session_state.get("paper_chart_x_range", ["", ""])
-                if not _cached[0].startswith(_today):
+                if not _cached[0].startswith(_today) or _cached[1] < _right_str:
                     st.session_state["paper_chart_x_range"] = [
                         f"{_today}T09:25:00",
-                        f"{_today}T16:05:00",
+                        _right_str,
                     ]
 
                 st.plotly_chart(
@@ -1592,15 +1609,27 @@ def main():
                 fig_intra = go.Figure()
 
                 if not intraday_df.empty and "close" in intraday_df.columns:
+                    # Extend portfolio line to current time (flat after last bar)
+                    _port_x = list(intraday_df.index)
+                    _port_y = list(intraday_df["close"])
+                    if now_et > pd.Timestamp(_port_x[-1]):
+                        _port_x.append(now_et)
+                        _port_y.append(_port_y[-1])
                     fig_intra.add_trace(go.Scatter(
-                        x=intraday_df.index, y=intraday_df["close"],
+                        x=_port_x, y=_port_y,
                         name="My Portfolio", line=dict(color="#4a9eff", width=2),
                         hovertemplate="<b>Portfolio</b><br>%{x|%H:%M}  $%{y:,.0f}<extra></extra>",
                     ))
 
                 if not spy_intraday.empty:
+                    # Extend SPY line to current time (flat after last bar)
+                    _spy_x = list(spy_intraday.index)
+                    _spy_y = list(spy_intraday.values)
+                    if now_et > pd.Timestamp(_spy_x[-1]):
+                        _spy_x.append(now_et)
+                        _spy_y.append(_spy_y[-1])
                     fig_intra.add_trace(go.Scatter(
-                        x=spy_intraday.index, y=spy_intraday.values,
+                        x=_spy_x, y=_spy_y,
                         name="S&P 500 (SPY)", line=dict(color="#ffb86c", width=2, dash="dot"),
                         hovertemplate="<b>S&P 500</b><br>%{x|%H:%M}  $%{y:,.0f}<extra></extra>",
                     ))
@@ -1612,6 +1641,7 @@ def main():
                                     line=dict(color="#888", dash="dot", width=1))
 
                 _vs_today = now_et.strftime('%Y-%m-%d')
+                _vs_right = max(now_et, pd.Timestamp(_vs_today + " 16:05:00"))
                 fig_intra.update_layout(**_layout(
                     height=300, uirevision="vs_spy_intra",
                     dragmode="pan",
@@ -1619,7 +1649,7 @@ def main():
                                font=dict(size=12)),
                     yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
                     xaxis=dict(type="date", tickformat="%H:%M", rangeslider=dict(visible=False),
-                               range=[f"{_vs_today}T09:25:00", f"{_vs_today}T16:05:00"]),
+                               range=[f"{_vs_today}T09:25:00", _vs_right.strftime('%Y-%m-%dT%H:%M:00')]),
                     margin=dict(l=70),
                 ))
                 st.plotly_chart(fig_intra, theme=None, width="stretch",
