@@ -77,7 +77,7 @@ def _append_csv(path: Path, record: dict):
 
 # ── Live data fetcher (yfinance, free, no API key) ────────────────────────────
 
-def _fetch_daily(ticker: str, lookback_days: int = 320) -> pd.DataFrame:
+def _fetch_daily(ticker: str, lookback_days: int = 700) -> pd.DataFrame:
     end   = datetime.today()
     start = end - timedelta(days=lookback_days)
     df = yf.download(
@@ -274,9 +274,14 @@ def init_positions():
     longs = [t for t, s in signals.items() if s["signal"] == 1]
     print(f"\n{len(longs)}/{len(signals)} tickers: LONG signal — entering positions...\n")
 
+    # Distribute capital across ALL active signals.
+    # ATR sizing can exceed 100% of capital when many tickers are LONG simultaneously,
+    # so we cap each position at capital / n_longs to ensure all signals are represented.
+    per_position_cap = (INITIAL_CAPITAL * 0.97) / max(len(longs), 1)
+
     for ticker in longs:
         sig  = signals[ticker]
-        size = _atr_size(INITIAL_CAPITAL, sig["atr"], sig["close"])
+        size = min(_atr_size(INITIAL_CAPITAL, sig["atr"], sig["close"]), per_position_cap)
         state = _buy(state, ticker, sig["close"], size,
                      reason="init_golden_cross", trade_date=today_str)
 
@@ -297,7 +302,7 @@ def init_positions():
     print(f"  Cash        : ${state['cash']:>10,.2f}")
     print(f"  Total value : ${pv:>10,.2f}")
     print(f"{'='*52}")
-    print(f"\nState → {STATE_FILE}")
+    print(f"\nState -> {STATE_FILE}")
     print("Run 'python paper_trader.py run' (or scheduler.py) after each close.")
 
 

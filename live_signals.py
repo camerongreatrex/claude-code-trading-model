@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from data_pipeline import TICKER_LIST, ASSET_CLASS
 
 
-def fetch_live_data(tickers: list, lookback_days: int = 320) -> dict:
+def fetch_live_data(tickers: list, lookback_days: int = 700) -> dict:
     """
     Download the last `lookback_days` of OHLCV data for each ticker.
     Returns dict[ticker -> DataFrame].  Tickers that fail are silently skipped.
@@ -143,7 +143,7 @@ def get_live_signals() -> tuple[pd.DataFrame, str]:
         Ticker, Asset Class, Price, Day Chg %, Signal, MA Spread %,
         RSI, 20d Ret %, 60d Ret %, Dist from High %, Last Date
     """
-    raw     = fetch_live_data(TICKER_LIST, lookback_days=320)
+    raw     = fetch_live_data(TICKER_LIST, lookback_days=700)
     rows    = []
 
     for ticker in TICKER_LIST:

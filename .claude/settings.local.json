@@ -12,7 +12,11 @@
       "Bash(python -c \"from scheduler import check_kill_switch, ORDERS_FILE; print\\(''dashboard scheduler import OK''\\)\")",
       "Bash(python macro_features.py)",
       "Bash(python run.py portfolio)",
-      "Bash(python -c \"import streamlit as st; print\\(st.__version__\\)\")"
+      "Bash(python -c \"import streamlit as st; print\\(st.__version__\\)\")",
+      "Bash(python paper_trader.py init)",
+      "Bash(python paper_trader.py status)",
+      "Bash(del \"c:\\\\Users\\\\Cameron\\\\Desktop\\\\Algorithmic Trading\\\\data\\\\paper_trading\\\\state.json\")",
+      "Bash(del \"c:\\\\Users\\\\Cameron\\\\Desktop\\\\Algorithmic Trading\\\\data\\\\paper_trading\\\\history.csv\")"
     ]
   }
 }

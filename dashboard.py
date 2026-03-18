@@ -715,7 +715,7 @@ def main():
                     unsafe_allow_html=True)
         tbl = metrics_table(df_port)
         st.dataframe(
-            tbl.style.applymap(
+            tbl.style.map(
                 lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
                           "color:#ff5555" if (isinstance(v, str) and "-" in v and "%" in v and v != "-0.0%") else "",
             ),
@@ -1021,7 +1021,7 @@ def main():
 
                 st.dataframe(
                     pos_df.style
-                    .applymap(_color_pnl, subset=["Chg %", "Unreal P&L"])
+                    .map(_color_pnl, subset=["Chg %", "Unreal P&L"])
                     .format({"Entry": "${:.2f}", "Current": "${:.2f}",
                              "Chg %": "{:+.2f}%", "Unreal P&L": "${:+,.2f}"}),
                     width="stretch", hide_index=True,
@@ -1038,7 +1038,7 @@ def main():
                     if v == "SELL": return "color:#ff5555;font-weight:600"
                     return ""
                 st.dataframe(
-                    recent.style.applymap(_color_action, subset=["action"]),
+                    recent.style.map(_color_action, subset=["action"]),
                     width="stretch", hide_index=True,
                 )
 
@@ -1073,7 +1073,7 @@ def main():
                         if v in ("FLAT", "SKIP", "NO_DATA"): return "color:#555"
                         return ""
                     st.dataframe(
-                        orders_df.style.applymap(_color_order, subset=["action"]),
+                        orders_df.style.map(_color_order, subset=["action"]),
                         width="stretch", hide_index=True,
                     )
             else:
@@ -1154,7 +1154,7 @@ def main():
             st.dataframe(
                 live_df.style
                 .apply(_style_live, axis=1)
-                .applymap(_color_cell, subset=["Signal", "Day Chg %", "MA Spread %",
+                .map(_color_cell, subset=["Signal", "Day Chg %", "MA Spread %",
                                                "20d Ret %", "60d Ret %", "Dist High %"])
                 .format({"Price": "${:.2f}", "Day Chg %": "{:+.2f}%",
                          "MA Spread %": "{:+.2f}%", "RSI": "{:.1f}",

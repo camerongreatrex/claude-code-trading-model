@@ -1,0 +1,39 @@
+{
+  "cash": -50.0,
+  "positions": {
+    "SPY": {
+      "shares": 29.81559154896129,
+      "entry_price": 670.7899780273438,
+      "entry_date": "2026-03-18",
+      "cost_basis": 20000.0
+    },
+    "IWM": {
+      "shares": 79.98400222318814,
+      "entry_price": 250.0500030517578,
+      "entry_date": "2026-03-18",
+      "cost_basis": 20000.0
+    },
+    "EEM": {
+      "shares": 340.4255319148936,
+      "entry_price": 58.75,
+      "entry_date": "2026-03-18",
+      "cost_basis": 20000.0
+    },
+    "GLD": {
+      "shares": 43.54736969195831,
+      "entry_price": 459.2699890136719,
+      "entry_date": "2026-03-18",
+      "cost_basis": 20000.0
+    },
+    "XLE": {
+      "shares": 341.8219205902708,
+      "entry_price": 58.5099983215332,
+      "entry_date": "2026-03-18",
+      "cost_basis": 20000.0
+    }
+  },
+  "initial_capital": 100000.0,
+  "initialized_date": "2026-03-18",
+  "last_eod_date": "2026-03-18",
+  "portfolio_value": 99950.0
+}

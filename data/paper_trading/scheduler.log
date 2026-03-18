@@ -1,0 +1,4 @@
+2026-03-17 23:57:26  INFO     Scheduler started.  Will fire EOD at 16:45 ET on weekdays.
+2026-03-17 23:57:26  INFO     Kill-switch threshold: 15% rolling 20-day loss
+2026-03-17 23:57:26  INFO     Log file: data\paper_trading\scheduler.log
+2026-03-18 00:00:26  INFO     Heartbeat  |  ET 00:00  |  Portfolio $100,000  (+0.00%)  |  Next EOD: 16:45
