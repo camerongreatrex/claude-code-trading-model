@@ -54,6 +54,13 @@ TICKERS = {
     "GS"  : "stock",          # Investment banking — M&A volumes, capital markets, trading revenue
     "COST": "stock",          # Consumer staples — defensive, membership model, recession resistant
 
+    # --- High-growth tech: included because a 2015 investor would have considered both ---
+    # MSFT was a Dow Jones component in 2015 ($45B revenue, #1 enterprise software).
+    # NVDA was a $8B GPU/gaming co in 2015 — smaller but liquid and actively traded.
+    # Excluding the decade's biggest winners is its own form of survivorship bias.
+    "MSFT": "stock",          # Enterprise cloud — Azure, Office 365, AI; different customer from AMZN AWS
+    "NVDA": "stock",          # GPU/AI silicon — data center + gaming; driven by AI compute demand
+
     # --- Survivorship-bias anchors: underperformers 2015-2025 ---
     # A 2015 investor would have held these large-cap names. Excluding them
     # would inflate backtest returns by omitting known losers (survivorship bias).
@@ -70,7 +77,7 @@ ASSET_CLASS = TICKERS
 TICKER_LIST = list(TICKERS.keys())
 
 START = "2015-01-01"
-END   = "2025-01-01"
+END   = "2026-01-01"
 
 DATA_DIR = Path("data/raw")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -124,6 +131,8 @@ def main():
         "BRK-B":"insurance float, railroads, consumer brands",
         "GS"  : "M&A volumes, IPO market, trading revenue",
         "COST": "membership model, consumer staples, defensive",
+        "MSFT": "Azure cloud share gain, Office 365, AI integration (OpenAI partnership)",
+        "NVDA": "GPU data center, AI training/inference demand, gaming",
         # survivorship-bias anchors
         "GE"  : "industrial restructuring, power write-downs, long-term decline",
         "INTC": "process node lag vs TSMC/AMD, fab investment overhang",

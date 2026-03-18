@@ -6,24 +6,19 @@ and portfolio.py.
 Install if needed: pip install pandas-datareader
 """
 
+import io
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 from pathlib import Path
-
-try:
-    from pandas_datareader import data as pdr
-    FRED_AVAILABLE = True
-except ImportError:
-    FRED_AVAILABLE = False
-    print("pandas-datareader not installed — pip install pandas-datareader")
 
 DATA_DIR  = Path("data/raw")
 MACRO_DIR = Path("data/macro")
 MACRO_DIR.mkdir(parents=True, exist_ok=True)
 
 START = "2015-01-01"
-END   = "2025-01-01"
+END   = "2026-01-01"
 
 
 def fetch_vix() -> pd.DataFrame:
@@ -56,27 +51,35 @@ def fetch_vix() -> pd.DataFrame:
 
 def fetch_yield_curve() -> pd.DataFrame:
     """
-    10Y-2Y Treasury spread from FRED. The most reliable recession indicator.
-    >1.0 = steep/expansionary, 0-1 = flattening/late cycle, <0 = inverted/recession risk.
-    """
-    if FRED_AVAILABLE:
-        print("  Fetching yield curve from FRED...")
-        try:
-            spread = pdr.DataReader("T10Y2Y", "fred", start=START, end=END)
-            spread.index = pd.to_datetime(spread.index).tz_localize(None)
-            spread = spread.rename(columns={"T10Y2Y": "yield_curve"})
-            return spread.ffill()
-        except Exception as e:
-            print(f"  FRED failed ({e}), using VIX proxy")
+    10Y-2Y Treasury spread from FRED public CSV (no API key, no library needed).
+    The most reliable recession indicator: >1 = steep, 0-1 = flat, <0 = inverted.
 
-    # Do NOT use VIX to proxy the yield curve — that creates circular correlation
-    # (macro_score would then be 2/3 VIX-driven instead of 1/3).
-    # Return a neutral flat curve (0 spread) so macro_score degrades gracefully.
-    print("  FRED unavailable — yield curve set to neutral (0). Install pandas-datareader for real data.")
-    vix = fetch_vix()
-    proxy = pd.DataFrame(index=vix.index)
-    proxy["yield_curve"] = 0.0
-    return proxy
+    Uses direct CSV download — pandas-datareader is incompatible with Python 3.12+
+    (distutils removed) so we bypass it entirely.
+    """
+    print("  Fetching yield curve from FRED...")
+    try:
+        url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y2Y"
+        r   = requests.get(url, timeout=15)
+        r.raise_for_status()
+        df  = pd.read_csv(
+            io.StringIO(r.text),
+            parse_dates=["observation_date"],
+            index_col="observation_date",
+        )
+        df.columns     = ["yield_curve"]
+        df.index.name  = "Date"
+        df.index       = pd.to_datetime(df.index).tz_localize(None)
+        df             = df.replace(".", np.nan).astype(float)
+        df             = df[(df.index >= START) & (df.index <= END)]
+        return df.ffill().dropna()
+    except Exception as e:
+        # Do NOT use VIX to proxy — creates circular correlation.
+        # Return neutral (0) so macro_score degrades gracefully.
+        print(f"  FRED fetch failed ({e}) — yield curve set to neutral (0).")
+        vix   = fetch_vix()
+        proxy = pd.DataFrame({"yield_curve": 0.0}, index=vix.index)
+        return proxy
 
 
 def compute_macro_features(vix: pd.DataFrame, curve: pd.DataFrame) -> pd.DataFrame:

@@ -34,11 +34,11 @@ from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo       # stdlib since Python 3.9
 
+from data_pipeline import TICKER_LIST, ASSET_CLASS
 from paper_trader import (
     load_state, load_history, end_of_day_update,
-    _fetch_daily, compute_signal,
+    compute_live_signals, _fetch_daily, _atr_size,
     INITIAL_CAPITAL, PT_DIR,
-    TICKER_LIST, ASSET_CLASS,
 )
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -140,26 +140,22 @@ def generate_order_sheet(signals: dict, state: dict):
     """
     Write tomorrow's expected order list to orders_tomorrow.json.
 
-    A real desk produces this the night before so the execution trader
-    knows exactly what to do at the open without running code in the morning.
+    Uses the signals dict from compute_live_signals() — which already has
+    all strategy filters applied (RSI entry, min-hold, ATR trailing stop).
+    The signal field is the final 0/1 decision; no need to re-implement logic here.
 
     Format:
       {
         "generated_at": "2026-03-17 16:47:22",
         "for_date":     "2026-03-18",
         "orders": [
-          { "ticker": "SPY",  "action": "HOLD",  "reason": "in position, signal LONG" },
-          { "ticker": "AMZN", "action": "BUY",   "size_usd": 5200.0, "signal": "golden_cross" },
-          { "ticker": "GE",   "action": "SELL",  "reason": "death_cross" },
+          { "ticker": "SPY",  "action": "HOLD",  "unrealised_pnl": 320.0 },
+          { "ticker": "AMZN", "action": "BUY",   "size_usd": 5200.0 },
+          { "ticker": "GE",   "action": "SELL",  "reason": "signal_exit" },
           ...
         ]
       }
     """
-    from paper_trader import (
-        _atr_position_size, _trailing_stop_hit, _update_trailing_high,
-        MIN_HOLD_DAYS, RSI_OVERBOUGHT,
-    )
-
     positions     = state.get("positions", {})
     cash          = state.get("cash", INITIAL_CAPITAL)
     pv            = state.get("portfolio_value", INITIAL_CAPITAL)
@@ -172,70 +168,48 @@ def generate_order_sheet(signals: dict, state: dict):
             orders.append({"ticker": ticker, "action": "NO_DATA"})
             continue
 
-        price = sig["close"]
+        price  = sig["close"]
+        signal = sig["signal"]   # 0 or 1 — all filters already applied by signal_generation.py
 
         if ticker in current_longs:
-            pos = positions[ticker]
-            # Check trailing stop
-            if _trailing_stop_hit(pos, price, sig.get("atr")):
+            pos     = positions[ticker]
+            unr_pnl = round((price - pos["entry_price"]) * pos["shares"], 2)
+            if signal == 0:
                 orders.append({
-                    "ticker": ticker, "action": "SELL",
-                    "price_last": round(price, 2),
-                    "reason": f"trailing_stop (high={pos.get('trailing_high', pos['entry_price']):.2f})",
-                    "entry_price": pos["entry_price"],
-                    "unrealised_pnl": round((price - pos["entry_price"]) * pos["shares"], 2),
+                    "ticker"        : ticker,
+                    "action"        : "SELL",
+                    "price_last"    : round(price, 2),
+                    "reason"        : "signal_exit (death cross / trailing stop / RSI filter)",
+                    "entry_price"   : pos["entry_price"],
+                    "unrealised_pnl": unr_pnl,
                 })
-                continue
-            # Check death cross
-            if not sig["golden_cross"]:
-                entry  = pd.to_datetime(pos["entry_date"])
-                held   = (pd.to_datetime(date.today()) - entry).days
-                if held >= MIN_HOLD_DAYS:
-                    orders.append({
-                        "ticker": ticker, "action": "SELL",
-                        "price_last": round(price, 2),
-                        "reason": "death_cross",
-                        "entry_price": pos["entry_price"],
-                        "unrealised_pnl": round((price - pos["entry_price"]) * pos["shares"], 2),
-                    })
-                    continue
-                else:
-                    orders.append({
-                        "ticker": ticker, "action": "HOLD",
-                        "reason": f"death_cross but min_hold not met ({held}/{MIN_HOLD_DAYS} days)",
-                    })
-                    continue
-            orders.append({
-                "ticker": ticker, "action": "HOLD",
-                "reason": "in position, signal LONG",
-                "unrealised_pnl": round((price - pos["entry_price"]) * pos["shares"], 2),
-            })
-
+            else:
+                orders.append({
+                    "ticker"        : ticker,
+                    "action"        : "HOLD",
+                    "reason"        : "signal LONG — hold",
+                    "unrealised_pnl": unr_pnl,
+                })
         else:
-            # Potential new entry
-            if sig["golden_cross"]:
-                if not sig["rsi_ok"]:
-                    orders.append({
-                        "ticker": ticker, "action": "SKIP",
-                        "reason": f"golden_cross but RSI={sig['rsi']:.0f} > {RSI_OVERBOUGHT} (overbought)",
-                    })
-                elif cash < _atr_position_size(pv, sig.get("atr"), price) * 1.01:
-                    orders.append({
-                        "ticker": ticker, "action": "SKIP",
-                        "reason": "golden_cross but insufficient cash",
-                    })
-                else:
-                    size = _atr_position_size(pv, sig.get("atr"), price)
+            if signal == 1:
+                size = _atr_size(pv, sig.get("atr"), price)
+                if cash >= size * 1.01:
                     orders.append({
                         "ticker"    : ticker,
                         "action"    : "BUY",
                         "size_usd"  : round(size, 2),
                         "shares_est": round(size / price, 3),
                         "price_last": round(price, 2),
-                        "reason"    : "golden_cross + RSI ok",
+                        "reason"    : "signal_entry",
+                    })
+                else:
+                    orders.append({
+                        "ticker": ticker,
+                        "action": "SKIP",
+                        "reason": f"signal LONG but insufficient cash (need ${size:,.0f}, have ${cash:,.0f})",
                     })
             else:
-                orders.append({"ticker": ticker, "action": "FLAT", "reason": "death_cross, no position"})
+                orders.append({"ticker": ticker, "action": "FLAT", "reason": "signal FLAT"})
 
     sheet = {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -276,7 +250,7 @@ def _et_now() -> datetime:
 # ── Main EOD job ──────────────────────────────────────────────────────────────
 
 def run_eod_job():
-    """Full end-of-day pipeline: validate → kill switch → update → order sheet."""
+    """Full end-of-day pipeline: kill switch → update → validate → order sheet."""
     log.info("=" * 60)
     log.info("EOD pipeline starting")
 
@@ -285,30 +259,24 @@ def run_eod_job():
         log.warning("Kill switch active — EOD update skipped.  Review portfolio.")
         return
 
-    # Fetch signals with data validation
-    log.info("Fetching & validating prices…")
-    raw_signals = {}
-    for ticker in TICKER_LIST:
-        try:
-            df  = _fetch_daily(ticker)
-            raw_signals[ticker] = compute_signal(df, ticker)
-        except Exception as e:
-            log.warning(f"  {ticker}: fetch error — {e}")
-
-    clean_signals = validate_prices(raw_signals)
-    skipped = set(TICKER_LIST) - set(clean_signals)
-    if skipped:
-        log.warning(f"Data validation removed: {sorted(skipped)}")
-
-    # Run EOD update (paper_trader handles its own signal fetch internally,
-    # but we log our validation results here for audit trail)
-    log.info("Running EOD position update…")
+    # Run EOD update — paper_trader fetches live signals and executes trades
+    log.info("Running EOD position update...")
     end_of_day_update()
 
-    # Generate order sheet for tomorrow
-    state = load_state()
-    if state:
-        generate_order_sheet(clean_signals, state)
+    # Fetch signals separately for data validation logging and order sheet
+    log.info("Fetching signals for order sheet and data validation...")
+    try:
+        raw_signals   = compute_live_signals()
+        clean_signals = validate_prices(raw_signals)
+        skipped       = set(TICKER_LIST) - set(clean_signals)
+        if skipped:
+            log.warning(f"Data validation flagged tickers: {sorted(skipped)}")
+
+        state = load_state()
+        if state:
+            generate_order_sheet(clean_signals, state)
+    except Exception as e:
+        log.error(f"Order sheet generation failed: {e}", exc_info=True)
 
     log.info("EOD pipeline complete")
     log.info("=" * 60)

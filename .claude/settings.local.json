@@ -9,7 +9,8 @@
       "Bash(pip install:*)",
       "Bash(python -c \"from paper_trader import load_state, load_trades, load_history, get_intraday_curve, INITIAL_CAPITAL; print\\(''paper_trader imports OK''\\)\")",
       "Bash(python -c \"from scheduler import check_kill_switch, validate_prices; print\\(''scheduler imports OK''\\)\")",
-      "Bash(python -c \"from scheduler import check_kill_switch, ORDERS_FILE; print\\(''dashboard scheduler import OK''\\)\")"
+      "Bash(python -c \"from scheduler import check_kill_switch, ORDERS_FILE; print\\(''dashboard scheduler import OK''\\)\")",
+      "Bash(python macro_features.py)"
     ]
   }
 }

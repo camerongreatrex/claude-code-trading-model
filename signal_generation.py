@@ -31,7 +31,7 @@ MIN_HOLD_DAYS     = 5     # 1 trading week. Hold at least this long before a dea
                            # trip commissions on the same week's whipsaw.
 ATR_TRAILING_MULT = 3.0   # Exit if price drops 3× ATR below trailing high since entry.
                            # 3× is a published institutional standard (gives room to
-                           # breathe while protecting against structural deterioration)., EQUITY_LIKE
+                           # breathe while protecting against structural deterioration).
 
 FEATURE_DIR = Path("data/features")
 SIGNAL_DIR  = Path("data/signals")
