@@ -213,7 +213,13 @@ def chart_equity(df: pd.DataFrame, height: int = 420) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=df.index, y=df[col], name=LABELS[col],
             line=dict(color=PALETTE[col], width=1.8, dash=dash),
-            hovertemplate=f"<b>{LABELS[col]}</b>  $%{{y:,.0f}}<extra></extra>",
+            hovertemplate=(
+                f"<b>{LABELS[col]}</b><br>"
+                "$%{y:,.0f}<br>"
+                "<i>Total portfolio value on this date (started at $100k).<br>"
+                "A rising line means the strategy is making money.</i>"
+                "<extra></extra>"
+            ),
         ))
     fig.update_layout(**_layout(
         height=height,
@@ -238,7 +244,14 @@ def chart_drawdown(df: pd.DataFrame, height: int = 420) -> go.Figure:
             x=df.index, y=dd, name=LABELS[col],
             line=dict(color=PALETTE[col], width=1.4),
             fill="tozeroy", fillcolor=f"rgba({r},{g},{b},{alpha})",
-            hovertemplate=f"<b>{LABELS[col]}</b>  %{{y:.1f}}%<extra></extra>",
+            hovertemplate=(
+                f"<b>{LABELS[col]}</b><br>"
+                "%{y:.1f}% from peak<br>"
+                "<i>How far the portfolio has fallen from its all-time high.<br>"
+                "-15% means it lost 15% from the top before recovering.<br>"
+                "Smaller magnitude = shallower dip = better risk control.</i>"
+                "<extra></extra>"
+            ),
         ))
     fig.update_layout(**_layout(
         height=height,
@@ -296,13 +309,25 @@ def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
     fig.add_trace(go.Scatter(
         x=xs, y=p50, name="Median path",
         line=dict(color="#e0e0e0", width=1.8),
-        hovertemplate="Median: %{y:.3f}<extra></extra>",
+        hovertemplate=(
+            "<b>Day %{x}</b><br>"
+            "Median simulated: %{y:.2f}× starting capital<br>"
+            "<i>Half of all simulated paths are above this, half below.<br>"
+            "1.5 = 50% gain. Think of this as the 'expected' outcome.</i>"
+            "<extra></extra>"
+        ),
     ))
     # Actual
     fig.add_trace(go.Scatter(
         x=xs[:len(actual)], y=actual, name="Historical",
         line=dict(color=PALETTE["equal_weight"], width=2.2),
-        hovertemplate="Historical: %{y:.3f}<extra></extra>",
+        hovertemplate=(
+            "<b>Day %{x}</b><br>"
+            "Actual history: %{y:.2f}× starting capital<br>"
+            "<i>What the real strategy returned, overlaid on the simulated range.<br>"
+            "Staying near the median = no unusual luck or bad luck at play.</i>"
+            "<extra></extra>"
+        ),
     ))
 
     fig.update_layout(**_layout(
@@ -324,7 +349,13 @@ def chart_mc_histogram(eq_curves: np.ndarray, height: int = 280) -> go.Figure:
     fig.add_trace(go.Histogram(
         x=finals, nbinsx=60,
         marker_color=PALETTE["equal_weight"], opacity=0.75,
-        hovertemplate="Return: %{x:.1f}%  Count: %{y}<extra></extra>",
+        hovertemplate=(
+            "Total return: %{x:.1f}%<br>"
+            "Simulated paths: %{y}<br>"
+            "<i>%{y} out of 1,000 scenarios ended with this return.<br>"
+            "A cluster to the right of 0% = strategy has a positive edge.</i>"
+            "<extra></extra>"
+        ),
         name="Path distribution",
     ))
     med = np.median(finals)
@@ -354,15 +385,23 @@ def chart_walk_forward(wf: pd.DataFrame, height: int = 280) -> go.Figure:
         text=[f"{s:+.2f}" for s in wf["sharpe"]],
         textposition="outside",
         textfont=dict(size=11, color="#c0c0c0"),
-        hovertemplate="<b>%{x}</b><br>OOS Sharpe: %{y:.3f}<extra></extra>",
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "OOS Sharpe: %{y:.2f}<br>"
+            "<i>Return-per-unit-of-risk on data the strategy had never seen.<br>"
+            ">1.0 = strong · >0.5 = acceptable · <0 = lost money this window.<br>"
+            "Consistent positives here = strategy isn't just overfitted.</i>"
+            "<extra></extra>"
+        ),
     ))
     fig.add_hline(y=0, line_color="#555", line_dash="dot")
     fig.update_layout(**_layout(
         height=height, showlegend=False,
+        dragmode="pan",
         title=dict(text="Walk-Forward OOS Sharpe  (3 yr train / 1 yr test)",
                    font=dict(size=13)),
-        xaxis=dict(title=None),
-        yaxis=dict(title="Sharpe ratio"),
+        xaxis=dict(title=None, fixedrange=False),
+        yaxis=dict(title="Sharpe ratio", fixedrange=False),
     ))
     return fig
 
@@ -387,19 +426,32 @@ def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
     fig.add_trace(go.Bar(
         y=order, x=[bnh.get(t, 0) for t in order], name="Buy & Hold",
         orientation="h", marker_color=PALETTE["buy_hold"], opacity=0.7,
-        hovertemplate="<b>%{y}</b> B&H Sharpe: %{x:.2f}<extra></extra>",
+        hovertemplate=(
+            "<b>%{y}</b> — Buy & Hold<br>"
+            "Sharpe: %{x:.2f}<br>"
+            "<i>Return-per-unit-of-risk if you just held this stock forever.<br>"
+            ">1.0 good · <0 = lost money on a risk-adjusted basis.</i>"
+            "<extra></extra>"
+        ),
     ))
     fig.add_trace(go.Bar(
         y=order, x=[strat.get(t, 0) for t in order], name="Regime Strategy",
         orientation="h", marker_color=PALETTE["equal_weight"], opacity=0.9,
-        hovertemplate="<b>%{y}</b> Strategy Sharpe: %{x:.2f}<extra></extra>",
+        hovertemplate=(
+            "<b>%{y}</b> — MA Strategy<br>"
+            "Sharpe: %{x:.2f}<br>"
+            "<i>Return-per-unit-of-risk using the golden-cross signal.<br>"
+            "Higher than Buy & Hold = the signal added real value here.</i>"
+            "<extra></extra>"
+        ),
     ))
     fig.update_layout(**_layout(
         height=height, barmode="group",
+        dragmode="pan",
         title=dict(text="Sharpe Ratio  ·  Strategy vs Buy & Hold by Asset",
                    font=dict(size=13)),
-        xaxis=dict(title="Sharpe ratio"),
-        yaxis=dict(title=None),
+        xaxis=dict(title="Sharpe ratio", fixedrange=False),
+        yaxis=dict(title=None, fixedrange=False),
     ))
     return fig
 
@@ -419,6 +471,12 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                 x=df_port.index, y=df_port[col], name=LABELS[col],
                 line=dict(color=PALETTE[col], width=1.6,
                           dash="dot" if col == "buy_hold" else "solid"),
+                hovertemplate=(
+                    f"<b>{LABELS[col]}</b><br>"
+                    "$%{y:,.0f}<br>"
+                    "<i>Portfolio value on this date (started at $100k).</i>"
+                    "<extra></extra>"
+                ),
             ), row=1, col=1)
     # VIX
     if "vix" in macro.columns:
@@ -426,6 +484,14 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
             x=macro.index, y=macro["vix"], name="VIX",
             line=dict(color=PALETTE["neg"], width=1),
             fill="tozeroy", fillcolor="rgba(255,85,85,0.08)", showlegend=False,
+            hovertemplate=(
+                "<b>%{x|%Y-%m-%d}</b><br>"
+                "VIX: %{y:.1f}<br>"
+                "<i>Market fear gauge. <15 = calm, 15-20 = normal,<br>"
+                "20-30 = anxious, >30 = fear, >40 = panic.<br>"
+                "High VIX = strategy reduces position sizes.</i>"
+                "<extra></extra>"
+            ),
         ), row=2, col=1)
         for lvl, clr in [(20, "#555"), (30, PALETTE["neg"])]:
             fig.add_hline(y=lvl, line_color=clr, line_dash="dot",
@@ -433,11 +499,18 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
     # Yield curve
     if "yield_curve" in macro.columns:
         yc = macro["yield_curve"]
-        pos = yc.clip(lower=0); neg = yc.clip(upper=0)
         fig.add_trace(go.Scatter(
             x=macro.index, y=yc, name="10Y–2Y",
             line=dict(color=PALETTE["atr_pca_macro"], width=1.2),
             showlegend=False,
+            hovertemplate=(
+                "<b>%{x|%Y-%m-%d}</b><br>"
+                "10Y-2Y Spread: %{y:+.2f}%<br>"
+                "<i>Difference between 10-year and 2-year Treasury rates.<br>"
+                "Negative (inverted) = recession warning, strategy shrinks positions.<br>"
+                "Above 1% (steep) = economic expansion, normal/larger sizing.</i>"
+                "<extra></extra>"
+            ),
         ), row=3, col=1)
         fig.add_hline(y=0, line_color="#555", line_dash="dot",
                       line_width=1, row=3, col=1)
@@ -478,13 +551,21 @@ def chart_monthly_heatmap(ret: pd.Series, title: str = "Equal Weight — Monthly
         zmid=0, zmin=-0.10, zmax=0.10,
         showscale=True,
         colorbar=dict(tickformat=".0%", len=0.8),
-        hovertemplate="<b>%{y} %{x}</b>: %{text}<extra></extra>",
+        hovertemplate=(
+            "<b>%{y} %{x}</b><br>"
+            "Return: %{text}<br>"
+            "<i>Strategy return for this single calendar month.<br>"
+            "Green = gain, Red = loss. Darker = bigger move.<br>"
+            "Consistent green rows = the strategy performs well year-round.</i>"
+            "<extra></extra>"
+        ),
     ))
     fig.update_layout(**_layout(
         height=height,
+        dragmode="pan",
         title=dict(text=title, font=dict(size=13)),
-        xaxis=dict(title=None, side="top"),
-        yaxis=dict(title=None, autorange="reversed"),
+        xaxis=dict(title=None, side="top", fixedrange=False),
+        yaxis=dict(title=None, autorange="reversed", fixedrange=False),
         margin=dict(l=56, r=80, t=56, b=16),
     ))
     return fig
@@ -501,15 +582,23 @@ def chart_ma_spread(live_df: pd.DataFrame, height: int = 400) -> go.Figure:
         text=[f"{v:+.2f}%" for v in df["MA Spread %"]],
         textposition="outside",
         textfont=dict(size=10, color="#c0c0c0"),
-        hovertemplate="<b>%{y}</b>  MA Spread: %{x:.2f}%<extra></extra>",
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "MA Spread: %{x:+.2f}%<br>"
+            "<i>How far the fast moving average is above/below the slow one.<br>"
+            "Positive (green) = golden cross — fast MA crossed above slow MA = LONG signal.<br>"
+            "Negative (red) = death cross — price trending down = strategy sits in cash.</i>"
+            "<extra></extra>"
+        ),
     ))
     fig.add_vline(x=0, line_color="#555", line_width=1.5)
     fig.update_layout(**_layout(
         height=height, showlegend=False,
+        dragmode="pan",
         title=dict(text="MA Spread — Fast vs Slow MA  (positive = golden cross / LONG)",
                    font=dict(size=13)),
-        xaxis=dict(title="Spread (%)"),
-        yaxis=dict(title=None),
+        xaxis=dict(title="Spread (%)", fixedrange=False),
+        yaxis=dict(title=None, fixedrange=False),
     ))
     return fig
 
@@ -1027,196 +1116,179 @@ def main():
                     config={"scrollZoom": True, "displayModeBar": True},
                 )
 
-                # ── Open positions table ──────────────────────────────────────
+                # ── Open positions table ─────────────────────────────────────
                 if pt_state.get("positions"):
-                st.markdown('<div class="section-head">Open positions</div>',
+                    st.markdown('<div class="section-head">Open positions</div>',
+                                unsafe_allow_html=True)
+
+                    @st.cache_data(ttl=120, show_spinner=False)
+                    def _pos_prices(tickers_key: str) -> dict:
+                        import yfinance as yf
+                        tickers = tickers_key.split(",")
+                        prices  = {}
+                        for t in tickers:
+                            try:
+                                tk = yf.Ticker(t)
+                                prices[t] = tk.fast_info.get("last_price") or tk.fast_info.get("previousClose")
+                            except Exception:
+                                pass
+                        return prices
+
+                    tickers_key = ",".join(sorted(pt_state["positions"]))
+                    live_prices = _pos_prices(tickers_key)
+
+                    pos_rows = []
+                    for ticker, pos in pt_state["positions"].items():
+                        cur = live_prices.get(ticker, pos["entry_price"])
+                        cur = cur if cur else pos["entry_price"]
+                        cur_val    = pos["shares"] * cur
+                        unreal_pnl = cur_val - pos["cost_basis"]
+                        unreal_pct = (cur / pos["entry_price"] - 1) * 100
+                        pos_rows.append({
+                            "Ticker"     : ticker,
+                            "Shares"     : round(pos["shares"], 3),
+                            "Entry"      : pos["entry_price"],
+                            "Current"    : round(cur, 2),
+                            "Chg %"      : round(unreal_pct, 2),
+                            "Unreal P&L" : round(unreal_pnl, 2),
+                            "Entry Date" : pos["entry_date"],
+                        })
+
+                    pos_df = pd.DataFrame(pos_rows)
+
+                    def _color_pnl(v):
+                        if isinstance(v, (int, float)):
+                            if v > 0: return "color:#50fa7b"
+                            if v < 0: return "color:#ff5555"
+                        return ""
+
+                    st.dataframe(
+                        pos_df.style
+                        .map(_color_pnl, subset=["Chg %", "Unreal P&L"])
+                        .format({"Entry": "${:.2f}", "Current": "${:.2f}",
+                                 "Chg %": "{:+.2f}%", "Unreal P&L": "${:+,.2f}"}),
+                        width="stretch", hide_index=True,
+                    )
+
+                # ── Recent trades ─────────────────────────────────────────────
+                if not pt_trades.empty:
+                    st.markdown('<div class="section-head">Recent trades</div>',
+                                unsafe_allow_html=True)
+                    recent = pt_trades.sort_values("date", ascending=False).head(20)
+                    def _color_action(v):
+                        if v == "BUY":  return "color:#50fa7b;font-weight:600"
+                        if v == "SELL": return "color:#ff5555;font-weight:600"
+                        return ""
+                    st.dataframe(
+                        recent.style.map(_color_action, subset=["action"]),
+                        width="stretch", hide_index=True,
+                    )
+
+                # ── Kill switch + order sheet ─────────────────────────────────
+                kill = check_kill_switch()
+                ks_c, _ = st.columns([1, 3])
+                with ks_c:
+                    if kill:
+                        st.error("KILL SWITCH ACTIVE — drawdown >15%. Trading paused.")
+                    else:
+                        st.success("Kill switch: OK")
+
+                if ORDERS_FILE.exists():
+                    import json as _json
+                    with open(ORDERS_FILE, encoding="utf-8") as _f:
+                        sheet = _json.load(_f)
+                    st.markdown(
+                        f'<div class="section-head">Tomorrow\'s orders '
+                        f'— {sheet.get("generated_at","?")}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    orders_df = pd.DataFrame(sheet.get("orders", []))
+                    if not orders_df.empty:
+                        def _color_order(v):
+                            if v == "BUY":  return "color:#50fa7b;font-weight:600"
+                            if v == "SELL": return "color:#ff5555;font-weight:600"
+                            if v == "HOLD": return "color:#888"
+                            if v in ("FLAT", "SKIP", "NO_DATA"): return "color:#555"
+                            return ""
+                        st.dataframe(
+                            orders_df.style.map(_color_order, subset=["action"]),
+                            width="stretch", hide_index=True,
+                        )
+                else:
+                    st.caption(
+                        "No order sheet yet — run `python scheduler.py` "
+                        "or `python paper_trader.py run` after 4:45 PM ET."
+                    )
+
+                st.caption(
+                    f"Init: {pt_state.get('initialized_date','?')}  ·  "
+                    f"Last EOD: {pt_state.get('last_eod_date','?')}  ·  "
+                    "Filters: RSI<70  ·  3x ATR stop  ·  5-day hold  ·  15% kill switch"
+                )
+
+            # ── Live Signals ──────────────────────────────────────────────────
+            st.divider()
+            st.markdown("### Universe Signal State")
+            st.markdown(
+                "<span style='color:#888;font-size:.82rem'>"
+                "MA crossover logic mirrors the backtest. Signal flips at daily close. "
+                "Cached 5 min."
+                "</span>",
+                unsafe_allow_html=True,
+            )
+
+            @st.cache_data(ttl=300, show_spinner=False)
+            def _cached_live():
+                return get_live_signals()
+
+            with st.spinner("Fetching live prices…"):
+                live_df, fetch_ts = _cached_live()
+
+            if live_df.empty:
+                st.error("Could not fetch live data. Check your internet connection.")
+            else:
+                n_long  = (live_df["Signal"] == "LONG").sum()
+                n_flat  = (live_df["Signal"] == "FLAT").sum()
+                exp_pct = n_long / len(live_df) * 100
+
+                lv1, lv2, lv3, lv4 = st.columns(4)
+                with lv1: st.metric("Long signals",   str(n_long))
+                with lv2: st.metric("Flat (cash)",    str(n_flat))
+                with lv3: st.metric("Gross exposure", f"{exp_pct:.0f}%")
+                avg_rsi_long = live_df.loc[live_df["Signal"] == "LONG", "RSI"].mean()
+                with lv4: st.metric("Avg RSI (longs)", f"{avg_rsi_long:.1f}" if n_long > 0 else "—")
+
+                st.plotly_chart(chart_ma_spread(live_df), theme=None, width="stretch",
+                                config={"scrollZoom": True, "displayModeBar": True})
+
+                st.markdown('<div class="section-head">Full universe — current signal state</div>',
                             unsafe_allow_html=True)
 
-                @st.cache_data(ttl=120, show_spinner=False)
-                def _pos_prices(tickers_key: str) -> dict:
-                    import yfinance as yf
-                    tickers = tickers_key.split(",")
-                    prices  = {}
-                    for t in tickers:
-                        try:
-                            tk = yf.Ticker(t)
-                            prices[t] = tk.fast_info.get("last_price") or tk.fast_info.get("previousClose")
-                        except Exception:
-                            pass
-                    return prices
+                def _style_live(row):
+                    return (["background-color:#0d2b0d"] * len(row)
+                            if row["Signal"] == "LONG" else [""] * len(row))
 
-                tickers_key  = ",".join(sorted(pt_state["positions"]))
-                live_prices  = _pos_prices(tickers_key)
-
-                pos_rows = []
-                for ticker, pos in pt_state["positions"].items():
-                    cur = live_prices.get(ticker, pos["entry_price"])
-                    cur = cur if cur else pos["entry_price"]
-                    cur_val  = pos["shares"] * cur
-                    entry_val = pos["cost_basis"]
-                    unreal_pnl = cur_val - entry_val
-                    unreal_pct = (cur / pos["entry_price"] - 1) * 100
-                    pos_rows.append({
-                        "Ticker"     : ticker,
-                        "Shares"     : round(pos["shares"], 3),
-                        "Entry"      : pos["entry_price"],
-                        "Current"    : round(cur, 2),
-                        "Chg %"      : round(unreal_pct, 2),
-                        "Unreal P&L" : round(unreal_pnl, 2),
-                        "Entry Date" : pos["entry_date"],
-                    })
-
-                pos_df = pd.DataFrame(pos_rows)
-
-                def _color_pnl(v):
+                def _color_cell(v):
+                    if isinstance(v, str) and v == "LONG":  return "color:#50fa7b;font-weight:600"
+                    if isinstance(v, str) and v == "FLAT":  return "color:#666"
                     if isinstance(v, (int, float)):
                         if v > 0: return "color:#50fa7b"
                         if v < 0: return "color:#ff5555"
                     return ""
 
                 st.dataframe(
-                    pos_df.style
-                    .map(_color_pnl, subset=["Chg %", "Unreal P&L"])
-                    .format({"Entry": "${:.2f}", "Current": "${:.2f}",
-                             "Chg %": "{:+.2f}%", "Unreal P&L": "${:+,.2f}"}),
+                    live_df.style
+                    .apply(_style_live, axis=1)
+                    .map(_color_cell, subset=["Signal", "Day Chg %", "MA Spread %",
+                                                   "20d Ret %", "60d Ret %", "Dist High %"])
+                    .format({"Price": "${:.2f}", "Day Chg %": "{:+.2f}%",
+                             "MA Spread %": "{:+.2f}%", "RSI": "{:.1f}",
+                             "20d Ret %": "{:+.1f}%", "60d Ret %": "{:+.1f}%",
+                             "Dist High %": "{:+.1f}%"}),
                     width="stretch", hide_index=True,
                 )
 
-            # ── Recent trades ─────────────────────────────────────────────────
-            if not pt_trades.empty:
-                st.markdown("")
-                st.markdown('<div class="section-head">Recent trades</div>',
-                            unsafe_allow_html=True)
-                recent = pt_trades.sort_values("date", ascending=False).head(20)
-                def _color_action(v):
-                    if v == "BUY":  return "color:#50fa7b;font-weight:600"
-                    if v == "SELL": return "color:#ff5555;font-weight:600"
-                    return ""
-                st.dataframe(
-                    recent.style.map(_color_action, subset=["action"]),
-                    width="stretch", hide_index=True,
-                )
-
-            # ── Kill switch status ────────────────────────────────────────
-            kill = check_kill_switch()
-            if kill:
-                st.error(
-                    "KILL SWITCH ACTIVE — rolling 20-day drawdown exceeded 15%. "
-                    "Trading is paused.  Review the portfolio before re-enabling."
-                )
-            else:
-                st.success("Kill switch: OK  (drawdown within limits)")
-
-            # ── Tomorrow's order sheet ────────────────────────────────────
-            if ORDERS_FILE.exists():
-                import json as _json
-                with open(ORDERS_FILE, encoding="utf-8") as _f:
-                    sheet = _json.load(_f)
-
-                st.markdown("")
-                st.markdown(
-                    f'<div class="section-head">Tomorrow\'s order sheet '
-                    f'— generated {sheet.get("generated_at","?")}</div>',
-                    unsafe_allow_html=True,
-                )
-                orders_df = pd.DataFrame(sheet.get("orders", []))
-                if not orders_df.empty:
-                    def _color_order(v):
-                        if v == "BUY":  return "color:#50fa7b;font-weight:600"
-                        if v == "SELL": return "color:#ff5555;font-weight:600"
-                        if v == "HOLD": return "color:#888"
-                        if v in ("FLAT", "SKIP", "NO_DATA"): return "color:#555"
-                        return ""
-                    st.dataframe(
-                        orders_df.style.map(_color_order, subset=["action"]),
-                        width="stretch", hide_index=True,
-                    )
-            else:
-                st.markdown(
-                    "<span style='color:#555;font-size:.78rem'>"
-                    "No order sheet yet — run <code>python scheduler.py</code> "
-                    "or <code>python paper_trader.py run</code> after 4:45 PM ET."
-                    "</span>",
-                    unsafe_allow_html=True,
-                )
-
-            st.markdown(
-                "<span style='color:#555;font-size:.75rem'>"
-                f"Initialised: {pt_state.get('initialized_date','?')}  ·  "
-                f"Last EOD update: {pt_state.get('last_eod_date','?')}  ·  "
-                "Improvements vs backtest: RSI &lt; 70 entry filter  ·  "
-                "3× ATR trailing stop  ·  5-day min hold  ·  "
-                "data validation  ·  15% kill switch"
-                "</span>",
-                unsafe_allow_html=True,
-            )
-
-        # ── Live Signals ──────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("### Universe Signal State")
-        st.markdown(
-            "<span style='color:#888;font-size:.82rem'>"
-            "MA crossover logic mirrors the backtest. Signal flips at daily close. "
-            "Cached 5 min."
-            "</span>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("")
-
-        @st.cache_data(ttl=300, show_spinner=False)
-        def _cached_live():
-            return get_live_signals()
-
-        with st.spinner("Fetching live prices via yfinance…"):
-            live_df, fetch_ts = _cached_live()
-
-        if live_df.empty:
-            st.error("Could not fetch live data. Check your internet connection.")
-        else:
-            n_long  = (live_df["Signal"] == "LONG").sum()
-            n_flat  = (live_df["Signal"] == "FLAT").sum()
-            exp_pct = n_long / len(live_df) * 100
-
-            st.markdown(
-                f"<span style='color:#666;font-size:.78rem'>Last fetched: {fetch_ts}</span>",
-                unsafe_allow_html=True,
-            )
-            lv1, lv2, lv3, lv4 = st.columns(4)
-            with lv1: st.metric("Long signals",   str(n_long))
-            with lv2: st.metric("Flat (cash)",    str(n_flat))
-            with lv3: st.metric("Gross exposure", f"{exp_pct:.0f}%")
-            avg_rsi_long = live_df.loc[live_df["Signal"] == "LONG", "RSI"].mean()
-            with lv4: st.metric("Avg RSI (longs)", f"{avg_rsi_long:.1f}" if n_long > 0 else "—")
-
-            st.markdown("")
-            st.plotly_chart(chart_ma_spread(live_df), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
-
-            st.markdown('<div class="section-head">Full universe — current signal state</div>',
-                        unsafe_allow_html=True)
-
-            def _style_live(row):
-                return (["background-color:#0d2b0d"] * len(row)
-                        if row["Signal"] == "LONG" else [""] * len(row))
-
-            def _color_cell(v):
-                if isinstance(v, str) and v == "LONG":  return "color:#50fa7b;font-weight:600"
-                if isinstance(v, str) and v == "FLAT":  return "color:#666"
-                if isinstance(v, (int, float)):
-                    if v > 0: return "color:#50fa7b"
-                    if v < 0: return "color:#ff5555"
-                return ""
-
-            st.dataframe(
-                live_df.style
-                .apply(_style_live, axis=1)
-                .map(_color_cell, subset=["Signal", "Day Chg %", "MA Spread %",
-                                               "20d Ret %", "60d Ret %", "Dist High %"])
-                .format({"Price": "${:.2f}", "Day Chg %": "{:+.2f}%",
-                         "MA Spread %": "{:+.2f}%", "RSI": "{:.1f}",
-                         "20d Ret %": "{:+.1f}%", "60d Ret %": "{:+.1f}%",
-                         "Dist High %": "{:+.1f}%"}),
-                width="stretch", hide_index=True,
-            )
+        _live_section()
 
 
 if __name__ == "__main__":
