@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 from pathlib import Path
+from datetime import datetime
 from live_signals import get_live_signals
 from paper_trader import (
     load_state, load_trades, load_history,
@@ -216,14 +217,16 @@ def chart_equity(df: pd.DataFrame, height: int = 420) -> go.Figure:
         ))
     fig.update_layout(**_layout(
         height=height,
+        dragmode="pan",
         title=dict(text="Portfolio Equity Curves — $100 k starting capital",
                    font=dict(size=13)),
-        yaxis=dict(title="Value ($)"),
+        yaxis=dict(title="Value ($)", fixedrange=False),
+        xaxis=dict(fixedrange=False),
     ))
     return fig
 
 
-def chart_drawdown(df: pd.DataFrame, height: int = 240) -> go.Figure:
+def chart_drawdown(df: pd.DataFrame, height: int = 420) -> go.Figure:
     fig = go.Figure()
     for col, alpha in [("equal_weight", 0.18), ("buy_hold", 0.10)]:
         if col not in df.columns:
@@ -239,8 +242,10 @@ def chart_drawdown(df: pd.DataFrame, height: int = 240) -> go.Figure:
         ))
     fig.update_layout(**_layout(
         height=height,
+        dragmode="pan",
         title=dict(text="Drawdown (%)", font=dict(size=13)),
-        yaxis=dict(title="DD (%)"),
+        yaxis=dict(title="DD (%)", fixedrange=False),
+        xaxis=dict(fixedrange=False),
     ))
     return fig
 
@@ -253,16 +258,23 @@ def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
                                for q in (5, 25, 50, 75, 95))
     fig = go.Figure()
 
-    # Faint individual paths (sample 80)
+    # Faint individual paths — merged into ONE trace with None separators.
+    # One trace instead of 80 = drastically faster zoom/pan rendering.
     sample_idx = np.random.default_rng(0).choice(len(eq_curves),
                                                    size=min(80, len(eq_curves)),
                                                    replace=False)
+    xs_m: list = []
+    ys_m: list = []
     for i in sample_idx:
-        fig.add_trace(go.Scatter(
-            x=xs, y=eq_curves[i],
-            line=dict(color="rgba(180,180,180,0.05)", width=1),
-            showlegend=False, hoverinfo="skip",
-        ))
+        xs_m.extend(xs.tolist())
+        xs_m.append(None)
+        ys_m.extend(eq_curves[i].tolist())
+        ys_m.append(None)
+    fig.add_trace(go.Scatter(
+        x=xs_m, y=ys_m,
+        line=dict(color="rgba(180,180,180,0.05)", width=0.8),
+        showlegend=False, hoverinfo="skip",
+    ))
 
     # 5–95 band
     fig.add_trace(go.Scatter(
@@ -295,12 +307,13 @@ def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
 
     fig.update_layout(**_layout(
         height=height,
+        dragmode="pan",
         title=dict(
             text=f"Monte Carlo Bootstrap  ·  {len(eq_curves):,} paths  ·  21-day block resampling",
             font=dict(size=13),
         ),
-        xaxis=dict(title="Trading days"),
-        yaxis=dict(title="Growth of $1"),
+        xaxis=dict(title="Trading days", fixedrange=False),
+        yaxis=dict(title="Growth of $1", fixedrange=False),
     ))
     return fig
 
@@ -324,9 +337,10 @@ def chart_mc_histogram(eq_curves: np.ndarray, height: int = 280) -> go.Figure:
                   annotation_font_color=PALETTE["neg"])
     fig.update_layout(**_layout(
         height=height, showlegend=False,
+        dragmode="pan",
         title=dict(text="Distribution of Terminal Returns", font=dict(size=13)),
-        xaxis=dict(title="Total return (%)"),
-        yaxis=dict(title="Paths"),
+        xaxis=dict(title="Total return (%)", fixedrange=False),
+        yaxis=dict(title="Paths", fixedrange=False),
     ))
     return fig
 
@@ -430,12 +444,12 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
 
     fig.update_layout(paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
                       font=dict(color="#c0c0c0", size=11),
-                      height=height, showlegend=True,
+                      height=height, showlegend=True, dragmode="pan",
                       legend=dict(bgcolor="#252525", bordercolor="#333", borderwidth=1),
                       margin=dict(l=56, r=20, t=44, b=36))
     for r in range(1, 4):
-        fig.update_xaxes(gridcolor="#2a2a2a", row=r, col=1)
-        fig.update_yaxes(gridcolor="#2a2a2a", row=r, col=1)
+        fig.update_xaxes(gridcolor="#2a2a2a", fixedrange=False, row=r, col=1)
+        fig.update_yaxes(gridcolor="#2a2a2a", fixedrange=False, row=r, col=1)
     return fig
 
 
@@ -504,7 +518,8 @@ def chart_ma_spread(live_df: pd.DataFrame, height: int = 400) -> go.Figure:
 def chart_paper_portfolio(history_df: pd.DataFrame,
                           intraday_df: pd.DataFrame,
                           trades_df: pd.DataFrame,
-                          height: int = 440) -> go.Figure:
+                          height: int = 440,
+                          now: datetime = None) -> go.Figure:
     """
     TradingView-style equity curve combining:
       - Historical daily closes (from paper_trader history.csv)
@@ -520,8 +535,6 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             y=history_df["portfolio_value"],
             name="Portfolio (daily)",
             line=dict(color="#4a9eff", width=2.2),
-            fill="tozeroy",
-            fillcolor="rgba(74,158,255,0.07)",
             hovertemplate="<b>%{x|%Y-%m-%d}</b><br>$%{y:,.0f}<extra></extra>",
         ))
 
@@ -579,13 +592,43 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
         annotation_font_color="#555",
     )
 
+    # "Now" vertical line — only when intraday data is present
+    if now is not None and not intraday_df.empty:
+        fig.add_vline(
+            x=now.timestamp() * 1000,  # Plotly expects ms epoch for datetime axes
+            line_color="#ffb86c", line_dash="dot", line_width=1.2,
+            annotation_text=f"  {now.strftime('%H:%M')}",
+            annotation_font_color="#ffb86c",
+            annotation_position="top right",
+        )
+
+    # Compute a sensible y-axis range so fill-to-zero can't blow out the scale.
+    all_vals = []
+    if not history_df.empty:
+        all_vals += history_df["portfolio_value"].dropna().tolist()
+    if not intraday_df.empty:
+        all_vals += intraday_df["portfolio_value"].dropna().tolist()
+    if all_vals:
+        lo = min(all_vals) * 0.995
+        hi = max(all_vals) * 1.005
+        yaxis_range = [lo, hi]
+    else:
+        yaxis_range = None
+
     fig.update_layout(**_layout(
         height=height,
         title=dict(text="Paper Portfolio — Equity Curve  (live via Yahoo Finance)",
                    font=dict(size=13)),
-        yaxis=dict(title="Value ($)", tickprefix="$", tickformat=",.0f"),
+        # pan by default; scroll-wheel zooms centred on mouse (set via config below)
+        dragmode="pan",
+        yaxis=dict(
+            title="Value ($)", tickprefix="$", tickformat=",.0f",
+            range=yaxis_range,
+            fixedrange=False,
+        ),
         xaxis=dict(
             title=None,
+            fixedrange=False,
             rangeslider=dict(visible=False),
             rangeselector=dict(
                 bgcolor="#252525",
@@ -708,8 +751,8 @@ def main():
 
     # ── Tab 1: Equity curves + drawdown + summary table ──────────────────────
     with tab1:
-        st.plotly_chart(chart_equity(df_port), width="stretch")
-        st.plotly_chart(chart_drawdown(df_port), width="stretch")
+        st.plotly_chart(chart_equity(df_port), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
+        st.plotly_chart(chart_drawdown(df_port), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
 
         st.markdown('<div class="section-head">All portfolio methods — summary</div>',
                     unsafe_allow_html=True)
@@ -727,7 +770,7 @@ def main():
         st.markdown('<div class="section-head">Monthly returns — equal weight strategy</div>',
                     unsafe_allow_html=True)
         if not eq_ret.empty:
-            st.plotly_chart(chart_monthly_heatmap(eq_ret), width="stretch")
+            st.plotly_chart(chart_monthly_heatmap(eq_ret), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
 
     # ── Tab 2: Monte Carlo ───────────────────────────────────────────────────
     with tab2:
@@ -759,9 +802,9 @@ def main():
             actual_norm = (1 + eq_ret).cumprod().values
 
             st.plotly_chart(chart_monte_carlo(eq_curves, actual_norm),
-                            width="stretch")
+                            theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
             st.plotly_chart(chart_mc_histogram(eq_curves),
-                            width="stretch")
+                            theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
 
             # MC summary stats
             finals = eq_curves[:, -1]
@@ -814,7 +857,7 @@ def main():
             if wf.empty:
                 st.warning("Walk-forward data not found.")
             else:
-                st.plotly_chart(chart_walk_forward(wf), width="stretch")
+                st.plotly_chart(chart_walk_forward(wf), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
                 mean_s = wf["sharpe"].mean()
                 color  = "#50fa7b" if mean_s > 0 else "#ff5555"
                 st.markdown(f"""
@@ -842,7 +885,7 @@ def main():
         with right:
             if ticker_curves:
                 st.plotly_chart(chart_asset_sharpe(ticker_curves),
-                                width="stretch")
+                                theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
 
         # OOS selection comparison table
         if not oos_sel.empty:
@@ -896,7 +939,7 @@ def main():
                 unsafe_allow_html=True,
             )
             st.plotly_chart(chart_macro_overlay(df_port, macro),
-                            width="stretch")
+                            theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
 
             # Regime statistics
             st.markdown('<div class="section-head">Macro regime statistics (full history)</div>',
@@ -920,60 +963,72 @@ def main():
 
     # ── Tab 5: Paper Trading & Live Signals ──────────────────────────────────
     with tab5:
-        if st.button("Refresh  (live data + portfolio)", type="secondary"):
-            st.cache_data.clear()
-            st.rerun()
 
-        # ── Paper Portfolio ───────────────────────────────────────────────────
-        pt_state   = load_state()
-        pt_history = load_history()
-        pt_trades  = load_trades()
+        @st.fragment(run_every=30)
+        def _live_section():
+            now = datetime.now()
 
-        if not pt_state:
-            st.info(
-                "Paper trading not yet initialised.  Run this command once to start:\n\n"
-                "```\npython paper_trader.py init\n```\n\n"
-                "Then run after each market close:\n\n"
-                "```\npython paper_trader.py run\n```"
-            )
-        else:
-            pv        = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
-            cash      = pt_state["cash"]
-            invested  = pv - cash
-            total_ret = (pv / PT_INITIAL_CAPITAL - 1) * 100
-            n_pos     = len(pt_state.get("positions", {}))
+            # Header row: clock + manual refresh
+            hdr_left, hdr_right = st.columns([3, 1])
+            with hdr_left:
+                market_open = 9 <= now.hour < 16
+                clock_color = "#50fa7b" if market_open else "#888"
+                st.markdown(
+                    f"<span style='color:{clock_color};font-size:.85rem;font-weight:600'>"
+                    f"{'◉ MARKET OPEN' if market_open else '○ MARKET CLOSED'}"
+                    f"</span>"
+                    f"<span style='color:#555;font-size:.78rem'>  ·  "
+                    f"Updated: {now.strftime('%Y-%m-%d  %H:%M:%S')}  ·  auto-refresh 30s</span>",
+                    unsafe_allow_html=True,
+                )
+            with hdr_right:
+                if st.button("Refresh now", type="secondary"):
+                    st.cache_data.clear()
+                    st.rerun()
 
-            # Daily return from history
-            daily_ret = 0.0
-            if len(pt_history) >= 2:
-                daily_ret = float(pt_history["daily_return"].iloc[-1])
+            # ── Paper Portfolio ───────────────────────────────────────────────
+            pt_state   = load_state()
+            pt_history = load_history()
+            pt_trades  = load_trades()
 
-            st.markdown("### Paper Portfolio")
-            pm1, pm2, pm3, pm4, pm5 = st.columns(5)
-            with pm1: st.metric("Portfolio Value", f"${pv:,.0f}",
-                                 help="Current estimated portfolio value (cash + open positions at last close)")
-            with pm2: st.metric("Total Return",    f"{total_ret:+.2f}%",
-                                 help="Total return since paper trading started")
-            with pm3: st.metric("Today's Return",  f"{daily_ret:+.2f}%",
-                                 help="Portfolio return on last trading day recorded")
-            with pm4: st.metric("Cash",            f"${cash:,.0f}",
-                                 help="Uninvested cash available for new positions")
-            with pm5: st.metric("Open Positions",  str(n_pos),
-                                 help="Number of assets currently held long")
+            if not pt_state:
+                st.info(
+                    "Paper trading not yet initialised.  Run this command once to start:\n\n"
+                    "```\npython paper_trader.py init\n```\n\n"
+                    "Then run after each market close:\n\n"
+                    "```\npython paper_trader.py run\n```"
+                )
+            else:
+                pv        = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
+                cash      = pt_state["cash"]
+                total_ret = (pv / PT_INITIAL_CAPITAL - 1) * 100
+                n_pos     = len(pt_state.get("positions", {}))
 
-            st.markdown("")
+                daily_ret = 0.0
+                if len(pt_history) >= 2:
+                    daily_ret = float(pt_history["daily_return"].iloc[-1])
 
-            # TradingView-style equity chart
-            with st.spinner("Loading intraday data…"):
-                intraday_df = get_intraday_curve()
+                st.markdown('<div class="section-head">Paper Portfolio</div>', unsafe_allow_html=True)
+                pm1, pm2, pm3, pm4, pm5 = st.columns(5)
+                with pm1: st.metric("Portfolio Value", f"${pv:,.0f}",
+                                     help="Cash + open positions at last close")
+                with pm2: st.metric("Total Return",    f"{total_ret:+.2f}%")
+                with pm3: st.metric("Today's Return",  f"{daily_ret:+.2f}%")
+                with pm4: st.metric("Cash",            f"${cash:,.0f}")
+                with pm5: st.metric("Open Positions",  str(n_pos))
 
-            st.plotly_chart(
-                chart_paper_portfolio(pt_history, intraday_df, pt_trades),
-                width="stretch",
-            )
+                # TradingView-style equity chart (intraday live)
+                with st.spinner("Fetching intraday…"):
+                    intraday_df = get_intraday_curve()
 
-            # ── Open positions table ──────────────────────────────────────────
-            if pt_state.get("positions"):
+                st.plotly_chart(
+                    chart_paper_portfolio(pt_history, intraday_df, pt_trades, now=now),
+                    theme=None, width="stretch",
+                    config={"scrollZoom": True, "displayModeBar": True},
+                )
+
+                # ── Open positions table ──────────────────────────────────────
+                if pt_state.get("positions"):
                 st.markdown('<div class="section-head">Open positions</div>',
                             unsafe_allow_html=True)
 
@@ -1134,7 +1189,7 @@ def main():
             with lv4: st.metric("Avg RSI (longs)", f"{avg_rsi_long:.1f}" if n_long > 0 else "—")
 
             st.markdown("")
-            st.plotly_chart(chart_ma_spread(live_df), width="stretch")
+            st.plotly_chart(chart_ma_spread(live_df), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
 
             st.markdown('<div class="section-head">Full universe — current signal state</div>',
                         unsafe_allow_html=True)
