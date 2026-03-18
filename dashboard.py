@@ -1149,7 +1149,7 @@ def main():
                     f"{'◉ MARKET OPEN' if market_open else '○ MARKET CLOSED'}"
                     f"</span>"
                     f"<span style='color:#555;font-size:.78rem'>  ·  "
-                    f"Updated: {now.strftime('%Y-%m-%d  %H:%M:%S')}  ·  auto-refresh 5s</span>",
+                    f"Updated: {now.strftime('%Y-%m-%d  %H:%M:%S')}  ·  auto-refresh 5s  ·  data ≈15 min delay (Yahoo Finance)</span>",
                     unsafe_allow_html=True,
                 )
             with hdr_right:
@@ -1175,7 +1175,7 @@ def main():
                 n_pos = len(pt_state.get("positions", {}))
 
                 # TradingView-style equity chart (intraday live)
-                intraday_df, live_prices, spy_curve = get_intraday_curve()
+                intraday_df, live_prices, spy_curve, _spy_pct = get_intraday_curve()
 
                 prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
 
@@ -1237,7 +1237,7 @@ def main():
                 with pm3:
                     st.metric(
                         "Realized P&L", f"${all_realized:+,.0f}",
-                        delta=f"${today_realized:+,.0f} today" if today_realized != 0 else None,
+                        delta=f"{today_realized:+,.0f} today" if today_realized != 0 else None,
                         delta_color="normal",
                         help="Total locked-in profit/loss from all closed trades since inception. "
                              "Only increases/decreases when a position is sold. Arrow shows today's closed trades.",
@@ -1515,7 +1515,7 @@ def main():
             st.markdown('<div class="section-head">Live — Today vs S&P 500</div>',
                         unsafe_allow_html=True)
 
-            intraday_df, live_prices, spy_intraday = get_intraday_curve()
+            intraday_df, live_prices, spy_intraday, spy_pct_from_prev = get_intraday_curve()
 
             cash    = pt_state["cash"]
             prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
@@ -1528,10 +1528,21 @@ def main():
             # Portfolio today %
             port_today_pct = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
 
-            # SPY today % from intraday curve
-            spy_today_pct = 0.0
-            if not spy_intraday.empty:
+            # SPY % from yesterday's close (matches TradingView / Yahoo Finance display).
+            # spy_pct_from_prev is None when the daily fetch failed — fall back to
+            # first-bar-of-day calculation (misses the open gap but is always available).
+            if spy_pct_from_prev is not None:
+                spy_today_pct = spy_pct_from_prev
+            elif not spy_intraday.empty:
                 spy_today_pct = (float(spy_intraday.iloc[-1]) / float(spy_intraday.iloc[0]) - 1) * 100
+            else:
+                spy_today_pct = 0.0
+
+            # Last intraday bar timestamp — shows user how fresh the data is
+            _last_bar_str = ""
+            if not spy_intraday.empty:
+                _last_bar = spy_intraday.index[-1]
+                _last_bar_str = pd.Timestamp(_last_bar).strftime("%H:%M") if hasattr(_last_bar, "strftime") else str(_last_bar)[-5:]
 
             alpha_today = port_today_pct - spy_today_pct
             beating     = alpha_today > 0
@@ -1541,8 +1552,13 @@ def main():
                 st.metric("Portfolio Today", f"{port_today_pct:+.2f}%",
                           help="Portfolio's intraday % change vs yesterday's close.")
             with c2:
-                st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%",
-                          help="SPY intraday % change from today's open (via yfinance 5m bars).")
+                _spy_help = (
+                    "SPY % change from yesterday's close — same baseline as TradingView. "
+                    f"Last bar: {_last_bar_str} ET. "
+                    "Data source: Yahoo Finance free tier (≈15 min delay). "
+                    "Real-time sources (Bloomberg, Polygon) would reduce this gap."
+                )
+                st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%", help=_spy_help)
             with c3:
                 st.metric("Alpha (today)", f"{alpha_today:+.2f}%",
                           delta="Outperforming" if beating else "Underperforming",

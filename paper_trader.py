@@ -389,10 +389,13 @@ def get_intraday_curve() -> tuple:
     Live portfolio OHLC using today's 5-minute bars.
     Returns (DataFrame(index=ET-naive datetime, columns=[open,high,low,close]),
              dict of {ticker: last_price},
-             pd.Series spy benchmark normalized to portfolio's starting value).
+             pd.Series spy benchmark normalized to portfolio's starting value,
+             float spy_pct_from_prev — SPY % change from yesterday's close).
+    spy_pct_from_prev uses yesterday's daily close as the baseline, matching
+    how TradingView / Yahoo Finance display the daily % change.
     """
     _empty_spy = pd.Series(dtype=float)
-    empty = (pd.DataFrame(columns=["open", "high", "low", "close"]), {}, _empty_spy)
+    empty = (pd.DataFrame(columns=["open", "high", "low", "close"]), {}, _empty_spy, None)
     state = load_state()
     if not state or not state.get("positions"):
         return empty
@@ -461,7 +464,8 @@ def get_intraday_curve() -> tuple:
     # so both lines start at the same point at market open and diverge from there.
     # Using prev_pv (yesterday's close) was wrong — the portfolio may gap up/down
     # at open, pushing the SPY line above/below the portfolio artificially.
-    spy_curve    = _empty_spy
+    spy_curve        = _empty_spy
+    spy_pct_from_prev = None   # None = daily fetch failed; dashboard falls back to first-bar %
     portfolio_open = float(result["close"].iloc[0]) if not result.empty else state.get("portfolio_value", INITIAL_CAPITAL)
     if "SPY" in intraday:
         spy_df  = intraday["SPY"]
@@ -472,7 +476,31 @@ def get_intraday_curve() -> tuple:
         if not spy_today.empty:
             spy_curve = (spy_today / float(spy_today.iloc[0])) * portfolio_open
 
-    return result, last_prices, spy_curve
+        # Compute SPY % from yesterday's official close (matches TradingView/Yahoo daily %).
+        # Use period="5d" so we get enough rows, then filter to dates BEFORE today —
+        # when the market is open, period="2d" returns an incomplete today row too,
+        # causing .iloc[-1] to grab today's price (~same as current) → ~0% change.
+        try:
+            spy_daily = yf.download("SPY", period="5d", interval="1d",
+                                    auto_adjust=True, progress=False)
+            if isinstance(spy_daily.columns, pd.MultiIndex):
+                spy_daily.columns = spy_daily.columns.droplevel(1)
+            spy_dc = spy_daily["Close"] if "Close" in spy_daily.columns else spy_daily.iloc[:, 3]
+            if isinstance(spy_dc, pd.DataFrame):
+                spy_dc = spy_dc.iloc[:, 0]
+            # Normalise index to date-only so comparison with today_str works regardless
+            # of whether yfinance returns tz-aware timestamps or plain dates.
+            spy_dc.index = pd.to_datetime(spy_dc.index).tz_localize(None).normalize()
+            today_ts = pd.Timestamp(today_str)
+            prev_rows = spy_dc[spy_dc.index < today_ts]
+            if not prev_rows.empty and not spy_today.empty:
+                spy_prev_close = float(prev_rows.iloc[-1])   # confirmed yesterday close
+                if spy_prev_close > 0:
+                    spy_pct_from_prev = (float(spy_today.iloc[-1]) / spy_prev_close - 1) * 100
+        except Exception:
+            pass
+
+    return result, last_prices, spy_curve, spy_pct_from_prev
 
 
 # ── Status ─────────────────────────────────────────────────────────────────────
