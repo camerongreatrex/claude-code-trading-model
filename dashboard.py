@@ -646,7 +646,15 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
         sells = trades_df[trades_df["action"] == "SELL"].copy()
 
         def _marker_y(dates: pd.Series) -> list:
-            return [float(hist_val.get(d, hist_val.iloc[-1])) for d in dates]
+            last = float(hist_val.iloc[-1])
+            out  = []
+            for d in dates:
+                try:
+                    v = hist_val[d]
+                    out.append(float(v.iloc[0]) if isinstance(v, pd.Series) else float(v))
+                except KeyError:
+                    out.append(last)
+            return out
 
         if not buys.empty:
             fig.add_trace(go.Scatter(
