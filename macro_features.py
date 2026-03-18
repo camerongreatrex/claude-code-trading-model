@@ -109,8 +109,18 @@ def compute_macro_features(vix: pd.DataFrame, curve: pd.DataFrame) -> pd.DataFra
 
     macro["macro_score"] = (calm_score + curve_score + term_score) / 3
 
-    # position size multiplier for portfolio.py: 0.5x (fear) to 1.2x (calm)
-    macro["size_multiplier"] = (1.0 + 0.2 * macro["macro_score"]).clip(0.5, 1.2)
+    # Position size multiplier for portfolio.py.
+    # Previous formula (0.2 scalar) only spanned 0.80–1.20 — virtually no effect.
+    # With scalar = 0.5, the range becomes 0.50–1.25 (clipped), giving the macro
+    # overlay real teeth in bear conditions:
+    #   calm/steep/normal vol  → ~1.25x (more aggressive in favourable env)
+    #   neutral                → 1.00x
+    #   elevated VIX, inverted → ~0.75-0.85x (meaningful reduction)
+    #   full crisis (all bad)  → 0.50x (half exposure)
+    # The 0.5 scalar is not tuned to a specific year — it reflects the intuition
+    # that "max bear" should produce half-exposure, which is a standard risk
+    # management heuristic across systematic funds.
+    macro["size_multiplier"] = (1.0 + 0.5 * macro["macro_score"]).clip(0.50, 1.25)
 
     return macro
 

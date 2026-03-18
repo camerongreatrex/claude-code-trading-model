@@ -708,8 +708,8 @@ def main():
 
     # ── Tab 1: Equity curves + drawdown + summary table ──────────────────────
     with tab1:
-        st.plotly_chart(chart_equity(df_port), use_container_width=True)
-        st.plotly_chart(chart_drawdown(df_port), use_container_width=True)
+        st.plotly_chart(chart_equity(df_port), width="stretch")
+        st.plotly_chart(chart_drawdown(df_port), width="stretch")
 
         st.markdown('<div class="section-head">All portfolio methods — summary</div>',
                     unsafe_allow_html=True)
@@ -719,7 +719,7 @@ def main():
                 lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
                           "color:#ff5555" if (isinstance(v, str) and "-" in v and "%" in v and v != "-0.0%") else "",
             ),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
         # Monthly returns heatmap
@@ -727,7 +727,7 @@ def main():
         st.markdown('<div class="section-head">Monthly returns — equal weight strategy</div>',
                     unsafe_allow_html=True)
         if not eq_ret.empty:
-            st.plotly_chart(chart_monthly_heatmap(eq_ret), use_container_width=True)
+            st.plotly_chart(chart_monthly_heatmap(eq_ret), width="stretch")
 
     # ── Tab 2: Monte Carlo ───────────────────────────────────────────────────
     with tab2:
@@ -759,9 +759,9 @@ def main():
             actual_norm = (1 + eq_ret).cumprod().values
 
             st.plotly_chart(chart_monte_carlo(eq_curves, actual_norm),
-                            use_container_width=True)
+                            width="stretch")
             st.plotly_chart(chart_mc_histogram(eq_curves),
-                            use_container_width=True)
+                            width="stretch")
 
             # MC summary stats
             finals = eq_curves[:, -1]
@@ -814,7 +814,7 @@ def main():
             if wf.empty:
                 st.warning("Walk-forward data not found.")
             else:
-                st.plotly_chart(chart_walk_forward(wf), use_container_width=True)
+                st.plotly_chart(chart_walk_forward(wf), width="stretch")
                 mean_s = wf["sharpe"].mean()
                 color  = "#50fa7b" if mean_s > 0 else "#ff5555"
                 st.markdown(f"""
@@ -842,7 +842,7 @@ def main():
         with right:
             if ticker_curves:
                 st.plotly_chart(chart_asset_sharpe(ticker_curves),
-                                use_container_width=True)
+                                width="stretch")
 
         # OOS selection comparison table
         if not oos_sel.empty:
@@ -875,7 +875,7 @@ def main():
                     "IS Sharpe (full period)"   : "{:.3f}",
                     "OOS Sharpe (walk-fwd mean)": "{:.3f}",
                 }),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
             )
             st.markdown(
                 f"<span style='color:#50fa7b;font-size:.82rem'>"
@@ -896,7 +896,7 @@ def main():
                 unsafe_allow_html=True,
             )
             st.plotly_chart(chart_macro_overlay(df_port, macro),
-                            use_container_width=True)
+                            width="stretch")
 
             # Regime statistics
             st.markdown('<div class="section-head">Macro regime statistics (full history)</div>',
@@ -969,7 +969,7 @@ def main():
 
             st.plotly_chart(
                 chart_paper_portfolio(pt_history, intraday_df, pt_trades),
-                use_container_width=True,
+                width="stretch",
             )
 
             # ── Open positions table ──────────────────────────────────────────
@@ -1024,7 +1024,7 @@ def main():
                     .applymap(_color_pnl, subset=["Chg %", "Unreal P&L"])
                     .format({"Entry": "${:.2f}", "Current": "${:.2f}",
                              "Chg %": "{:+.2f}%", "Unreal P&L": "${:+,.2f}"}),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
 
             # ── Recent trades ─────────────────────────────────────────────────
@@ -1039,7 +1039,7 @@ def main():
                     return ""
                 st.dataframe(
                     recent.style.applymap(_color_action, subset=["action"]),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
 
             # ── Kill switch status ────────────────────────────────────────
@@ -1074,7 +1074,7 @@ def main():
                         return ""
                     st.dataframe(
                         orders_df.style.applymap(_color_order, subset=["action"]),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
             else:
                 st.markdown(
@@ -1134,7 +1134,7 @@ def main():
             with lv4: st.metric("Avg RSI (longs)", f"{avg_rsi_long:.1f}" if n_long > 0 else "—")
 
             st.markdown("")
-            st.plotly_chart(chart_ma_spread(live_df), use_container_width=True)
+            st.plotly_chart(chart_ma_spread(live_df), width="stretch")
 
             st.markdown('<div class="section-head">Full universe — current signal state</div>',
                         unsafe_allow_html=True)
@@ -1160,7 +1160,7 @@ def main():
                          "MA Spread %": "{:+.2f}%", "RSI": "{:.1f}",
                          "20d Ret %": "{:+.1f}%", "60d Ret %": "{:+.1f}%",
                          "Dist High %": "{:+.1f}%"}),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
             )
 
 

@@ -1,6 +1,0 @@
-date,ticker,action,shares,price,value,commission,pnl,reason
-2026-03-17,SPY,BUY,29.894024,669.03,20000.0,10.0,,init_golden_cross
-2026-03-17,IWM,BUY,80.3471,248.92,20000.0,10.0,,init_golden_cross
-2026-03-17,EEM,BUY,342.58307,58.38,20000.0,10.0,,init_golden_cross
-2026-03-17,TLT,BUY,229.331501,87.21,20000.0,10.0,,init_golden_cross
-2026-03-17,GLD,BUY,43.437657,460.43,20000.0,10.0,,init_golden_cross
