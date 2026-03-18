@@ -397,9 +397,11 @@ def get_intraday_curve() -> pd.DataFrame:
     for ticker, pos in positions.items():
         if ticker not in intraday:
             continue
-        df     = intraday[ticker]
-        close  = df["Close"] if "Close" in df.columns else df.iloc[:, 3]
-        series = (close * pos["shares"]).rename(ticker)
+        df    = intraday[ticker]
+        close = df["Close"] if "Close" in df.columns else df.iloc[:, 3]
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]   # squeeze to Series if yfinance returns extra dim
+        series = close * pos["shares"]
         combined = series if combined is None else combined.add(series, fill_value=0)
 
     if combined is None:
@@ -409,6 +411,10 @@ def get_intraday_curve() -> pd.DataFrame:
     result.index = pd.to_datetime(result.index)
     if result.index.tz is not None:
         result.index = result.index.tz_localize(None)
+    # Keep only today's bars — period="1d" from yfinance bleeds into
+    # the previous session's extended hours after market close.
+    today = pd.Timestamp.today().normalize()
+    result = result[result.index >= today]
     return result.dropna()
 
 

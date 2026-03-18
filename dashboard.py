@@ -689,17 +689,17 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
         annotation_font_color="#555",
     )
 
-    # "Now" vertical line — only when intraday data is present
-    if now is not None and not intraday_df.empty:
+    # "Now" vertical line — always shown so you can see the current time
+    if now is not None:
         fig.add_vline(
-            x=now.timestamp() * 1000,  # Plotly expects ms epoch for datetime axes
+            x=now.timestamp() * 1000,  # ms epoch for Plotly date axes
             line_color="#ffb86c", line_dash="dot", line_width=1.2,
             annotation_text=f"  {now.strftime('%H:%M')}",
             annotation_font_color="#ffb86c",
             annotation_position="top right",
         )
 
-    # Compute a sensible y-axis range so fill-to-zero can't blow out the scale.
+    # Y-axis range
     all_vals = []
     if not history_df.empty:
         all_vals += history_df["portfolio_value"].dropna().tolist()
@@ -708,23 +708,33 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
     if all_vals:
         lo = min(all_vals) * 0.995
         hi = max(all_vals) * 1.005
-        yaxis_range = [lo, hi]
     else:
-        yaxis_range = None
+        lo = PT_INITIAL_CAPITAL * 0.97
+        hi = PT_INITIAL_CAPITAL * 1.03
+
+    # Default view: 2-hour window ending at now → home/reset snaps back to current time
+    _now = now or datetime.now()
+    x_end   = _now + pd.Timedelta(minutes=15)
+    x_start = _now - pd.Timedelta(hours=2)
 
     fig.update_layout(**_layout(
         height=height,
+        # uirevision = constant string → Plotly.js preserves zoom/pan across data
+        # updates (same as TradingView live feed — data refreshes, viewport stays)
+        uirevision="paper_portfolio",
         title=dict(text="Paper Portfolio — Equity Curve  (live via Yahoo Finance)",
                    font=dict(size=13)),
-        # pan by default; scroll-wheel zooms centred on mouse (set via config below)
         dragmode="pan",
         yaxis=dict(
             title="Value ($)", tickprefix="$", tickformat=",.0f",
-            range=yaxis_range,
+            range=[lo, hi],
             fixedrange=False,
         ),
         xaxis=dict(
             title=None,
+            type="date",
+            tickformat="%b %d\n%H:%M",
+            range=[x_start.isoformat(), x_end.isoformat()],
             fixedrange=False,
             rangeslider=dict(visible=False),
             rangeselector=dict(
@@ -733,9 +743,10 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 bordercolor="#444",
                 font=dict(color="#c0c0c0", size=10),
                 buttons=[
-                    dict(count=7,  label="1W",  step="day",   stepmode="backward"),
+                    dict(count=2,  label="2H",  step="hour", stepmode="backward"),
+                    dict(count=1,  label="Today", step="day", stepmode="todate"),
+                    dict(count=7,  label="1W",  step="day",  stepmode="backward"),
                     dict(count=1,  label="1M",  step="month", stepmode="backward"),
-                    dict(count=3,  label="3M",  step="month", stepmode="backward"),
                     dict(step="all", label="All"),
                 ],
             ),
@@ -1121,7 +1132,12 @@ def main():
                 st.plotly_chart(
                     chart_paper_portfolio(pt_history, intraday_df, pt_trades, now=now),
                     theme=None, width="stretch",
-                    config={"scrollZoom": True, "displayModeBar": True},
+                    config={
+                        "scrollZoom": True,
+                        "displayModeBar": True,
+                        "modeBarButtonsToRemove": ["resetScale2d", "autoScale2d"],
+                    },
+                    key="paper_portfolio_chart",
                 )
 
                 # ── Open positions table ─────────────────────────────────────
