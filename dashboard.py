@@ -69,6 +69,9 @@ st.markdown("""
     font-size: 0.82rem;
   }
   .stTabs [aria-selected="true"] { color: #e0e0e0; background: #2d2d2d; }
+  /* Prevent fragment grey-out on 5s auto-refresh */
+  [data-stale="true"] { opacity: 1 !important; transition: none !important; }
+  [data-stale="true"] * { opacity: 1 !important; transition: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -458,7 +461,7 @@ def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
 
 def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                          height: int = 560) -> go.Figure:
-    macro = macro.reindex(df_port.index, method="ffill")
+    macro = macro.reindex(df_port.index).ffill()
     fig   = make_subplots(rows=3, cols=1, shared_xaxes=True,
                           vertical_spacing=0.04,
                           row_heights=[0.5, 0.25, 0.25],
@@ -608,7 +611,10 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                           intraday_df: pd.DataFrame,
                           trades_df: pd.DataFrame,
                           height: int = 440,
-                          now: datetime = None) -> go.Figure:
+                          now: datetime = None,
+                          entry_value: float = None,
+                          x_range: list = None,
+                          spy_curve=None) -> go.Figure:
     """
     TradingView-style equity curve combining:
       - Historical daily closes (from paper_trader history.csv)
@@ -617,6 +623,11 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
     """
     fig = go.Figure()
 
+    # Exclude today from daily history — intraday trace covers today
+    if not history_df.empty:
+        _today_str = pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d')
+        history_df = history_df[history_df["date"].astype(str) < _today_str]
+
     # ── Historical equity curve ───────────────────────────────────────────────
     if not history_df.empty:
         fig.add_trace(go.Scatter(
@@ -624,17 +635,46 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             y=history_df["portfolio_value"],
             name="Portfolio (daily)",
             line=dict(color="#4a9eff", width=2.2),
-            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>$%{y:,.0f}<extra></extra>",
+            hovertemplate=(
+                "<b>%{x|%b %d, %Y}</b><br>"
+                "End-of-day value: <b>$%{y:,.0f}</b><br>"
+                "<i>Recorded at 4:45 PM ET after the market close.<br>"
+                "Each point = one trading day of holding the portfolio.</i>"
+                "<extra></extra>"
+            ),
         ))
 
-    # ── Today's intraday curve ────────────────────────────────────────────────
-    if not intraday_df.empty:
-        fig.add_trace(go.Scatter(
+    # ── Today's intraday candlesticks ─────────────────────────────────────────
+    if not intraday_df.empty and {"open","high","low","close"}.issubset(intraday_df.columns):
+        fig.add_trace(go.Candlestick(
             x=intraday_df.index,
-            y=intraday_df["portfolio_value"],
+            open=intraday_df["open"],
+            high=intraday_df["high"],
+            low=intraday_df["low"],
+            close=intraday_df["close"],
             name="Today (live)",
-            line=dict(color="#50fa7b", width=1.8),
-            hovertemplate="<b>%{x|%H:%M}</b><br>$%{y:,.0f}<extra></extra>",
+            increasing=dict(line=dict(color="#50fa7b", width=1),
+                            fillcolor="rgba(80,250,123,0.7)"),
+            decreasing=dict(line=dict(color="#ff5555", width=1),
+                            fillcolor="rgba(255,85,85,0.7)"),
+        ))
+
+    # ── S&P 500 benchmark (subtle dashed line, normalized to same start) ──────
+    if spy_curve is not None and not spy_curve.empty:
+        fig.add_trace(go.Scatter(
+            x=spy_curve.index,
+            y=spy_curve.values,
+            name="S&P 500",
+            line=dict(color="#7878aa", width=1.2, dash="dot"),
+            opacity=0.6,
+            hovertemplate=(
+                "<b>S&P 500 Benchmark</b><br>"
+                "%{x|%H:%M}<br>"
+                "Equivalent value: <b>$%{y:,.0f}</b><br>"
+                "<i>$100k in SPY — normalized to the same starting value. "
+                "Drift shows relative over/under-performance vs the index.</i>"
+                "<extra></extra>"
+            ),
         ))
 
     # ── Trade markers ─────────────────────────────────────────────────────────
@@ -666,7 +706,13 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 text=buys["ticker"].tolist(),
                 textposition="top center",
                 textfont=dict(size=9, color=PALETTE["pos"]),
-                hovertemplate="<b>BUY %{text}</b><br>%{x|%Y-%m-%d}<extra></extra>",
+                hovertemplate=(
+                    "<b>BUY %{text}</b><br>"
+                    "%{x|%b %d, %Y}<br>"
+                    "Entry price: $%{y:,.2f}<br>"
+                    "<i>Strategy opened a long position — MA50 crossed above MA200 (golden cross).</i>"
+                    "<extra></extra>"
+                ),
             ))
 
         if not sells.empty:
@@ -679,43 +725,55 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 text=sells["ticker"].tolist(),
                 textposition="bottom center",
                 textfont=dict(size=9, color=PALETTE["neg"]),
-                hovertemplate="<b>SELL %{text}</b><br>%{x|%Y-%m-%d}<extra></extra>",
+                hovertemplate=(
+                    "<b>SELL %{text}</b><br>"
+                    "%{x|%b %d, %Y}<br>"
+                    "Exit price: $%{y:,.2f}<br>"
+                    "<i>Strategy closed the position — MA50 crossed below MA200 (death cross) or trailing stop hit.</i>"
+                    "<extra></extra>"
+                ),
             ))
 
-    # Reference line at initial capital
+    # Reference line at initial capital ($100k)
     fig.add_hline(
         y=PT_INITIAL_CAPITAL, line_color="#444", line_dash="dot", line_width=1,
         annotation_text=f"  Start ${PT_INITIAL_CAPITAL/1000:.0f}k",
         annotation_font_color="#555",
     )
-
-    # "Now" vertical line — always shown so you can see the current time
-    if now is not None:
-        fig.add_vline(
-            x=now.timestamp() * 1000,  # ms epoch for Plotly date axes
-            line_color="#ffb86c", line_dash="dot", line_width=1.2,
-            annotation_text=f"  {now.strftime('%H:%M')}",
-            annotation_font_color="#ffb86c",
-            annotation_position="top right",
+    # Reference line at today's actual entry value (after commissions / market gaps)
+    # Shows WHY the portfolio opened below $100k — commission drag + gap risk
+    if entry_value and abs(entry_value - PT_INITIAL_CAPITAL) > 1:
+        fig.add_hline(
+            y=entry_value, line_color="#666", line_dash="dash", line_width=1,
+            annotation_text=f"  Entry ${entry_value:,.0f}",
+            annotation_font_color="#888",
         )
 
-    # Y-axis range
-    all_vals = []
-    if not history_df.empty:
-        all_vals += history_df["portfolio_value"].dropna().tolist()
-    if not intraday_df.empty:
-        all_vals += intraday_df["portfolio_value"].dropna().tolist()
-    if all_vals:
-        lo = min(all_vals) * 0.995
-        hi = max(all_vals) * 1.005
-    else:
-        lo = PT_INITIAL_CAPITAL * 0.97
-        hi = PT_INITIAL_CAPITAL * 1.03
+    # "Now" vertical line — use add_shape + add_annotation with ISO string
+    # so the x coordinate is in the same system as the intraday data (naive ET strings)
+    if now is not None:
+        now_str = now.strftime('%Y-%m-%dT%H:%M:%S')
+        fig.add_shape(
+            type="line",
+            x0=now_str, x1=now_str,
+            y0=0, y1=1, yref="paper",
+            line=dict(color="#ffb86c", dash="dot", width=1.2),
+        )
+        fig.add_annotation(
+            x=now_str, y=0.99, yref="paper",
+            text=f"  {now.strftime('%H:%M')}",
+            showarrow=False,
+            font=dict(color="#ffb86c", size=11),
+            xanchor="left",
+        )
 
-    # Default view: 2-hour window ending at now → home/reset snaps back to current time
-    _now = now or datetime.now()
-    x_end   = _now + pd.Timedelta(minutes=15)
-    x_start = _now - pd.Timedelta(hours=2)
+    # x_range is computed once on page load (session_state) and passed in.
+    # Keeping it constant across 5s fragment refreshes is what allows uirevision
+    # to actually preserve user zoom — a changing range overrides it every time.
+    if x_range is None:
+        _now = now or pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
+        _today = _now.strftime('%Y-%m-%d')
+        x_range = [f"{_today}T09:25:00", f"{_today}T16:15:00"]
 
     fig.update_layout(**_layout(
         height=height,
@@ -726,15 +784,17 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                    font=dict(size=13)),
         dragmode="pan",
         yaxis=dict(
-            title="Value ($)", tickprefix="$", tickformat=",.0f",
-            range=[lo, hi],
+            title=dict(text="Value ($)", standoff=20),
+            tickprefix="$", tickformat=",.0f",
+            autorange=True,
             fixedrange=False,
         ),
+        margin=dict(l=80),
         xaxis=dict(
             title=None,
             type="date",
             tickformat="%b %d\n%H:%M",
-            range=[x_start.isoformat(), x_end.isoformat()],
+            range=x_range,
             fixedrange=False,
             rangeslider=dict(visible=False),
             rangeselector=dict(
@@ -821,24 +881,26 @@ def main():
 
     with c1: st.metric("Ann. Return",  f"{m_eq['ann_r']*100:.1f}%",
                         delta=delta_str(m_eq['ann_r'], m_bnh['ann_r']),
-                        help="Compound Annual Growth Rate (CAGR) — the annualised return "
-                             "if capital was invested for the full period. Delta shows "
-                             "outperformance vs buy & hold.")
+                        help="Compound Annual Growth Rate (CAGR) — the yearly return if capital "
+                             "was invested for the full backtest period. Arrow shows vs buy & hold: "
+                             "green ↑ = strategy beats B&H, red ↓ = B&H won.")
     with c2: st.metric("Sharpe Ratio", f"{m_eq['sharpe']:.2f}",
                         delta=delta_str(m_eq['sharpe'], m_bnh['sharpe'], pct=False),
-                        help="(Annualised return) / (Annualised volatility). A risk-adjusted "
-                             "return score. >1.0 is good; >2.0 is exceptional. Higher = "
-                             "more return earned per unit of risk taken.")
+                        help="Return ÷ volatility — how much return you earned per unit of risk. "
+                             ">1.0 is good, >2.0 is exceptional, <0 means you lost money. "
+                             "Arrow shows vs buy & hold: green ↑ = better risk-adjusted return than B&H.")
     with c3: st.metric("Volatility",   f"{m_eq['vol']*100:.1f}%",
                         delta=delta_str(m_eq['vol'], m_bnh['vol']), delta_color="inverse",
-                        help="Annualised standard deviation of daily returns. Measures how "
-                             "much returns vary day-to-day. Lower is better for a given "
-                             "level of return. Delta (inverse): green = lower vol than B&H.")
+                        help="Annualised standard deviation of daily returns — how wildly returns "
+                             "bounce day-to-day. 15% means a typical daily swing of ~1%. "
+                             "Arrow shows vs buy & hold: green ↓ = LESS volatile than B&H (good), "
+                             "red ↑ = MORE volatile (worse risk profile).")
     with c4: st.metric("Max Drawdown", f"{m_eq['max_dd']*100:.1f}%",
-                        delta=delta_str(m_eq['max_dd'], m_bnh['max_dd']), delta_color="inverse",
-                        help="Largest peak-to-trough decline in the equity curve. −20% means "
-                             "the strategy fell 20% from its peak before recovering. Lower "
-                             "magnitude = better. Delta (inverse): green = shallower DD than B&H.")
+                        delta=delta_str(m_eq['max_dd'], m_bnh['max_dd']), delta_color="normal",
+                        help="Largest peak-to-trough loss in portfolio history — e.g. −20% means "
+                             "the portfolio fell 20% from its highest point before recovering. "
+                             "Arrow shows vs buy & hold: green ↑ = SHALLOWER drawdown than B&H (good), "
+                             "red ↓ = deeper loss (worse downside protection).")
     with c5: st.metric("Calmar Ratio", f"{m_eq['calmar']:.2f}",
                         help="Annualised return divided by the absolute maximum drawdown. "
                              "Measures how much return you earned relative to the worst loss. "
@@ -849,12 +911,13 @@ def main():
                              "if winning days are larger than losing days (see Profit Factor).")
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "  📊  Equity Curves",
         "  🎲  Monte Carlo",
         "  🔁  Walk-Forward",
         "  🌍  Macro Overlay",
         "  📡  Live Signals",
+        "  📈  vs S&P 500",
     ])
 
     # ── Tab 1: Equity curves + drawdown + summary table ──────────────────────
@@ -1072,9 +1135,9 @@ def main():
     # ── Tab 5: Paper Trading & Live Signals ──────────────────────────────────
     with tab5:
 
-        @st.fragment(run_every=30)
+        @st.fragment(run_every=5)
         def _live_section():
-            now = datetime.now()
+            now = pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
 
             # Header row: clock + manual refresh
             hdr_left, hdr_right = st.columns([3, 1])
@@ -1086,11 +1149,12 @@ def main():
                     f"{'◉ MARKET OPEN' if market_open else '○ MARKET CLOSED'}"
                     f"</span>"
                     f"<span style='color:#555;font-size:.78rem'>  ·  "
-                    f"Updated: {now.strftime('%Y-%m-%d  %H:%M:%S')}  ·  auto-refresh 30s</span>",
+                    f"Updated: {now.strftime('%Y-%m-%d  %H:%M:%S')}  ·  auto-refresh 5s</span>",
                     unsafe_allow_html=True,
                 )
             with hdr_right:
                 if st.button("Refresh now", type="secondary"):
+                    st.session_state.pop("paper_chart_x_range", None)
                     st.cache_data.clear()
                     st.rerun()
 
@@ -1107,30 +1171,117 @@ def main():
                     "```\npython paper_trader.py run\n```"
                 )
             else:
-                pv        = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
-                cash      = pt_state["cash"]
-                total_ret = (pv / PT_INITIAL_CAPITAL - 1) * 100
-                n_pos     = len(pt_state.get("positions", {}))
-
-                daily_ret = 0.0
-                if len(pt_history) >= 2:
-                    daily_ret = float(pt_history["daily_return"].iloc[-1])
-
-                st.markdown('<div class="section-head">Paper Portfolio</div>', unsafe_allow_html=True)
-                pm1, pm2, pm3, pm4, pm5 = st.columns(5)
-                with pm1: st.metric("Portfolio Value", f"${pv:,.0f}",
-                                     help="Cash + open positions at last close")
-                with pm2: st.metric("Total Return",    f"{total_ret:+.2f}%")
-                with pm3: st.metric("Today's Return",  f"{daily_ret:+.2f}%")
-                with pm4: st.metric("Cash",            f"${cash:,.0f}")
-                with pm5: st.metric("Open Positions",  str(n_pos))
+                cash  = pt_state["cash"]
+                n_pos = len(pt_state.get("positions", {}))
 
                 # TradingView-style equity chart (intraday live)
-                with st.spinner("Fetching intraday…"):
-                    intraday_df = get_intraday_curve()
+                intraday_df, live_prices, spy_curve = get_intraday_curve()
+
+                prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
+
+                # ── Open position market values (from fresh per-ticker prices) ─
+                tot_invested = sum(pos["cost_basis"] for pos in pt_state.get("positions", {}).values())
+                tot_cur_val  = sum(
+                    pos["shares"] * (live_prices.get(t) or pos["entry_price"])
+                    for t, pos in pt_state.get("positions", {}).items()
+                )
+                tot_unreal   = tot_cur_val - tot_invested
+                tot_chg_pct  = (tot_cur_val / tot_invested - 1) * 100 if tot_invested else 0.0
+
+                # pv from live per-ticker prices (consistent with positions table;
+                # avoids the intraday OHLC sum having stale zeros at 5-min boundaries)
+                pv        = (tot_cur_val + cash) if live_prices else prev_pv
+                daily_ret = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
+                total_ret = (pv / PT_INITIAL_CAPITAL - 1) * 100
+                daily_pnl_usd = pv - prev_pv
+
+                # ── Realized P&L from closed trades ──────────────────────────
+                today_str_filter = now.strftime('%Y-%m-%d')
+                if not pt_trades.empty and "pnl" in pt_trades.columns:
+                    sells = pt_trades[
+                        (pt_trades["action"] == "SELL") &
+                        pt_trades["pnl"].notna() &
+                        (pt_trades["pnl"].astype(str).str.strip() != "")
+                    ]
+                    all_realized   = pd.to_numeric(sells["pnl"], errors="coerce").fillna(0).sum()
+                    today_sells    = sells[sells["date"].dt.strftime('%Y-%m-%d') == today_str_filter]
+                    today_realized = pd.to_numeric(today_sells["pnl"], errors="coerce").fillna(0).sum()
+                else:
+                    all_realized   = 0.0
+                    today_realized = 0.0
+
+                # today_unrealized = change in position market value vs yesterday
+                # (prev_pv - cash = yesterday's positions value, cash unchanged if no trades)
+                # This matches tot_unreal on day 1 and shows daily drift on later days.
+                prev_positions_val   = prev_pv - cash
+                today_unrealized     = tot_cur_val - prev_positions_val
+                today_unrealized_pct = (today_unrealized / abs(prev_positions_val) * 100) if prev_positions_val else 0.0
+
+                # ── GROUP 1: Portfolio Overview ───────────────────────────────
+                st.markdown('<div class="section-head">Portfolio Overview</div>', unsafe_allow_html=True)
+                pm1, pm2, pm3, pm4, pm5 = st.columns(5)
+                with pm1:
+                    st.metric(
+                        "Portfolio Value", f"${pv:,.0f}",
+                        delta=f"{daily_ret:+.2f}%",
+                        delta_color="normal",
+                        help="Live value: cash + all open positions marked to last 5-min bar. "
+                             "Arrow shows today's dollar change vs yesterday's close — green = up, red = down.",
+                    )
+                with pm2:
+                    st.metric(
+                        "Total Return", f"{total_ret:+.2f}%",
+                        help="Overall % return vs $100k starting capital since inception. "
+                             "Includes both unrealized gains (open positions) and realized gains (closed trades).",
+                    )
+                with pm3:
+                    st.metric(
+                        "Realized P&L", f"${all_realized:+,.0f}",
+                        delta=f"${today_realized:+,.0f} today" if today_realized != 0 else None,
+                        delta_color="normal",
+                        help="Total locked-in profit/loss from all closed trades since inception. "
+                             "Only increases/decreases when a position is sold. Arrow shows today's closed trades.",
+                    )
+                with pm4:
+                    st.metric(
+                        "Cash", f"${cash:,.0f}",
+                        help="Uninvested cash. The gap vs $100k starting capital reflects commissions (~0.05% per trade).",
+                    )
+                with pm5:
+                    st.metric("Open Positions", str(n_pos))
+
+                # ── GROUP 2: Daily P&L Breakdown ──────────────────────────────
+                st.markdown('<div class="section-head">Today\'s P&L</div>', unsafe_allow_html=True)
+                d1, d2 = st.columns(2)
+                with d1:
+                    st.metric(
+                        "Unrealized (today)", f"${today_unrealized:+,.0f}",
+                        delta=f"{today_unrealized_pct:+.2f}%",
+                        delta_color="normal",
+                        help="Change in open position values today vs yesterday's close. "
+                             "Not locked in — fluctuates until positions are sold. Arrow = % version.",
+                    )
+                with d2:
+                    st.metric(
+                        "Realized (today)", f"${today_realized:+,.0f}",
+                        help="P&L from positions actually closed today. Zero if no trades were executed today.",
+                    )
+
+                # ── Equity chart ──────────────────────────────────────────────
+                # x_range cached once per page load → constant across 5s refreshes
+                # → uirevision can actually preserve user zoom (changing range overrides it)
+                if "paper_chart_x_range" not in st.session_state:
+                    _today = now.strftime('%Y-%m-%d')
+                    st.session_state["paper_chart_x_range"] = [
+                        f"{_today}T09:25:00",
+                        f"{_today}T16:15:00",
+                    ]
 
                 st.plotly_chart(
-                    chart_paper_portfolio(pt_history, intraday_df, pt_trades, now=now),
+                    chart_paper_portfolio(pt_history, intraday_df, pt_trades,
+                                          now=now, entry_value=prev_pv,
+                                          x_range=st.session_state["paper_chart_x_range"],
+                                          spy_curve=spy_curve),
                     theme=None, width="stretch",
                     config={
                         "scrollZoom": True,
@@ -1140,42 +1291,48 @@ def main():
                     key="paper_portfolio_chart",
                 )
 
-                # ── Open positions table ─────────────────────────────────────
+                # ── GROUP 3: Open Positions ───────────────────────────────────
                 if pt_state.get("positions"):
-                    st.markdown('<div class="section-head">Open positions</div>',
+                    st.markdown('<div class="section-head">Open Positions</div>',
                                 unsafe_allow_html=True)
 
-                    @st.cache_data(ttl=120, show_spinner=False)
-                    def _pos_prices(tickers_key: str) -> dict:
-                        import yfinance as yf
-                        tickers = tickers_key.split(",")
-                        prices  = {}
-                        for t in tickers:
-                            try:
-                                tk = yf.Ticker(t)
-                                prices[t] = tk.fast_info.get("last_price") or tk.fast_info.get("previousClose")
-                            except Exception:
-                                pass
-                        return prices
-
-                    tickers_key = ",".join(sorted(pt_state["positions"]))
-                    live_prices = _pos_prices(tickers_key)
+                    t1, t2, t3 = st.columns(3)
+                    with t1:
+                        st.metric(
+                            "Total Invested", f"${tot_invested:,.0f}",
+                            help="Sum of cost basis (dollars deployed) across all open positions.",
+                        )
+                    with t2:
+                        st.metric(
+                            "Market Value", f"${tot_cur_val:,.0f}",
+                            delta=f"{tot_chg_pct:+.2f}%",
+                            delta_color="normal",
+                            help="Current market value of all open positions (shares × last 5-min bar close). "
+                                 "Arrow shows % gain/loss vs cost basis — green = above cost, red = below.",
+                        )
+                    with t3:
+                        st.metric(
+                            "Unrealized P&L", f"${tot_unreal:+,.0f}",
+                            delta=f"{tot_chg_pct:+.2f}%",
+                            delta_color="normal",
+                            help="Market Value minus cost basis — the open gain/loss across all positions. "
+                                 "Unrealized until sold. Arrow shows % change: green = up, red = down.",
+                        )
 
                     pos_rows = []
                     for ticker, pos in pt_state["positions"].items():
-                        cur = live_prices.get(ticker, pos["entry_price"])
-                        cur = cur if cur else pos["entry_price"]
+                        cur = live_prices.get(ticker) or pos["entry_price"]
                         cur_val    = pos["shares"] * cur
                         unreal_pnl = cur_val - pos["cost_basis"]
                         unreal_pct = (cur / pos["entry_price"] - 1) * 100
                         pos_rows.append({
                             "Ticker"     : ticker,
-                            "Shares"     : round(pos["shares"], 3),
-                            "Entry"      : pos["entry_price"],
-                            "Current"    : round(cur, 2),
+                            "Entry Time" : pos.get("entry_date", "—"),
+                            "Invested"   : round(pos["cost_basis"], 2),
+                            "Entry $"    : round(pos["entry_price"], 2),
+                            "Current $"  : round(cur, 2),
                             "Chg %"      : round(unreal_pct, 2),
                             "Unreal P&L" : round(unreal_pnl, 2),
-                            "Entry Date" : pos["entry_date"],
                         })
 
                     pos_df = pd.DataFrame(pos_rows)
@@ -1189,10 +1346,12 @@ def main():
                     st.dataframe(
                         pos_df.style
                         .map(_color_pnl, subset=["Chg %", "Unreal P&L"])
-                        .format({"Entry": "${:.2f}", "Current": "${:.2f}",
-                                 "Chg %": "{:+.2f}%", "Unreal P&L": "${:+,.2f}"}),
+                        .format({"Invested": "${:,.2f}", "Entry $": "${:.2f}",
+                                 "Current $": "${:.2f}", "Chg %": "{:+.2f}%",
+                                 "Unreal P&L": "${:+,.2f}"}),
                         width="stretch", hide_index=True,
                     )
+
 
                 # ── Recent trades ─────────────────────────────────────────────
                 if not pt_trades.empty:
@@ -1313,6 +1472,255 @@ def main():
                 )
 
         _live_section()
+
+    # ── Tab 6: vs S&P 500 ────────────────────────────────────────────────────
+    with tab6:
+
+        @st.cache_data(ttl=300, show_spinner=False)
+        def _spy_history(start_date: str):
+            """Daily SPY closes from portfolio inception to today."""
+            import yfinance as yf
+            try:
+                raw = yf.download("SPY", start=start_date, auto_adjust=True,
+                                  progress=False)
+                if isinstance(raw.columns, pd.MultiIndex):
+                    raw.columns = raw.columns.droplevel(1)
+                raw.index = pd.to_datetime(raw.index).tz_localize(None)
+                if "Close" in raw.columns and not raw.empty:
+                    return raw["Close"].dropna()
+            except Exception:
+                pass
+            # Fallback: Ticker.history()
+            try:
+                raw = yf.Ticker("SPY").history(start=start_date, auto_adjust=True)
+                raw.index = pd.to_datetime(raw.index).tz_localize(None)
+                if "Close" in raw.columns and not raw.empty:
+                    return raw["Close"].dropna()
+            except Exception:
+                pass
+            return pd.Series(dtype=float)
+
+        @st.fragment(run_every=30)
+        def _vs_sp_section():
+            now_et = pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
+
+            pt_state   = load_state()
+            pt_history = load_history()
+
+            if not pt_state:
+                st.info("Paper trading not initialised. Run `python paper_trader.py init` first.")
+                return
+
+            # ── Intraday (live) comparison ────────────────────────────────────
+            st.markdown('<div class="section-head">Live — Today vs S&P 500</div>',
+                        unsafe_allow_html=True)
+
+            intraday_df, live_prices, spy_intraday = get_intraday_curve()
+
+            cash    = pt_state["cash"]
+            prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
+            tot_cur_val = sum(
+                pos["shares"] * (live_prices.get(t) or pos["entry_price"])
+                for t, pos in pt_state.get("positions", {}).items()
+            )
+            pv = (tot_cur_val + cash) if live_prices else prev_pv
+
+            # Portfolio today %
+            port_today_pct = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
+
+            # SPY today % from intraday curve
+            spy_today_pct = 0.0
+            if not spy_intraday.empty:
+                spy_today_pct = (float(spy_intraday.iloc[-1]) / float(spy_intraday.iloc[0]) - 1) * 100
+
+            alpha_today = port_today_pct - spy_today_pct
+            beating     = alpha_today > 0
+
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.metric("Portfolio Today", f"{port_today_pct:+.2f}%",
+                          help="Portfolio's intraday % change vs yesterday's close.")
+            with c2:
+                st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%",
+                          help="SPY intraday % change from today's open (via yfinance 5m bars).")
+            with c3:
+                st.metric("Alpha (today)", f"{alpha_today:+.2f}%",
+                          delta="Outperforming" if beating else "Underperforming",
+                          delta_color="normal" if beating else "inverse",
+                          help="Portfolio return minus S&P return today. Positive = beating the index.")
+            with c4:
+                st.metric("Portfolio Value", f"${pv:,.0f}",
+                          help="Live portfolio value (positions × latest 5-min bar + cash).")
+
+            # Intraday chart — both normalized to same starting value
+            if not spy_intraday.empty or not intraday_df.empty:
+                fig_intra = go.Figure()
+
+                if not intraday_df.empty and "close" in intraday_df.columns:
+                    fig_intra.add_trace(go.Scatter(
+                        x=intraday_df.index, y=intraday_df["close"],
+                        name="My Portfolio", line=dict(color="#4a9eff", width=2),
+                        hovertemplate="<b>Portfolio</b><br>%{x|%H:%M}  $%{y:,.0f}<extra></extra>",
+                    ))
+
+                if not spy_intraday.empty:
+                    fig_intra.add_trace(go.Scatter(
+                        x=spy_intraday.index, y=spy_intraday.values,
+                        name="S&P 500 (SPY)", line=dict(color="#ffb86c", width=2, dash="dot"),
+                        hovertemplate="<b>S&P 500</b><br>%{x|%H:%M}  $%{y:,.0f}<extra></extra>",
+                    ))
+
+                # Now line
+                now_str = now_et.strftime('%Y-%m-%dT%H:%M:%S')
+                fig_intra.add_shape(type="line", x0=now_str, x1=now_str,
+                                    y0=0, y1=1, yref="paper",
+                                    line=dict(color="#888", dash="dot", width=1))
+
+                fig_intra.update_layout(**_layout(
+                    height=300, uirevision="vs_spy_intra",
+                    dragmode="pan",
+                    title=dict(text="Today — Portfolio vs S&P 500 (both normalized to same open value)",
+                               font=dict(size=12)),
+                    yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
+                    xaxis=dict(type="date", tickformat="%H:%M", rangeslider=dict(visible=False)),
+                    margin=dict(l=70),
+                ))
+                st.plotly_chart(fig_intra, theme=None, width="stretch",
+                                config={"scrollZoom": True, "displayModeBar": False},
+                                key="vs_spy_intra_chart")
+
+            # ── Historical comparison (daily) ─────────────────────────────────
+            st.markdown('<div class="section-head">Historical Record vs S&P 500</div>',
+                        unsafe_allow_html=True)
+
+            if pt_history.empty or len(pt_history) < 2:
+                st.info(
+                    "Only one day of history so far — historical comparison will appear "
+                    "after the scheduler runs the first EOD update tonight. "
+                    "Check back after 4:45 PM ET."
+                )
+            else:
+                start_date = str(pt_history["date"].min().date())
+                with st.spinner("Fetching SPY history…"):
+                    spy_closes = _spy_history(start_date)
+
+                if spy_closes.empty:
+                    st.error("Could not fetch SPY data.")
+                else:
+                    # Align history and SPY on the same dates
+                    hist = pt_history.set_index("date")["portfolio_value"].copy()
+                    hist.index = pd.to_datetime(hist.index)
+                    spy_aligned = spy_closes.reindex(hist.index).ffill()
+
+                    # Normalize both to $100k at portfolio inception
+                    port_norm = hist / hist.iloc[0] * PT_INITIAL_CAPITAL
+                    spy_norm  = spy_aligned / spy_aligned.iloc[0] * PT_INITIAL_CAPITAL
+
+                    # Daily returns
+                    port_ret  = hist.pct_change().dropna() * 100
+                    spy_ret   = spy_aligned.pct_change().dropna() * 100
+
+                    # Summary metrics
+                    port_total = (hist.iloc[-1] / hist.iloc[0] - 1) * 100
+                    spy_total  = (spy_aligned.iloc[-1] / spy_aligned.iloc[0] - 1) * 100
+                    total_alpha = port_total - spy_total
+                    win_days    = int((port_ret.values > spy_ret.reindex(port_ret.index).values).sum())
+                    total_days  = len(port_ret)
+
+                    # Correlation
+                    common = port_ret.index.intersection(spy_ret.index)
+                    if len(common) >= 3:
+                        beta = float(np.cov(port_ret[common], spy_ret[common])[0, 1] /
+                                     np.var(spy_ret[common])) if np.var(spy_ret[common]) > 0 else 1.0
+                        corr = float(port_ret[common].corr(spy_ret[common]))
+                    else:
+                        beta, corr = 1.0, 1.0
+
+                    h1, h2, h3, h4, h5 = st.columns(5)
+                    with h1: st.metric("Portfolio Return", f"{port_total:+.2f}%",
+                                       help="Total return since portfolio inception.")
+                    with h2: st.metric("S&P 500 Return",  f"{spy_total:+.2f}%",
+                                       help="SPY total return over the same period.")
+                    with h3: st.metric("Total Alpha",     f"{total_alpha:+.2f}%",
+                                       delta="Outperforming" if total_alpha > 0 else "Underperforming",
+                                       delta_color="normal" if total_alpha > 0 else "inverse",
+                                       help="Portfolio return minus SPY return. Positive = beating the index.")
+                    with h4: st.metric("Beta",            f"{beta:.2f}",
+                                       help="Portfolio sensitivity to S&P moves. 1.0 = moves with the market. "
+                                            "<1 = less volatile than S&P, >1 = more volatile.")
+                    with h5: st.metric("Days Beating S&P", f"{win_days}/{total_days}",
+                                       help="Number of days the portfolio's daily return exceeded SPY's daily return.")
+
+                    # Historical chart
+                    fig_hist = go.Figure()
+                    fig_hist.add_trace(go.Scatter(
+                        x=port_norm.index, y=port_norm.values,
+                        name="My Portfolio", line=dict(color="#4a9eff", width=2.2),
+                        hovertemplate="<b>Portfolio</b><br>%{x|%b %d, %Y}  $%{y:,.0f}<extra></extra>",
+                    ))
+                    fig_hist.add_trace(go.Scatter(
+                        x=spy_norm.index, y=spy_norm.values,
+                        name="S&P 500 (SPY)", line=dict(color="#ffb86c", width=2, dash="dot"),
+                        hovertemplate="<b>S&P 500</b><br>%{x|%b %d, %Y}  $%{y:,.0f}<extra></extra>",
+                    ))
+                    fig_hist.add_hline(y=PT_INITIAL_CAPITAL, line_color="#444", line_dash="dot",
+                                       line_width=1, annotation_text="  $100k start",
+                                       annotation_font_color="#555")
+                    fig_hist.update_layout(**_layout(
+                        height=320, uirevision="vs_spy_hist",
+                        dragmode="pan",
+                        title=dict(text="Portfolio vs S&P 500 — both normalized to $100k at inception",
+                                   font=dict(size=12)),
+                        yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
+                        xaxis=dict(type="date", tickformat="%b %d", rangeslider=dict(visible=False)),
+                        margin=dict(l=70),
+                    ))
+                    st.plotly_chart(fig_hist, theme=None, width="stretch",
+                                   config={"scrollZoom": True, "displayModeBar": False})
+
+                    # Daily comparison table
+                    st.markdown('<div class="section-head">Daily Breakdown</div>',
+                                unsafe_allow_html=True)
+                    if len(common) > 0:
+                        tbl_rows = []
+                        for d in reversed(common):
+                            pr = float(port_ret[d]) if d in port_ret.index else 0.0
+                            sr = float(spy_ret[d]) if d in spy_ret.index else 0.0
+                            tbl_rows.append({
+                                "Date"         : d.strftime("%Y-%m-%d"),
+                                "Portfolio %"  : round(pr, 2),
+                                "S&P 500 %"    : round(sr, 2),
+                                "Alpha"        : round(pr - sr, 2),
+                                "Beating S&P"  : "✓" if pr > sr else "✗",
+                            })
+                        tbl = pd.DataFrame(tbl_rows)
+
+                        def _color_alpha(v):
+                            if isinstance(v, (int, float)):
+                                if v > 0: return "color:#50fa7b"
+                                if v < 0: return "color:#ff5555"
+                            return ""
+                        def _color_beat(v):
+                            if v == "✓": return "color:#50fa7b;font-weight:600"
+                            if v == "✗": return "color:#ff5555"
+                            return ""
+
+                        st.dataframe(
+                            tbl.style
+                            .map(_color_alpha, subset=["Portfolio %", "S&P 500 %", "Alpha"])
+                            .map(_color_beat, subset=["Beating S&P"])
+                            .format({"Portfolio %": "{:+.2f}%", "S&P 500 %": "{:+.2f}%",
+                                     "Alpha": "{:+.2f}%"}),
+                            width="stretch", hide_index=True,
+                        )
+
+                    st.caption(
+                        "Beta and correlation are meaningful only with 20+ days of data. "
+                        "Alpha = portfolio daily return − SPY daily return. "
+                        "Both series normalized to $100k at portfolio inception date."
+                    )
+
+        _vs_sp_section()
 
 
 if __name__ == "__main__":

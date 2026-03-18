@@ -109,7 +109,11 @@ def fetch_intraday_batch(tickers: list) -> dict:
             if isinstance(raw.columns, pd.MultiIndex):
                 raw.columns = raw.columns.droplevel(1)
             if raw.index.tz is not None:
-                raw.index = raw.index.tz_localize(None)
+                # strftime on the ET-converted index gives wall-clock strings,
+                # re-parsing as naive keeps ET display times (tz_localize(None)
+                # on tz-aware keeps UTC values, not wall-clock — avoid it here)
+                et = raw.index.tz_convert('America/New_York')
+                raw.index = pd.DatetimeIndex(et.strftime('%Y-%m-%d %H:%M:%S'))
             if not raw.empty:
                 results[ticker] = raw
         except Exception:
@@ -201,7 +205,7 @@ def _buy(state: dict, ticker: str, price: float,
     state["positions"][ticker] = {
         "shares"    : shares,
         "entry_price": price,
-        "entry_date" : trade_date,
+        "entry_date" : datetime.now().strftime("%Y-%m-%d %H:%M"),
         "cost_basis" : dollar_amount,
     }
     _append_csv(TRADES_FILE, {
@@ -380,42 +384,95 @@ def end_of_day_update():
 
 # ── Intraday curve (used by dashboard) ────────────────────────────────────────
 
-def get_intraday_curve() -> pd.DataFrame:
+def get_intraday_curve() -> tuple:
     """
-    Live portfolio value using today's 5-minute bars.
-    Returns DataFrame(index=datetime, columns=['portfolio_value']).
+    Live portfolio OHLC using today's 5-minute bars.
+    Returns (DataFrame(index=ET-naive datetime, columns=[open,high,low,close]),
+             dict of {ticker: last_price},
+             pd.Series spy benchmark normalized to portfolio's starting value).
     """
+    _empty_spy = pd.Series(dtype=float)
+    empty = (pd.DataFrame(columns=["open", "high", "low", "close"]), {}, _empty_spy)
     state = load_state()
     if not state or not state.get("positions"):
-        return pd.DataFrame(columns=["portfolio_value"])
+        return empty
 
     cash      = state["cash"]
     positions = state["positions"]
-    intraday  = fetch_intraday_batch(list(positions))
+    # Always include SPY so the benchmark curve is available even when SPY
+    # is not one of the portfolio holdings.
+    intraday  = fetch_intraday_batch(list(set(list(positions) + ["SPY"])))
 
-    combined = None
+    col_map     = {"open": "Open", "high": "High", "low": "Low", "close": "Close"}
+    all_series  = {key: {} for key in col_map}   # key -> {ticker: weighted series}
+    last_prices = {}
+
     for ticker, pos in positions.items():
         if ticker not in intraday:
             continue
-        df    = intraday[ticker]
-        close = df["Close"] if "Close" in df.columns else df.iloc[:, 3]
-        if isinstance(close, pd.DataFrame):
-            close = close.iloc[:, 0]   # squeeze to Series if yfinance returns extra dim
-        series = close * pos["shares"]
-        combined = series if combined is None else combined.add(series, fill_value=0)
+        df = intraday[ticker]
+        for key, yf_col in col_map.items():
+            col = df[yf_col] if yf_col in df.columns else None
+            if col is None:
+                continue
+            if isinstance(col, pd.DataFrame):
+                col = col.iloc[:, 0]
+            all_series[key][ticker] = col * pos["shares"]
+        # last price per ticker for the positions table
+        close_col = df["Close"] if "Close" in df.columns else df.iloc[:, 3]
+        if isinstance(close_col, pd.DataFrame):
+            close_col = close_col.iloc[:, 0]
+        if not close_col.empty:
+            last_prices[ticker] = float(close_col.iloc[-1])
 
-    if combined is None:
-        return pd.DataFrame(columns=["portfolio_value"])
+    if not all_series["close"]:
+        return empty
 
-    result = (combined + cash).to_frame("portfolio_value")
+    # Forward-fill before summing: tickers with a missing latest bar use their
+    # previous price rather than contributing 0, which caused artificial portfolio
+    # value dips every time one ticker lagged behind the others.
+    ohlc_sums = {}
+    for key, ticker_series in all_series.items():
+        if not ticker_series:
+            continue
+        combined = pd.concat(list(ticker_series.values()), axis=1)
+        combined = combined.ffill()
+        ohlc_sums[key] = combined.sum(axis=1)
+
+    if "close" not in ohlc_sums:
+        return empty
+
+    result = pd.DataFrame({k: v + cash for k, v in ohlc_sums.items()})
     result.index = pd.to_datetime(result.index)
     if result.index.tz is not None:
-        result.index = result.index.tz_localize(None)
-    # Keep only today's bars — period="1d" from yfinance bleeds into
-    # the previous session's extended hours after market close.
-    today = pd.Timestamp.today().normalize()
-    result = result[result.index >= today]
-    return result.dropna()
+        et = result.index.tz_convert('America/New_York')
+        result.index = pd.DatetimeIndex(et.strftime('%Y-%m-%d %H:%M:%S'))
+    today_str = pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d')
+    result = result[result.index >= pd.Timestamp(today_str)]
+    result = result.dropna()
+
+    # Sanity check: reject clearly bad yfinance data (intermittent price spikes)
+    if not result.empty:
+        last_close = float(result["close"].iloc[-1])
+        if last_close > INITIAL_CAPITAL * 2.5 or last_close < INITIAL_CAPITAL * 0.1:
+            return empty
+
+    # S&P 500 benchmark: normalize SPY to the portfolio's FIRST intraday bar value
+    # so both lines start at the same point at market open and diverge from there.
+    # Using prev_pv (yesterday's close) was wrong — the portfolio may gap up/down
+    # at open, pushing the SPY line above/below the portfolio artificially.
+    spy_curve    = _empty_spy
+    portfolio_open = float(result["close"].iloc[0]) if not result.empty else state.get("portfolio_value", INITIAL_CAPITAL)
+    if "SPY" in intraday:
+        spy_df  = intraday["SPY"]
+        spy_col = spy_df["Close"] if "Close" in spy_df.columns else spy_df.iloc[:, 3]
+        if isinstance(spy_col, pd.DataFrame):
+            spy_col = spy_col.iloc[:, 0]
+        spy_today = spy_col[spy_col.index >= pd.Timestamp(today_str)]
+        if not spy_today.empty:
+            spy_curve = (spy_today / float(spy_today.iloc[0])) * portfolio_open
+
+    return result, last_prices, spy_curve
 
 
 # ── Status ─────────────────────────────────────────────────────────────────────

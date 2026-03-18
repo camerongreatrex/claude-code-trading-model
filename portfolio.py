@@ -51,8 +51,8 @@ def atr_sizes(signals: pd.DataFrame, features: dict, capital: float) -> pd.DataF
     for ticker in signals.columns:
         if ticker not in features:
             continue
-        atr   = features[ticker]["atr_14"].reindex(signals.index, method="ffill").ffill()
-        close = features[ticker]["Close"].reindex(signals.index,   method="ffill").ffill()
+        atr   = features[ticker]["atr_14"].reindex(signals.index).ffill()
+        close = features[ticker]["Close"].reindex(signals.index).ffill()
         atr   = atr.replace(0, np.nan).ffill()
 
         dollar_pos    = (dollar_risk / atr) * close
@@ -175,7 +175,7 @@ def apply_macro_multiplier(sizes: pd.DataFrame) -> pd.DataFrame:
         return sizes
 
     macro      = pd.read_parquet(path)
-    multiplier = macro["size_multiplier"].reindex(sizes.index, method="ffill").fillna(1.0)
+    multiplier = macro["size_multiplier"].reindex(sizes.index).ffill().fillna(1.0)
     return sizes.multiply(multiplier, axis=0)
 
 

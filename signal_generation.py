@@ -101,7 +101,7 @@ def commodity_regime(df: pd.DataFrame, macro: pd.DataFrame) -> pd.Series:
     """
     if macro.empty:
         return equity_index_regime(df)
-    vix = macro["vix"].reindex(df.index, method="ffill").fillna(20)
+    vix = macro["vix"].reindex(df.index).ffill().fillna(20)
     return (vix > 25).astype(int)  # 1 = fear = use momentum
 
 # -----------------------------------------------------------------------------
@@ -129,7 +129,7 @@ def vix_gate(macro: pd.DataFrame, index: pd.Index) -> pd.Series:
     """
     if macro.empty:
         return pd.Series(1, index=index)
-    vix_z = macro["vix_zscore"].reindex(index, method="ffill").fillna(0)
+    vix_z = macro["vix_zscore"].reindex(index).ffill().fillna(0)
     return (vix_z < 2.5).astype(int)
 
 # -----------------------------------------------------------------------------

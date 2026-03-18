@@ -50,10 +50,14 @@ def fetch_live_data(tickers: list, lookback_days: int = 700) -> dict:
 
 
 def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain  = delta.clip(lower=0).rolling(window).mean()
-    loss  = (-delta.clip(upper=0)).rolling(window).mean()
-    return 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
+    """Wilder's EWM RSI — matches feature_engineering.py exactly."""
+    delta    = close.diff()
+    gains    = delta.clip(lower=0)
+    losses   = delta.clip(upper=0).abs()
+    avg_gain = gains.ewm(com=window - 1, min_periods=window).mean()
+    avg_loss = losses.ewm(com=window - 1, min_periods=window).mean()
+    rs       = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
 
 
 def _macd_hist(close: pd.Series) -> pd.Series:
