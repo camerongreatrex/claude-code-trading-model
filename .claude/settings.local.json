@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python run.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''dashboard.py''\\).read\\(\\)\\); print\\(''dashboard.py OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''live_signals.py''\\).read\\(\\)\\); print\\(''live_signals.py OK''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"from live_signals import get_live_signals; print\\(''live_signals imports OK''\\)\")",
+      "Bash(pip install:*)",
+      "Bash(python -c \"from paper_trader import load_state, load_trades, load_history, get_intraday_curve, INITIAL_CAPITAL; print\\(''paper_trader imports OK''\\)\")",
+      "Bash(python -c \"from scheduler import check_kill_switch, validate_prices; print\\(''scheduler imports OK''\\)\")",
+      "Bash(python -c \"from scheduler import check_kill_switch, ORDERS_FILE; print\\(''dashboard scheduler import OK''\\)\")"
+    ]
+  }
+}

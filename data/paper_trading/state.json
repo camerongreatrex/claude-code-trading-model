@@ -1,0 +1,44 @@
+{
+  "cash": -50.0,
+  "positions": {
+    "SPY": {
+      "shares": 29.89402436990644,
+      "entry_price": 669.030029296875,
+      "entry_date": "2026-03-17",
+      "trailing_high": 669.030029296875,
+      "cost_basis": 20000.0
+    },
+    "IWM": {
+      "shares": 80.34710006074214,
+      "entry_price": 248.9199981689453,
+      "entry_date": "2026-03-17",
+      "trailing_high": 248.9199981689453,
+      "cost_basis": 20000.0
+    },
+    "EEM": {
+      "shares": 342.583070128157,
+      "entry_price": 58.380001068115234,
+      "entry_date": "2026-03-17",
+      "trailing_high": 58.380001068115234,
+      "cost_basis": 20000.0
+    },
+    "TLT": {
+      "shares": 229.33150108885746,
+      "entry_price": 87.20999908447266,
+      "entry_date": "2026-03-17",
+      "trailing_high": 87.20999908447266,
+      "cost_basis": 20000.0
+    },
+    "GLD": {
+      "shares": 43.43765679505441,
+      "entry_price": 460.42999267578125,
+      "entry_date": "2026-03-17",
+      "trailing_high": 460.42999267578125,
+      "cost_basis": 20000.0
+    }
+  },
+  "initial_capital": 100000.0,
+  "initialized_date": "2026-03-17",
+  "last_eod_date": "2026-03-17",
+  "portfolio_value": 99950.0
+}

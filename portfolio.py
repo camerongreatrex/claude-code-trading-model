@@ -383,8 +383,8 @@ def main():
 
     print(f"\n  Best portfolio (highest mean OOS Sharpe): {best_label}")
     print()
-    print("  OOS Sharpe close to IS Sharpe → low overfitting")
-    print("  Large IS-OOS gap → overfit; consider simplifying that method")
+    print("  OOS Sharpe close to IS Sharpe -> low overfitting")
+    print("  Large IS-OOS gap -> overfit; consider simplifying that method")
 
     # ── Persist all equity curves for dashboard.py ────────────────────────────
     comparison_df = pd.DataFrame({
