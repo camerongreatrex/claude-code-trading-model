@@ -97,23 +97,36 @@ def _fetch_daily(ticker: str, lookback_days: int = 700) -> pd.DataFrame:
 
 
 def fetch_intraday_batch(tickers: list) -> dict:
-    """Today's 5-minute bars — used by the dashboard intraday chart."""
+    """Today's 5-minute bars — used by the dashboard intraday chart.
+
+    Uses period="2d" to get more complete data than period="1d" (yfinance
+    sometimes cuts off early-session bars with period="1d").
+
+    All data is converted to ET-naive timestamps then clipped to today's
+    regular trading hours (09:25–16:05 ET).  The filter MUST run after the
+    tz conversion — doing it before caused UTC values to be compared against
+    ET thresholds, silently dropping all morning bars.
+    """
+    now_et    = pd.Timestamp.now(tz='America/New_York')
+    today_str = now_et.strftime('%Y-%m-%d')
+    mkt_open  = pd.Timestamp(today_str + " 09:25:00")   # naive ET
+    mkt_close = pd.Timestamp(today_str + " 16:05:00")   # naive ET
+
     results = {}
     for ticker in tickers:
         try:
-            raw = yf.download(
-                ticker, period="1d", interval="5m",
-                auto_adjust=True, progress=False,
-                multi_level_index=False,
-            )
+            # Ticker.history() returns tz-aware America/New_York timestamps
+            # directly — more complete during live market hours than yf.download()
+            raw = yf.Ticker(ticker).history(period="2d", interval="5m")
+            if raw.empty:
+                continue
             if isinstance(raw.columns, pd.MultiIndex):
                 raw.columns = raw.columns.droplevel(1)
-            if raw.index.tz is not None:
-                # strftime on the ET-converted index gives wall-clock strings,
-                # re-parsing as naive keeps ET display times (tz_localize(None)
-                # on tz-aware keeps UTC values, not wall-clock — avoid it here)
-                et = raw.index.tz_convert('America/New_York')
-                raw.index = pd.DatetimeIndex(et.strftime('%Y-%m-%d %H:%M:%S'))
+            # Convert tz-aware ET → naive ET strings (wall-clock, DST-correct)
+            et_idx = raw.index.tz_convert('America/New_York')
+            raw.index = pd.DatetimeIndex(et_idx.strftime('%Y-%m-%d %H:%M:%S'))
+            # Filter to today's regular trading hours (comparison is naive ET vs naive ET)
+            raw = raw[(raw.index >= mkt_open) & (raw.index <= mkt_close)]
             if not raw.empty:
                 results[ticker] = raw
         except Exception:
@@ -450,15 +463,17 @@ def get_intraday_curve() -> tuple:
     if result.index.tz is not None:
         et = result.index.tz_convert('America/New_York')
         result.index = pd.DatetimeIndex(et.strftime('%Y-%m-%d %H:%M:%S'))
-    today_str = pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d')
-    result = result[result.index >= pd.Timestamp(today_str)]
-    result = result.dropna()
+    # fetch_intraday_batch already filters to today's regular hours — drop any
+    # remaining NaN rows from the ffill/concat alignment step only.
+    result = result.dropna(how="all")
 
     # Sanity check: reject clearly bad yfinance data (intermittent price spikes)
     if not result.empty:
         last_close = float(result["close"].iloc[-1])
         if last_close > INITIAL_CAPITAL * 2.5 or last_close < INITIAL_CAPITAL * 0.1:
             return empty
+
+    today_str = pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d')
 
     # S&P 500 benchmark: normalize SPY to the portfolio's FIRST intraday bar value
     # so both lines start at the same point at market open and diverge from there.
@@ -472,7 +487,8 @@ def get_intraday_curve() -> tuple:
         spy_col = spy_df["Close"] if "Close" in spy_df.columns else spy_df.iloc[:, 3]
         if isinstance(spy_col, pd.DataFrame):
             spy_col = spy_col.iloc[:, 0]
-        spy_today = spy_col[spy_col.index >= pd.Timestamp(today_str)]
+        # fetch_intraday_batch already clipped to today's regular hours
+        spy_today = spy_col
         if not spy_today.empty:
             spy_curve = (spy_today / float(spy_today.iloc[0])) * portfolio_open
 

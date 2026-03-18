@@ -14,7 +14,7 @@ from datetime import datetime
 from live_signals import get_live_signals
 from paper_trader import (
     load_state, load_trades, load_history,
-    get_intraday_curve, INITIAL_CAPITAL as PT_INITIAL_CAPITAL,
+    get_intraday_curve, end_of_day_update, INITIAL_CAPITAL as PT_INITIAL_CAPITAL,
 )
 from scheduler import check_kill_switch, ORDERS_FILE
 
@@ -773,7 +773,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
     if x_range is None:
         _now = now or pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
         _today = _now.strftime('%Y-%m-%d')
-        x_range = [f"{_today}T09:25:00", f"{_today}T16:15:00"]
+        x_range = [f"{_today}T09:25:00", f"{_today}T16:05:00"]
 
     fig.update_layout(**_layout(
         height=height,
@@ -1153,10 +1153,27 @@ def main():
                     unsafe_allow_html=True,
                 )
             with hdr_right:
-                if st.button("Refresh now", type="secondary"):
-                    st.session_state.pop("paper_chart_x_range", None)
-                    st.cache_data.clear()
-                    st.rerun()
+                btn1, btn2 = st.columns(2)
+                with btn1:
+                    if st.button("Refresh now", type="secondary"):
+                        st.session_state.pop("paper_chart_x_range", None)
+                        st.cache_data.clear()
+                        st.rerun()
+                with btn2:
+                    _market_closed = now.hour >= 16 or now.hour < 9
+                    if st.button("Run EOD Update", type="primary",
+                                 disabled=not _market_closed,
+                                 help="Run after 4 PM ET to record today's close, "
+                                      "evaluate tomorrow's signals, and update history. "
+                                      "Disabled during market hours."):
+                        with st.spinner("Running EOD update…"):
+                            try:
+                                end_of_day_update()
+                                st.cache_data.clear()
+                                st.success("EOD update complete — history and signals updated.")
+                                st.rerun()
+                            except Exception as _e:
+                                st.error(f"EOD update failed: {_e}")
 
             # ── Paper Portfolio ───────────────────────────────────────────────
             pt_state   = load_state()
@@ -1270,11 +1287,13 @@ def main():
                 # ── Equity chart ──────────────────────────────────────────────
                 # x_range cached once per page load → constant across 5s refreshes
                 # → uirevision can actually preserve user zoom (changing range overrides it)
-                if "paper_chart_x_range" not in st.session_state:
-                    _today = now.strftime('%Y-%m-%d')
+                _today = now.strftime('%Y-%m-%d')
+                # Reset range if it's a new day (dashboard left open overnight)
+                _cached = st.session_state.get("paper_chart_x_range", ["", ""])
+                if not _cached[0].startswith(_today):
                     st.session_state["paper_chart_x_range"] = [
                         f"{_today}T09:25:00",
-                        f"{_today}T16:15:00",
+                        f"{_today}T16:05:00",
                     ]
 
                 st.plotly_chart(
@@ -1592,13 +1611,15 @@ def main():
                                     y0=0, y1=1, yref="paper",
                                     line=dict(color="#888", dash="dot", width=1))
 
+                _vs_today = now_et.strftime('%Y-%m-%d')
                 fig_intra.update_layout(**_layout(
                     height=300, uirevision="vs_spy_intra",
                     dragmode="pan",
                     title=dict(text="Today — Portfolio vs S&P 500 (both normalized to same open value)",
                                font=dict(size=12)),
                     yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
-                    xaxis=dict(type="date", tickformat="%H:%M", rangeslider=dict(visible=False)),
+                    xaxis=dict(type="date", tickformat="%H:%M", rangeslider=dict(visible=False),
+                               range=[f"{_vs_today}T09:25:00", f"{_vs_today}T16:05:00"]),
                     margin=dict(l=70),
                 ))
                 st.plotly_chart(fig_intra, theme=None, width="stretch",
@@ -1626,6 +1647,7 @@ def main():
                     # Align history and SPY on the same dates
                     hist = pt_history.set_index("date")["portfolio_value"].copy()
                     hist.index = pd.to_datetime(hist.index)
+                    hist = hist[~hist.index.duplicated(keep='last')]
                     spy_aligned = spy_closes.reindex(hist.index).ffill()
 
                     # Normalize both to $100k at portfolio inception
