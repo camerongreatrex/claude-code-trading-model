@@ -142,9 +142,10 @@ def _append_csv(path: Path, record: dict):
 
 # ── Live data fetcher (yfinance, free, no API key) ────────────────────────────
 
-def _fetch_daily(ticker: str, lookback_days: int = 700) -> pd.DataFrame:
+def _fetch_daily(ticker: str, lookback_days: int = 700,
+                 end_date: "date | None" = None) -> pd.DataFrame:
     """
-    Download the last ``lookback_days`` of daily OHLCV for a single ticker.
+    Download ``lookback_days`` of daily OHLCV for a single ticker.
 
     Used by compute_live_signals() to get enough history for the full
     feature engineering and signal generation pipeline:
@@ -153,13 +154,16 @@ def _fetch_daily(ticker: str, lookback_days: int = 700) -> pd.DataFrame:
       - Total: 320+ calendar days recommended; 700 is used for safety margin
 
     Args:
-        ticker:       Yahoo Finance ticker symbol.
+        ticker:        Yahoo Finance ticker symbol.
         lookback_days: Calendar days of history to fetch (default 700).
+        end_date:      If provided, fetch data ending at this date (inclusive).
+                       Used by catch-up mode to replay a historical trading day.
+                       Defaults to today.
 
     Returns:
         OHLCV DataFrame indexed by timezone-naive date.
     """
-    end   = datetime.today()
+    end   = datetime(end_date.year, end_date.month, end_date.day) if end_date else datetime.today()
     start = end - timedelta(days=lookback_days)
     df = yf.download(
         ticker,
@@ -609,6 +613,183 @@ def end_of_day_update():
     print(f"  Daily return    : {daily_ret*100:>+8.2f}%")
     print(f"  Total return    : {total_ret:>+8.2f}%")
     print(f"{'='*52}")
+
+
+# ── Catch-up (replay missed trading days when PC was off) ─────────────────────
+
+def _trading_days_between(start: date, end: date) -> list:
+    """
+    Return all weekdays strictly between start (exclusive) and end (exclusive).
+
+    Note: does not filter US market holidays.  On holiday dates yfinance will
+    return the previous trading day's close, so the EOD update runs but
+    produces a zero-return snapshot — harmless and self-correcting.
+
+    Args:
+        start: First date to exclude (last processed date).
+        end:   Last date to exclude (today — not yet closed).
+
+    Returns:
+        Sorted list of date objects for missed trading days.
+    """
+    days   = []
+    cursor = start + timedelta(days=1)
+    while cursor < end:
+        if cursor.weekday() < 5:   # 0=Mon … 4=Fri
+            days.append(cursor)
+        cursor += timedelta(days=1)
+    return days
+
+
+def _compute_signals_as_of(as_of: date) -> dict:
+    """
+    Run the full strategy pipeline using data available up to ``as_of``.
+
+    Identical to compute_live_signals() except:
+      - yfinance fetch ends at ``as_of`` (not today)
+      - Data is trimmed to rows ≤ as_of so the pipeline never sees future prices
+
+    This guarantees the same signal the live run would have produced on that
+    date — used exclusively by catchup() to replay missed market days.
+
+    Args:
+        as_of: The historical trading date to simulate.
+
+    Returns:
+        Dict[ticker -> signal_info_dict], same schema as compute_live_signals().
+    """
+    macro   = load_macro()
+    results = {}
+
+    for ticker in TICKER_LIST:
+        try:
+            # Fetch data ending the day after as_of so yfinance includes as_of's close
+            raw  = _fetch_daily(ticker, end_date=as_of + timedelta(days=1))
+            # Trim to as_of — prevent any look-ahead into future bars
+            raw  = raw[raw.index <= pd.Timestamp(as_of)]
+            if len(raw) < 60:
+                continue
+
+            feat = engineer(raw)
+            sig  = generate(feat, ticker, macro)
+            if sig.empty:
+                continue
+
+            results[ticker] = {
+                "signal"   : int(sig["signal_regime"].iloc[-1]),
+                "composite": int(sig["signal_composite"].iloc[-1]),
+                "close"    : float(feat["Close"].iloc[-1]),
+                "atr"      : float(feat["atr_14"].iloc[-1]),
+                "rsi"      : float(feat["rsi_14"].iloc[-1]),
+                "date"     : str(as_of),
+            }
+        except Exception as e:
+            print(f"  {ticker}: {e}")
+
+    return results
+
+
+def _end_of_day_update_for_date(as_of: date) -> None:
+    """
+    Replay a single historical EOD update using prices from ``as_of``.
+
+    Used by catchup() to process trading days the PC missed.  Internally
+    identical to end_of_day_update() but uses _compute_signals_as_of()
+    instead of compute_live_signals() so prices come from yfinance history
+    rather than the live feed.
+
+    Args:
+        as_of: The historical trading date to replay.
+    """
+    state = load_state()
+    if not state:
+        return
+
+    as_of_str  = str(as_of)
+    prev_value = state.get("portfolio_value", INITIAL_CAPITAL)
+
+    print(f"  Catch-up: {as_of_str} ...", end=" ", flush=True)
+    signals = _compute_signals_as_of(as_of)
+    if not signals:
+        print("no signals — skipped")
+        return
+
+    prices = {t: s["close"] for t, s in signals.items()}
+
+    # Exits
+    for ticker in list(state["positions"]):
+        if ticker in signals and signals[ticker]["signal"] == 0:
+            state = _sell(state, ticker, prices[ticker],
+                          reason="catchup_signal_exit", trade_date=as_of_str)
+
+    # Entries
+    current_longs = set(state["positions"])
+    pv = _portfolio_value(state, prices)
+    for ticker in TICKER_LIST:
+        if ticker in current_longs or ticker not in signals:
+            continue
+        if signals[ticker]["signal"] == 1:
+            size = _atr_size(pv, signals[ticker]["atr"], signals[ticker]["close"])
+            if state["cash"] >= size * 1.01:
+                state = _buy(state, ticker, signals[ticker]["close"], size,
+                             reason="catchup_signal_entry", trade_date=as_of_str)
+
+    # Snapshot
+    pv        = _portfolio_value(state, prices)
+    daily_ret = (pv / prev_value - 1) if prev_value > 0 else 0.0
+    state["portfolio_value"] = pv
+    state["last_eod_date"]   = as_of_str
+    save_state(state)
+
+    _append_csv(HISTORY_FILE, {
+        "date": as_of_str, "portfolio_value": round(pv, 2),
+        "cash": round(state["cash"], 2),
+        "invested": round(pv - state["cash"], 2),
+        "n_positions": len(state["positions"]),
+        "daily_return": round(daily_ret * 100, 4),
+    })
+    print(f"done  (${pv:,.0f}  {daily_ret*100:+.2f}%)")
+
+
+def catchup() -> int:
+    """
+    Detect and replay any trading days missed while the PC was off.
+
+    Called automatically by the scheduler at startup.  Compares
+    ``last_eod_date`` in state.json against today's date and processes
+    each missed weekday in chronological order.
+
+    Returns:
+        Number of days replayed (0 if already up to date).
+
+    Example:
+        PC off Thursday–Sunday → scheduler starts Monday morning →
+        catchup() replays Thursday and Friday before the live 4:45 run.
+    """
+    state = load_state()
+    if not state:
+        return 0
+
+    last_str = state.get("last_eod_date")
+    if not last_str:
+        return 0
+
+    last  = date.fromisoformat(last_str)
+    today = date.today()
+
+    missed = _trading_days_between(last, today)
+    if not missed:
+        return 0
+
+    print(f"\nCatch-up: {len(missed)} missed trading day(s) detected")
+    print(f"  Last processed : {last_str}")
+    print(f"  Today          : {today}\n")
+
+    for d in missed:
+        _end_of_day_update_for_date(d)
+
+    print(f"\nCatch-up complete — {len(missed)} day(s) replayed.\n")
+    return len(missed)
 
 
 # ── Intraday curve (used by dashboard) ────────────────────────────────────────

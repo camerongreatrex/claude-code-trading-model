@@ -233,7 +233,7 @@ def main():
                 lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
                           "color:#ff5555" if (isinstance(v, str) and "-" in v and "%" in v and v != "-0.0%") else "",
             ),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
         # Monthly returns heatmap
@@ -389,7 +389,7 @@ def main():
                     "IS Sharpe (full period)"   : "{:.3f}",
                     "OOS Sharpe (walk-fwd mean)": "{:.3f}",
                 }),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
             )
             st.markdown(
                 f"<span style='color:#50fa7b;font-size:.82rem'>"
@@ -705,7 +705,7 @@ def main():
                         .format({"Invested": "${:,.2f}", "Entry $": "${:.2f}",
                                  "Current $": "${:.2f}", "Chg %": "{:+.2f}%",
                                  "Unreal P&L": "${:+,.2f}"}),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
 
 
@@ -720,7 +720,7 @@ def main():
                         return ""
                     st.dataframe(
                         recent.style.map(_color_action, subset=["action"]),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
 
                 # ── Kill switch + order sheet ─────────────────────────────────
@@ -751,7 +751,7 @@ def main():
                             return ""
                         st.dataframe(
                             orders_df.style.map(_color_order, subset=["action"]),
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                         )
                 else:
                     st.caption(
@@ -835,7 +835,7 @@ def main():
                              "MA Spread %": "{:+.2f}%", "RSI": "{:.1f}",
                              "20d Ret %": "{:+.1f}%", "60d Ret %": "{:+.1f}%",
                              "Dist High %": "{:+.1f}%"}),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
 
         _live_section()
@@ -1157,7 +1157,7 @@ def main():
                             .map(_color_beat, subset=["Beating S&P"])
                             .format({"Portfolio %": "{:+.2f}%", "S&P 500 %": "{:+.2f}%",
                                      "Alpha": "{:+.2f}%"}),
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                         )
 
                     st.caption(

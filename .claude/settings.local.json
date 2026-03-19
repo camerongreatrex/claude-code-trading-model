@@ -23,7 +23,16 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\(''dashboard.py''\\).read\\(\\)\\); ast.parse\\(open\\(''paper_trader.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
       "Bash(python3 -c \"import json; s=json.load\\(open\\(''data/paper_trading/state.json''\\)\\); print\\(''portfolio_value:'', s[''portfolio_value'']\\); print\\(''cash:'', s[''cash'']\\)\")",
       "Bash(python3 -c \":*)",
-      "Bash(wc -l \"c:/Users/Cameron/Desktop/Algorithmic Trading/dashboard.py\" \"c:/Users/Cameron/Desktop/Algorithmic Trading/ui/\"*.py)"
+      "Bash(wc -l \"c:/Users/Cameron/Desktop/Algorithmic Trading/dashboard.py\" \"c:/Users/Cameron/Desktop/Algorithmic Trading/ui/\"*.py)",
+      "Bash(python -c \"import streamlit; print\\(streamlit.__version__\\)\")",
+      "Bash(python -c \"from ui.charts import *; from ui.styles import *; from ui.data_loaders import *; print\\(''ui imports ok''\\)\")",
+      "Bash(python -c \"import dashboard; print\\(''dashboard imports ok''\\)\")",
+      "Bash(taskkill /F /IM streamlit.exe)",
+      "Bash(taskkill /F /FI \"WINDOWTITLE eq streamlit*\")",
+      "Bash(python -c \"import subprocess; subprocess.run\\([''taskkill'', ''/F'', ''/FI'', ''COMMANDLINE eq *streamlit*''], capture_output=True\\)\")",
+      "Bash(tasklist)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //F //PID 12948)"
     ]
   }
 }

@@ -55,7 +55,7 @@ from pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 from paper_trader import (
     load_state, load_history, end_of_day_update,
     compute_live_signals, _fetch_daily, _atr_size,
-    INITIAL_CAPITAL, PT_DIR,
+    catchup, INITIAL_CAPITAL, PT_DIR,
 )
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -345,6 +345,18 @@ def main():
              f"{EOD_HOUR:02d}:{EOD_MINUTE:02d} ET on weekdays.")
     log.info(f"Kill-switch threshold: {KILL_SWITCH_DD*100:.0f}% rolling 20-day loss")
     log.info(f"Log file: {LOG_FILE}")
+
+    # Catch up on any trading days missed while the PC was off.
+    # Runs synchronously at startup before entering the main loop so the
+    # portfolio history is up-to-date before the dashboard is accessed.
+    try:
+        n = catchup()
+        if n:
+            log.info(f"Catch-up complete — {n} missed day(s) replayed.")
+        else:
+            log.info("Catch-up: portfolio is up to date.")
+    except Exception as e:
+        log.error(f"Catch-up failed: {e}", exc_info=True)
 
     last_run_date = None
 
