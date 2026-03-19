@@ -1,7 +1,64 @@
 """
-Usage:
-    streamlit run dashboard.py
-    python -m streamlit run dashboard.py on windows
+dashboard.py
+------------
+Streamlit web dashboard for the algorithmic trading system.
+
+To run:
+  streamlit run dashboard.py
+
+Architecture overview
+─────────────────────
+The dashboard is organised into tabs, each backed by cached data-loading
+functions.  Expensive operations (reading parquets, fetching yfinance data)
+are wrapped in @st.cache_data with a TTL to avoid re-running on every
+user interaction.
+
+Tabs
+────
+  Overview       — Backtest equity curves, portfolio comparison table,
+                   walk-forward OOS results, IS vs OOS Sharpe comparison
+  Portfolio      — ATR+PCA+macro equity curve with B&H benchmark, drawdown,
+                   rolling Sharpe, monthly returns heatmap, trade analysis
+  Live Signals   — Current MA-crossover signal state for all 21 tickers,
+                   refreshed every few minutes from yfinance
+  Paper Trading  — Live intraday candlestick chart of the paper portfolio,
+                   open positions table, daily/trade P&L breakdown,
+                   "Run EOD Update" button for manual end-of-day runs
+  vs S&P 500     — Today's intraday portfolio vs SPY benchmark (normalised),
+                   historical daily performance comparison
+
+Paper Trading chart details
+────────────────────────────
+  Historical daily closes → go.Scatter (blue line)
+  Today's 5-min bars     → go.Candlestick (green/red candles)
+  After close extension  → go.Scatter (blue dotted flat line to now)
+  SPY benchmark          → go.Scatter (purple dotted, normalised to same start)
+  Now vertical line      → add_shape with orange dotted line
+  uirevision="paper_portfolio" — Plotly preserves user zoom/pan across
+                                 5-second fragment refreshes.
+
+Key design decisions
+─────────────────────
+  - Chart x-range right edge = max(now, 16:05) so the chart always shows
+    at least through market close, and extends to current time after hours.
+  - The flat line after the last candle is a separate Scatter trace (not
+    an extra OHLC bar) so it looks clean rather than showing a doji candle.
+  - spy_pct_from_prev uses period="5d" daily data filtered to dates before
+    today to get the confirmed previous close without the incomplete
+    in-progress today row corrupting the calculation.
+  - Delta string for portfolio value uses "+" prefix before the number so
+    Streamlit can detect the sign for green/red colouring.
+
+Data files consumed (from data/results/ and data/paper_trading/)
+────────────────────────────────────────────────────────────────
+  portfolio_comparison.parquet   — equity curves for all sizing methods
+  walk_forward_regime.parquet    — OOS walk-forward results
+  walk_forward_atr_pca.parquet   — OOS results for ATR+PCA+macro
+  oos_selection.parquet          — IS vs OOS Sharpe selection table
+  portfolio_equity_curve.parquet — best OOS method equity curve
+  data/paper_trading/state.json  — current portfolio state
+  data/paper_trading/trades.csv  — trade log
+  data/paper_trading/history.csv — daily portfolio value snapshots
 """
 
 import numpy as np
@@ -98,6 +155,10 @@ def _layout(**overrides) -> dict:
             base[k] = v
     return base
 
+# ── Chart colour palette and display labels ───────────────────────────────────
+# PALETTE maps sizing-method keys to hex colours used consistently across all
+# chart traces so each method always appears in the same colour.
+# "pos"/"neg" are generic green/red used for bar charts, P&L cells, etc.
 PALETTE = {
     "equal_weight"  : "#4a9eff",
     "atr_sized"     : "#50fa7b",
@@ -108,6 +169,7 @@ PALETTE = {
     "pos"           : "#50fa7b",
     "neg"           : "#ff5555",
 }
+# LABELS maps the same keys to human-readable legend/table strings.
 LABELS = {
     "equal_weight"  : "Equal Weight",
     "atr_sized"     : "ATR Sized",
@@ -120,6 +182,17 @@ LABELS = {
 # ── Data helpers ──────────────────────────────────────────────────────────────
 @st.cache_data
 def load_portfolio_curves() -> pd.DataFrame:
+    """
+    Load equity curves for all portfolio sizing methods from disk.
+
+    Cached — only re-reads from disk when the TTL expires (Streamlit default
+    session TTL; no explicit TTL is set so the cache lives for the session).
+
+    Returns:
+        DataFrame with columns [equal_weight, atr_sized, atr_pca_macro,
+        eq_dd_control, vol_target, buy_hold] indexed by date.
+        Returns empty DataFrame if the parquet is not found.
+    """
     path = Path("data/results/portfolio_comparison.parquet")
     if not path.exists():
         return pd.DataFrame()
@@ -129,6 +202,18 @@ def load_portfolio_curves() -> pd.DataFrame:
 
 @st.cache_data
 def load_ticker_curves() -> dict:
+    """
+    Load per-ticker backtest equity curves from disk.
+
+    Scans data/results/ for files matching *_curves.parquet, skipping
+    the combined portfolio file.  Used by chart_asset_sharpe() to
+    compare per-asset Strategy vs Buy & Hold Sharpe ratios.
+
+    Returns:
+        Dict mapping ticker name (str) → DataFrame with at least columns
+        [regime, buy_hold] indexed by date.
+        Returns empty dict if no matching parquets are found.
+    """
     curves = {}
     for f in Path("data/results").glob("*_curves.parquet"):
         name = f.stem.replace("_curves", "")
@@ -141,21 +226,64 @@ def load_ticker_curves() -> dict:
 
 @st.cache_data
 def load_walk_forward() -> pd.DataFrame:
+    """
+    Load walk-forward OOS results for the equal-weight regime strategy.
+
+    Cached — only re-reads from disk when the session TTL expires.
+
+    Returns:
+        DataFrame with columns [period, sharpe] where each row represents
+        one walk-forward test window (3-year train / 1-year test).
+        Returns empty DataFrame if the parquet is not found.
+    """
     path = Path("data/results/walk_forward_regime.parquet")
     return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
 @st.cache_data
 def load_walk_forward_atr() -> pd.DataFrame:
+    """
+    Load walk-forward OOS results for the ATR+PCA+macro sizing method.
+
+    Cached — only re-reads from disk when the session TTL expires.
+
+    Returns:
+        DataFrame with columns [period, sharpe] for the ATR+PCA+macro
+        walk-forward test windows.
+        Returns empty DataFrame if the parquet is not found.
+    """
     path = Path("data/results/walk_forward_atr_pca.parquet")
     return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
 @st.cache_data
 def load_oos_selection() -> pd.DataFrame:
+    """
+    Load the IS vs OOS Sharpe comparison table used to select the best
+    portfolio sizing method.
+
+    Cached — only re-reads from disk when the session TTL expires.
+
+    Returns:
+        DataFrame with columns [method, is_sharpe, oos_sharpe].
+        The method with the highest oos_sharpe is highlighted as selected.
+        Returns empty DataFrame if the parquet is not found.
+    """
     path = Path("data/results/oos_selection.parquet")
     return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
 @st.cache_data
 def load_macro() -> pd.DataFrame:
+    """
+    Load precomputed macro features used in the ATR+PCA+macro strategy.
+
+    Cached — only re-reads from disk when the session TTL expires.
+
+    Returns:
+        DataFrame indexed by date with columns including [vix, yield_curve]
+        (and potentially others such as pca scores).  Used by
+        chart_macro_overlay() to display VIX and yield-curve panels
+        alongside the portfolio equity curve.
+        Returns empty DataFrame if the parquet is not found.
+    """
     path = Path("data/macro/macro_features.parquet")
     if not path.exists():
         return pd.DataFrame()
@@ -165,6 +293,25 @@ def load_macro() -> pd.DataFrame:
 
 
 def metrics(ret: pd.Series) -> dict:
+    """
+    Compute a standard set of annualised risk/return metrics from a daily
+    returns series.
+
+    Args:
+        ret: Daily return series (fractional, e.g. 0.01 for +1%).
+             NaN values are dropped before calculation.
+
+    Returns:
+        Dict with keys:
+            ann_r    — Compound Annual Growth Rate (CAGR)
+            vol      — Annualised volatility (std dev × √252)
+            sharpe   — Sharpe ratio (ann_r / vol, risk-free = 0)
+            max_dd   — Maximum drawdown (negative fraction, e.g. -0.20)
+            calmar   — Calmar ratio (ann_r / |max_dd|)
+            win_rate — Fraction of non-zero days with a positive return
+            total    — Total return over the full period (fraction)
+        Returns empty dict if ret is empty after dropping NaNs.
+    """
     ret = ret.dropna()
     if ret.empty:
         return {}
@@ -177,6 +324,8 @@ def metrics(ret: pd.Series) -> dict:
     peak   = cum.cummax()
     max_dd = ((cum - peak) / peak).min()
     calmar = ann_r / abs(max_dd) if max_dd != 0 else 0
+    # Only count days with actual trades (non-zero return) to avoid inflating
+    # the win rate with cash/flat days where the portfolio didn't move.
     active = ret[ret != 0]
     wr     = (active > 0).sum() / len(active) if len(active) > 0 else 0
     return dict(ann_r=ann_r, vol=vol, sharpe=sharpe, max_dd=max_dd,
@@ -208,6 +357,22 @@ def run_monte_carlo(returns_bytes: bytes, n_paths: int = 1000,
 
 # ── Chart builders ────────────────────────────────────────────────────────────
 def chart_equity(df: pd.DataFrame, height: int = 420) -> go.Figure:
+    """
+    Build a multi-line equity curve chart for all portfolio sizing methods.
+
+    Adds one go.Scatter trace per method present in df.  Buy & Hold is
+    rendered as a dotted line to visually distinguish the benchmark from
+    the strategy variants.
+
+    Args:
+        df:     DataFrame indexed by date with one column per sizing method
+                (keys defined in PALETTE/LABELS).
+        height: Chart height in pixels.
+
+    Returns:
+        go.Figure with dragmode="pan" and scrollZoom enabled via config at
+        the call site.
+    """
     fig = go.Figure()
     for col in ["equal_weight", "atr_sized", "atr_pca_macro", "eq_dd_control", "vol_target", "buy_hold"]:
         if col not in df.columns:
@@ -236,6 +401,24 @@ def chart_equity(df: pd.DataFrame, height: int = 420) -> go.Figure:
 
 
 def chart_drawdown(df: pd.DataFrame, height: int = 420) -> go.Figure:
+    """
+    Build a drawdown chart comparing the equal-weight strategy to Buy & Hold.
+
+    Computes percentage drawdown as (price − rolling_peak) / rolling_peak × 100
+    and renders each as a filled area trace so shallow drawdowns are immediately
+    visible against the dark background.
+
+    Only the equal_weight and buy_hold columns are plotted (the others would
+    create a cluttered chart; this pair provides the most useful comparison).
+
+    Args:
+        df:     DataFrame indexed by date with at least columns
+                [equal_weight, buy_hold].
+        height: Chart height in pixels.
+
+    Returns:
+        go.Figure with fill="tozeroy" traces and dragmode="pan".
+    """
     fig = go.Figure()
     for col, alpha in [("equal_weight", 0.18), ("buy_hold", 0.10)]:
         if col not in df.columns:
@@ -268,6 +451,28 @@ def chart_drawdown(df: pd.DataFrame, height: int = 420) -> go.Figure:
 
 def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
                       height: int = 420) -> go.Figure:
+    """
+    Build the Monte Carlo fan chart showing simulated equity path distribution.
+
+    Traces added (in order):
+      1. Faint individual sample paths — up to 80 paths merged into ONE
+         go.Scatter with None separators so rendering stays fast during
+         zoom/pan (one WebGL draw call instead of 80).
+      2. 5–95th percentile band (go.Scatter fill="toself", blue tint).
+      3. 25–75th percentile band (go.Scatter fill="toself", green tint).
+      4. Median path (go.Scatter, white line).
+      5. Actual historical equity curve (go.Scatter, blue line) overlaid
+         so the user can see where history sits within the fan.
+
+    Args:
+        eq_curves: Array of shape (n_paths, n_days) with cumulative growth
+                   factors (1.0 = break even), produced by run_monte_carlo().
+        actual:    1-D array of the real cumulative growth factor series.
+        height:    Chart height in pixels.
+
+    Returns:
+        go.Figure with dragmode="pan".
+    """
     n   = eq_curves.shape[1]
     xs  = np.arange(n)
     p5, p25, p50, p75, p95 = (np.percentile(eq_curves, q, axis=0)
@@ -347,6 +552,20 @@ def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
 
 
 def chart_mc_histogram(eq_curves: np.ndarray, height: int = 280) -> go.Figure:
+    """
+    Build a histogram of terminal (final-day) total returns from Monte Carlo paths.
+
+    Adds vertical reference lines at the median and 5th-percentile so the
+    user can immediately see the expected outcome and the stress-test floor.
+
+    Args:
+        eq_curves: Array of shape (n_paths, n_days) with cumulative growth
+                   factors (same array produced by run_monte_carlo()).
+        height:    Chart height in pixels.
+
+    Returns:
+        go.Figure with showlegend=False and dragmode="pan".
+    """
     finals = (eq_curves[:, -1] - 1) * 100   # % total return
     fig = go.Figure()
     fig.add_trace(go.Histogram(
@@ -380,6 +599,20 @@ def chart_mc_histogram(eq_curves: np.ndarray, height: int = 280) -> go.Figure:
 
 
 def chart_walk_forward(wf: pd.DataFrame, height: int = 280) -> go.Figure:
+    """
+    Build a bar chart of OOS Sharpe ratios from walk-forward validation.
+
+    Each bar represents one test window (1 year of genuinely unseen data
+    after a 3-year training period).  Bars are coloured green/red based on
+    sign so poor windows are immediately visible.
+
+    Args:
+        wf:     DataFrame with columns [period, sharpe].
+        height: Chart height in pixels.
+
+    Returns:
+        go.Figure with a horizontal zero-line reference and dragmode="pan".
+    """
     colors = [PALETTE["pos"] if s >= 0 else PALETTE["neg"] for s in wf["sharpe"]]
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -410,6 +643,22 @@ def chart_walk_forward(wf: pd.DataFrame, height: int = 280) -> go.Figure:
 
 
 def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
+    """
+    Build a grouped horizontal bar chart comparing per-asset Sharpe ratios
+    for the regime strategy vs Buy & Hold.
+
+    For each ticker the annualised Sharpe is computed from its individual
+    equity curve.  Tickers are sorted by strategy Sharpe so the best
+    performers appear at the top.
+
+    Args:
+        ticker_curves: Dict mapping ticker str → DataFrame with columns
+                       [regime, buy_hold] indexed by date.
+        height:        Chart height in pixels.
+
+    Returns:
+        go.Figure with barmode="group" and dragmode="pan".
+    """
     rows = []
     for ticker, df in ticker_curves.items():
         for col, label in [("regime", "Strategy"), ("buy_hold", "Buy & Hold")]:
@@ -461,6 +710,27 @@ def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
 
 def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                          height: int = 560) -> go.Figure:
+    """
+    Build a three-panel subplot chart overlaying the portfolio equity curve
+    with key macro regime indicators.
+
+    Subplots (shared x-axis):
+      Row 1 — Portfolio vs Buy & Hold equity curves (go.Scatter).
+      Row 2 — VIX level with fill, and reference lines at 20 (caution)
+               and 30 (fear).  VIX z-score > 2.5 triggers a hard signal
+               gate in the strategy.
+      Row 3 — 10Y–2Y Treasury yield spread.  Negative = inverted curve
+               (recession warning, position sizing reduced).  Reference
+               line at 0 marks inversion threshold.
+
+    Args:
+        df_port: Portfolio equity curve DataFrame (same as load_portfolio_curves()).
+        macro:   Macro features DataFrame (same as load_macro()).
+        height:  Total chart height in pixels across all three rows.
+
+    Returns:
+        go.Figure using make_subplots with shared x-axes and dragmode="pan".
+    """
     macro = macro.reindex(df_port.index).ffill()
     fig   = make_subplots(rows=3, cols=1, shared_xaxes=True,
                           vertical_spacing=0.04,
@@ -532,6 +802,23 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
 # ── Monthly returns heatmap ───────────────────────────────────────────────────
 def chart_monthly_heatmap(ret: pd.Series, title: str = "Equal Weight — Monthly Returns",
                           height: int = 340) -> go.Figure:
+    """
+    Build a calendar heatmap of monthly returns (year × month grid).
+
+    The colour scale is centred at zero (zmid=0) and clipped at ±10% so
+    that small monthly moves still show visible colour — extreme outliers
+    don't wash out the scale.  Cell text shows the exact % return.
+
+    Args:
+        ret:    Daily returns series (fractional).  Resampled internally
+                to month-end using compounded multiplication.
+        title:  Chart title string.
+        height: Chart height in pixels.
+
+    Returns:
+        go.Figure using go.Heatmap with year on y-axis (reversed so most
+        recent year is at the top) and month on x-axis (top).
+    """
     monthly = (1 + ret).resample("ME").prod() - 1
     df_m = monthly.to_frame("ret")
     df_m["year"]  = df_m.index.year
@@ -576,6 +863,23 @@ def chart_monthly_heatmap(ret: pd.Series, title: str = "Equal Weight — Monthly
 
 # ── MA spread bar chart (live tab) ────────────────────────────────────────────
 def chart_ma_spread(live_df: pd.DataFrame, height: int = 400) -> go.Figure:
+    """
+    Build a horizontal bar chart showing the MA spread for every ticker in
+    the live universe.
+
+    Each bar represents how far the fast MA is above or below the slow MA
+    as a percentage.  Positive (green) = golden cross = LONG signal.
+    Negative (red) = death cross = strategy holds cash for that ticker.
+    Tickers are sorted ascending so the weakest signals appear at the top.
+
+    Args:
+        live_df: DataFrame returned by get_live_signals(), must contain
+                 columns [Ticker, MA Spread %].
+        height:  Chart height in pixels.
+
+    Returns:
+        go.Figure with a vertical zero-line, showlegend=False, dragmode="pan".
+    """
     df = live_df.sort_values("MA Spread %")
     colors = [PALETTE["pos"] if v >= 0 else PALETTE["neg"] for v in df["MA Spread %"]]
     fig = go.Figure(go.Bar(
@@ -616,10 +920,40 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                           x_range: list = None,
                           spy_curve=None) -> go.Figure:
     """
-    TradingView-style equity curve combining:
-      - Historical daily closes (from paper_trader history.csv)
-      - Today's 5-minute intraday values (live from yfinance)
-      - Buy/sell trade markers
+    Build the TradingView-style paper portfolio equity curve figure.
+
+    Combines three traces:
+      1. Historical daily closes (go.Scatter, blue line) — from history.csv,
+         excluding today (which is shown at higher resolution by the candles)
+      2. Today's 5-minute candles (go.Candlestick, green/red) — from yfinance
+      3. Post-close flat line (go.Scatter, blue dotted) — extends from the last
+         candle to the current time so the chart never looks "cut off"
+      4. SPY benchmark (go.Scatter, purple dotted) — normalised to the same
+         starting value as the portfolio, showing relative performance
+      5. Buy/sell markers (go.Scatter with triangle symbols) on historical dates
+      6. Reference lines at initial capital ($100k) and entry value
+
+    Args:
+        history_df:    Daily history DataFrame from load_history().
+        intraday_df:   Today's OHLC DataFrame from get_intraday_curve().
+        trades_df:     Trade log DataFrame from load_trades().
+        height:        Chart height in pixels.
+        now:           Current ET-naive Timestamp (used for the "Now" line
+                       and x-axis right edge computation).
+        entry_value:   Previous day's portfolio value (used for the entry
+                       reference line).
+        x_range:       [left, right] x-axis range strings in ISO format.
+                       Passed from session_state so it stays constant across
+                       5-second refreshes, allowing uirevision to preserve zoom.
+        spy_curve:     pd.Series of SPY benchmark values indexed by ET datetime.
+
+    Returns:
+        go.Figure ready for st.plotly_chart().
+
+    Key Plotly settings:
+        uirevision="paper_portfolio" — preserves user zoom across fragment refreshes
+        dragmode="pan"               — drag to pan (not box-zoom, which is confusing)
+        scrollZoom=True              — mouse wheel to zoom
     """
     fig = go.Figure()
 
@@ -704,6 +1038,15 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
         sells = trades_df[trades_df["action"] == "SELL"].copy()
 
         def _marker_y(dates: pd.Series) -> list:
+            """
+            Look up portfolio value for each trade date to position the marker
+            at the correct y-coordinate on the equity curve.
+
+            Falls back to the last known portfolio value for any trade date
+            that is not found in history (e.g. weekend trades or pre-history).
+            The isinstance(v, pd.Series) guard handles duplicate index entries
+            that pandas returns as a Series rather than a scalar.
+            """
             last = float(hist_val.iloc[-1])
             out  = []
             for d in dates:
@@ -833,6 +1176,21 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
 
 # ── Summary table ─────────────────────────────────────────────────────────────
 def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a human-readable summary statistics table for all sizing methods.
+
+    Calls metrics() for each method column and formats values as display
+    strings with consistent sign/decimal conventions.  The resulting
+    DataFrame is rendered in the Overview tab with green/red cell colouring
+    applied via Streamlit's .style.map().
+
+    Args:
+        df_port: Portfolio curves DataFrame (same as load_portfolio_curves()).
+
+    Returns:
+        DataFrame with columns [Method, Ann. Return, Volatility, Sharpe,
+        Max DD, Calmar, Win Rate].  One row per sizing method present in df_port.
+    """
     rows = []
     for col in ["equal_weight", "atr_sized", "atr_pca_macro", "eq_dd_control",
                 "vol_target", "buy_hold"]:
@@ -854,6 +1212,21 @@ def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
 
 # ── Main layout ───────────────────────────────────────────────────────────────
 def main():
+    """
+    Top-level Streamlit entry point — builds the full dashboard layout.
+
+    Called once per page load (or full rerun).  Loads all cached data,
+    renders the header and top-level metrics, then delegates each tab's
+    content to dedicated chart/fragment functions.
+
+    Tab structure:
+      Tab 1 — Equity Curves, drawdown, monthly heatmap, summary table
+      Tab 2 — Monte Carlo bootstrap fan chart + histogram
+      Tab 3 — Walk-forward OOS validation + per-asset Sharpe comparison
+      Tab 4 — Macro overlay (VIX + yield curve) with portfolio curves
+      Tab 5 — Paper Trading & Live Signals (auto-refreshing fragment)
+      Tab 6 — vs S&P 500 (auto-refreshing fragment)
+    """
     # Load all data first so n_assets is available before header renders
     df_port       = load_portfolio_curves()
     ticker_curves = load_ticker_curves()
@@ -891,26 +1264,45 @@ def main():
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     def delta_str(val, ref, pct=True):
+        """
+        Format the strategy-vs-benchmark delta for a Streamlit st.metric delta arg.
+
+        Args:
+            val:  Strategy metric value.
+            ref:  Benchmark (Buy & Hold) metric value.
+            pct:  If True, format as percentage string with sign; otherwise as
+                  a plain signed float with two decimal places.
+
+        Returns:
+            String with explicit sign (e.g. "+2.3%" or "-0.15") for Streamlit
+            to detect positive/negative and apply green/red colouring.
+        """
         d = val - ref
         s = f"{d*100:+.1f}%" if pct else f"{d:+.2f}"
         return s
 
+    # Ann. Return: higher is better → delta_color="normal" (default): green = strategy > B&H
     with c1: st.metric("Ann. Return",  f"{m_eq['ann_r']*100:.1f}%",
                         delta=delta_str(m_eq['ann_r'], m_bnh['ann_r']),
                         help="Compound Annual Growth Rate (CAGR) — the yearly return if capital "
                              "was invested for the full backtest period. Arrow shows vs buy & hold: "
                              "green ↑ = strategy beats B&H, red ↓ = B&H won.")
+    # Sharpe: higher is better → delta_color="normal": green = strategy Sharpe > B&H Sharpe
     with c2: st.metric("Sharpe Ratio", f"{m_eq['sharpe']:.2f}",
                         delta=delta_str(m_eq['sharpe'], m_bnh['sharpe'], pct=False),
                         help="Return ÷ volatility — how much return you earned per unit of risk. "
                              ">1.0 is good, >2.0 is exceptional, <0 means you lost money. "
                              "Arrow shows vs buy & hold: green ↑ = better risk-adjusted return than B&H.")
+    # Volatility: lower is better → delta_color="inverse": green = strategy vol < B&H vol
     with c3: st.metric("Volatility",   f"{m_eq['vol']*100:.1f}%",
                         delta=delta_str(m_eq['vol'], m_bnh['vol']), delta_color="inverse",
                         help="Annualised standard deviation of daily returns — how wildly returns "
                              "bounce day-to-day. 15% means a typical daily swing of ~1%. "
                              "Arrow shows vs buy & hold: green ↓ = LESS volatile than B&H (good), "
                              "red ↑ = MORE volatile (worse risk profile).")
+    # Max Drawdown: both values are negative fractions; a less-negative delta means
+    # the strategy had a shallower drawdown → delta_color="normal": green = strategy DD > B&H DD
+    # (e.g., strategy -10% vs B&H -20%: delta = +10% → green, which correctly means less loss)
     with c4: st.metric("Max Drawdown", f"{m_eq['max_dd']*100:.1f}%",
                         delta=delta_str(m_eq['max_dd'], m_bnh['max_dd']), delta_color="normal",
                         help="Largest peak-to-trough loss in portfolio history — e.g. −20% means "
@@ -1153,6 +1545,35 @@ def main():
 
         @st.fragment(run_every=5)
         def _live_section():
+            """
+            Streamlit fragment: the full "Paper Trading & Live Signals" tab content.
+
+            Auto-refreshes every 5 seconds via run_every=5.  The fragment boundary
+            means only this section re-runs on each tick — the rest of the dashboard
+            (other tabs) is not re-evaluated, keeping the page responsive.
+
+            Renders two main sections:
+
+              1. Paper Portfolio
+                 - Header row with market open/closed indicator and manual buttons
+                   (Refresh Now, Run EOD Update — EOD button disabled during market hours)
+                 - Portfolio Overview metrics: live value, total return, realized P&L,
+                   cash, open position count
+                 - Today's P&L metrics: unrealized and realized breakdown
+                 - TradingView-style equity chart (chart_paper_portfolio)
+                 - Open positions table (current price, unrealized P&L per ticker)
+                 - Recent trades log (last 20 trades)
+                 - Kill switch status and tomorrow's order sheet
+
+              2. Live Signals
+                 - MA crossover signal state for all universe tickers (cached 5 min)
+                 - Summary metrics: long count, flat count, gross exposure, avg RSI
+                 - MA spread bar chart
+                 - Full universe signal table with colour coding
+
+            uirevision="paper_portfolio" on the chart ensures Plotly preserves the
+            user's zoom/pan state across every 5-second data refresh.
+            """
             now = pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
 
             # Header row: clock + manual refresh
@@ -1301,6 +1722,13 @@ def main():
                     )
 
                 # ── Equity chart ──────────────────────────────────────────────
+                # ── x-range management ───────────────────────────────────────
+                # The x_range is stored in session_state and only updated when the
+                # date rolls over OR the right edge needs to advance.  Passing a
+                # constant range to chart_paper_portfolio() (combined with
+                # uirevision="paper_portfolio") means Plotly.js treats each 5-second
+                # refresh as a data update rather than a full re-render, so user
+                # zoom/pan is preserved across refreshes.
                 _today = now.strftime('%Y-%m-%d')
                 # Right edge tracks current time (or 16:05 if before close),
                 # so the flat post-close line is always visible.
@@ -1458,6 +1886,17 @@ def main():
 
             @st.cache_data(ttl=300, show_spinner=False)
             def _cached_live():
+                """
+                Fetch live MA-crossover signals for all universe tickers.
+
+                Cached with TTL=300s (5 minutes) so rapid fragment re-runs
+                (every 5 seconds) do not hammer the yfinance API on every tick.
+
+                Returns:
+                    Tuple of (live_df, fetch_timestamp) from get_live_signals().
+                    live_df contains columns [Ticker, Signal, Price, Day Chg %,
+                    MA Spread %, RSI, 20d Ret %, 60d Ret %, Dist High %].
+                """
                 return get_live_signals()
 
             with st.spinner("Fetching live prices…"):
@@ -1514,7 +1953,21 @@ def main():
 
         @st.cache_data(ttl=300, show_spinner=False)
         def _spy_history(start_date: str):
-            """Daily SPY closes from portfolio inception to today."""
+            """
+            Fetch daily SPY closing prices from portfolio inception to today.
+
+            Cached with TTL=300s to avoid repeated yfinance calls on each
+            fragment refresh.  Tries yf.download() first; falls back to
+            yf.Ticker.history() if the multi-index download variant fails.
+
+            Args:
+                start_date: ISO date string (YYYY-MM-DD) for the first day of
+                            the paper portfolio, used as the yfinance start param.
+
+            Returns:
+                pd.Series of SPY daily closes indexed by tz-naive datetime.
+                Returns empty Series if both download attempts fail.
+            """
             import yfinance as yf
             try:
                 raw = yf.download("SPY", start=start_date, auto_adjust=True,
@@ -1538,6 +1991,24 @@ def main():
 
         @st.fragment(run_every=30)
         def _vs_sp_section():
+            """
+            Streamlit fragment: the full "vs S&P 500" tab content.
+
+            Renders two sections:
+              1. Live — Today vs S&P 500
+                 - Portfolio % today (vs yesterday's close)
+                 - SPY % today (from yesterday's official close, matching TradingView)
+                 - Alpha (portfolio − SPY)
+                 - Intraday chart: both lines normalised to same open value, extended
+                   to current time with a flat line after the last 5-min bar.
+
+              2. Historical Record vs S&P 500
+                 - Daily portfolio returns vs SPY returns since inception
+                 - Cumulative return comparison chart
+                 - Alpha histogram
+
+            Refreshes automatically as a Streamlit fragment (auto_refresh=True).
+            """
             now_et = pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
 
             pt_state   = load_state()
@@ -1585,9 +2056,11 @@ def main():
             beating     = alpha_today > 0
 
             c1, c2, c3, c4 = st.columns(4)
+            # Portfolio Today: higher is better → delta_color="normal" (default green for positive)
             with c1:
                 st.metric("Portfolio Today", f"{port_today_pct:+.2f}%",
                           help="Portfolio's intraday % change vs yesterday's close.")
+            # S&P 500 Today: informational, no delta colouring needed
             with c2:
                 _spy_help = (
                     "SPY % change from yesterday's close — same baseline as TradingView. "
@@ -1597,6 +2070,9 @@ def main():
                 )
                 st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%", help=_spy_help)
             with c3:
+                # Alpha delta_color is dynamic: "normal" when outperforming (positive alpha
+                # → green is correct), "inverse" when underperforming so the word
+                # "Underperforming" still shows in red rather than green.
                 st.metric("Alpha (today)", f"{alpha_today:+.2f}%",
                           delta="Outperforming" if beating else "Underperforming",
                           delta_color="normal" if beating else "inverse",
@@ -1696,20 +2172,29 @@ def main():
                     win_days    = int((port_ret.values > spy_ret.reindex(port_ret.index).values).sum())
                     total_days  = len(port_ret)
 
-                    # Correlation
+                    # ── Beta & correlation (require aligned common dates) ─────
+                    # Minimum 3 observations guard avoids divide-by-zero and
+                    # misleading stats from just 1–2 data points.
+                    # Beta = Cov(portfolio, SPY) / Var(SPY) — OLS slope.
+                    # corr is computed but not currently displayed; retained for
+                    # potential future use in the caption or metrics row.
                     common = port_ret.index.intersection(spy_ret.index)
                     if len(common) >= 3:
                         beta = float(np.cov(port_ret[common], spy_ret[common])[0, 1] /
                                      np.var(spy_ret[common])) if np.var(spy_ret[common]) > 0 else 1.0
                         corr = float(port_ret[common].corr(spy_ret[common]))
                     else:
+                        # Fallback to neutral defaults when there is insufficient history
                         beta, corr = 1.0, 1.0
 
                     h1, h2, h3, h4, h5 = st.columns(5)
+                    # Portfolio Return and S&P 500 Return: informational, no delta colouring
                     with h1: st.metric("Portfolio Return", f"{port_total:+.2f}%",
                                        help="Total return since portfolio inception.")
                     with h2: st.metric("S&P 500 Return",  f"{spy_total:+.2f}%",
                                        help="SPY total return over the same period.")
+                    # Total Alpha: delta_color switches dynamically so "Underperforming"
+                    # renders in red (inverse) and "Outperforming" renders in green (normal).
                     with h3: st.metric("Total Alpha",     f"{total_alpha:+.2f}%",
                                        delta="Outperforming" if total_alpha > 0 else "Underperforming",
                                        delta_color="normal" if total_alpha > 0 else "inverse",

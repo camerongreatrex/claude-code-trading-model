@@ -1,9 +1,31 @@
 """
-Runs the full pipeline in order.
-Usage:
-    python run.py           — full run
-    python run.py signals   — skip data download, rerun from feature engineering
-    python run.py portfolio — skip everything, just rerun portfolio
+run.py
+------
+Pipeline orchestrator — runs each module as a subprocess in sequence.
+
+Architecture
+────────────
+Each pipeline stage is a standalone Python module that reads from and
+writes to the ``data/`` directory. Running stages as subprocesses (rather
+than importing them) ensures each step starts in a clean interpreter state,
+preventing silent state corruption between stages.
+
+Data flow
+─────────
+  data_pipeline.py       reads  yfinance            writes  data/raw/
+  feature_engineering.py reads  data/raw/            writes  data/features/
+  macro_features.py      reads  yfinance + FRED       writes  data/macro/
+  signal_generation.py   reads  data/features/ + macro  writes  data/signals/
+  backtester.py          reads  data/signals/ + features writes  data/results/
+  portfolio.py           reads  data/signals/ + features writes  data/results/
+
+Shortcut flags (skip expensive upstream stages when data is still fresh)
+────────────────────────────────────────────────────────────────────────
+  python run.py              — full run (all 6 stages, ~5–10 min)
+  python run.py signals      — skip data download; restart from feature_engineering
+  python run.py portfolio    — run portfolio stage only (seconds)
+  python run.py backtest     — run backtester + portfolio
+  python run.py macro        — run from macro_features onward
 """
 
 import subprocess
@@ -30,6 +52,18 @@ SHORTCUTS = {
 
 
 def run_step(module: str, description: str) -> bool:
+    """
+    Execute one pipeline stage as a subprocess and print timing.
+
+    Args:
+        module:      Name of the Python file to run (without .py extension).
+        description: Human-readable label printed to the console.
+
+    Returns:
+        True if the step exited with code 0 (success), False otherwise.
+        On failure the pipeline halts immediately — later steps depend on
+        earlier outputs, so continuing after an error would produce corrupt results.
+    """
     print(f"\n{'='*60}")
     print(f"  {description}")
     print(f"  running {module}.py")
@@ -48,6 +82,11 @@ def run_step(module: str, description: str) -> bool:
 
 
 def main():
+    """
+    Parse the optional shortcut argument, slice the STEPS list, and run
+    each stage in order. Exits with code 1 on the first failure so CI
+    systems can detect broken runs.
+    """
     # determine start step from command line arg
     start_from = None
     if len(sys.argv) > 1:

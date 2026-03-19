@@ -1,18 +1,50 @@
 """
 signal_generation.py
+--------------------
+Asset-class-aware trading signal generation.
 
-Asset-class and stock-aware signal generation.
+This module turns technical features into actionable 0/1 signals.  Every
+design decision here has a principled justification — nothing was tuned by
+searching over parameter grids on the historical data.
 
-Routing logic:
-  equity_index  — MA50/200 + ADX regime switch
-  sector_etf    — MA100/300 + ADX (slower, sector rotations take longer)
-  stock         — MA50/200 + ADX + volatility filter
-                  thresholds adapt to each asset's trailing realized vol
-  bond          — momentum only, never mean reversion
-  commodity     — momentum in fear regime, mean reversion in calm
+Signal types produced
+─────────────────────
+  signal_regime     — Primary MA-crossover signal (long-only for most assets).
+                      Golden cross (MA50 > MA200) = 1, otherwise 0.
+                      Post-processed by RSI entry filter, min-hold filter,
+                      and ATR trailing stop.
+  signal_composite  — Richer score combining momentum and mean-reversion
+                      sub-scores with regime-aware weighting.  Long-only
+                      for equity/commodity, two-sided for bonds.
 
-Individual stocks also get a liquidity gate: if dollar_volume is below
-the 20-day average, signals are suppressed — thin days produce noise.
+Asset-class routing
+───────────────────
+  equity_index  → MA50/200 + ADX > 25 regime filter
+  sector_etf    → MA100/300 + ADX > 20 (slower: sector rotations take months)
+  stock         → MA50/200 + ADX > dynamic threshold (higher vol → higher bar)
+  bond          → Two-sided momentum (rates go both ways; mean reversion is risky)
+  commodity     → Momentum in fear (VIX > 25), mean reversion in calm
+
+Post-processors applied to signal_regime (principled, not curve-fitted)
+────────────────────────────────────────────────────────────────────────
+  1. RSI entry filter  — Block new longs when RSI_14 > 70 (overbought at entry)
+  2. Min-hold filter   — Stay long for at least MIN_HOLD_DAYS=5 to prevent
+                         whipsaw round-trips
+  3. ATR trailing stop — Exit if price falls ATR_TRAILING_MULT × ATR below
+                         the trailing high since entry
+
+Output
+──────
+  data/signals/{TICKER}.parquet      — per-ticker signal DataFrame
+  data/signals/regime_signals.parquet    — matrix of signal_regime values
+  data/signals/composite_signals.parquet — matrix of signal_composite values
+
+Consumed by
+───────────
+  backtester.py   — simulates P&L against these signals
+  portfolio.py    — uses signal matrices for sizing and walk-forward
+  paper_trader.py — runs generate() on live data for EOD execution
+  live_signals.py — replicates regime logic for the dashboard's Live Signals tab
 """
 
 import numpy as np
@@ -40,6 +72,14 @@ SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_macro() -> pd.DataFrame:
+    """
+    Load macro features from disk.  Returns empty DataFrame if not found.
+
+    The macro file is produced by macro_features.py.  If it is missing,
+    downstream functions degrade gracefully:
+      - vix_gate() returns all-pass (Series of 1s)
+      - commodity_regime() falls back to equity_index_regime()
+    """
     path = MACRO_DIR / "macro_features.parquet"
     if not path.exists():
         print("  WARNING: macro_features.parquet not found — run macro_features.py first")
@@ -51,7 +91,21 @@ def load_macro() -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 
 def equity_index_regime(df: pd.DataFrame) -> pd.Series:
-    """MA50/200 + ADX > 25. Standard regime filter for broad indices."""
+    """
+    Regime filter for broad equity indices (SPY, IWM, EEM).
+
+    Returns 1 (trending = act on momentum signals) when:
+      - MA50 > MA200   (golden cross — medium-term trend above long-term trend)
+      - ADX > 25       (confirmed trend, not a choppy range)
+
+    Returns 0 otherwise (ranging = suppress signals, stay in cash).
+
+    Args:
+        df: Feature DataFrame with columns [Close, adx].
+
+    Returns:
+        Binary Series (0 or 1) aligned to df.index.
+    """
     ma50  = df["Close"].rolling(50).mean()
     ma200 = df["Close"].rolling(200).mean()
     return ((ma50 > ma200) & (df["adx"] > 25)).astype(int)
@@ -59,8 +113,22 @@ def equity_index_regime(df: pd.DataFrame) -> pd.Series:
 
 def sector_regime(df: pd.DataFrame) -> pd.Series:
     """
-    Slower MA100/300 for sector ETFs — sector rotations develop over months not weeks.
-    Tighter ADX threshold (20 vs 25) because sectors trend less strongly than indices.
+    Regime filter for sector ETFs (XLE, XLU, XLF).
+
+    Uses slower MA100/300 instead of MA50/200 because sector rotations
+    develop over months, not weeks.  A sector that just crossed MA50/200
+    may already be halfway through its move; MA100/300 catches confirmed
+    multi-month trends.
+
+    ADX threshold is 20 (vs 25 for indices) because sectors trend less
+    strongly than broad indices — requiring ADX > 25 would suppress too
+    many valid signals.
+
+    Args:
+        df: Feature DataFrame with columns [Close, adx].
+
+    Returns:
+        Binary Series (0 or 1) aligned to df.index.
     """
     ma100 = df["Close"].rolling(100).mean()
     ma300 = df["Close"].rolling(300).mean()
@@ -69,10 +137,28 @@ def sector_regime(df: pd.DataFrame) -> pd.Series:
 
 def stock_regime(df: pd.DataFrame) -> pd.Series:
     """
-    Individual stocks: MA50/200 + ADX with a data-driven ADX threshold.
-    More volatile stocks have noisier price action and require stronger trend
-    confirmation — computed from trailing 60-day realized vol, not hardcoded
-    per-ticker. Removes ticker-specific overfitting.
+    Regime filter for individual stocks with volatility-adaptive ADX threshold.
+
+    Individual stocks are more volatile than indices, so price action is
+    noisier.  A fixed ADX threshold (like the 25 used for indices) would
+    either fire too often on low-vol stocks or suppress too many signals on
+    high-vol stocks.
+
+    Solution: compute the ADX threshold from each stock's own trailing
+    60-day realized volatility.  More volatile stocks require a higher ADX
+    reading before a trend is confirmed.
+
+      adx_threshold = 20 + int(trailing_vol × 50)  clipped to [20, 35]
+
+    Example:
+      COST (low vol ~15%):  ADX threshold ≈ 27
+      NVDA (high vol ~60%): ADX threshold ≈ 35 (capped)
+
+    Args:
+        df: Feature DataFrame with columns [Close, adx, log_return].
+
+    Returns:
+        Binary Series (0 or 1) aligned to df.index.
     """
     ma50  = df["Close"].rolling(50).mean()
     ma200 = df["Close"].rolling(200).mean()
@@ -89,15 +175,44 @@ def stock_regime(df: pd.DataFrame) -> pd.Series:
 
 
 def bond_regime(df: pd.DataFrame) -> pd.Series:
-    """Bonds always get momentum treatment. Mean reversion on TLT is dangerous."""
+    """
+    Bonds (TLT) always use momentum logic — never mean reversion.
+
+    Interest rate cycles genuinely trend in both directions for years at a
+    time (2000–2020 rates fell, 2022 they rose sharply).  Mean-reverting
+    TLT during a rising-rate regime is dangerous: rates can keep rising
+    for 18+ months.  The regime Series is permanently 1 so that
+    signal_generation.generate() always routes TLT to momentum_rule().
+
+    Args:
+        df: Feature DataFrame (used only for index alignment).
+
+    Returns:
+        Series of 1s aligned to df.index.
+    """
     return pd.Series(1, index=df.index)
 
 
 def commodity_regime(df: pd.DataFrame, macro: pd.DataFrame) -> pd.Series:
     """
-    Gold: momentum in fear (VIX > 25), mean reversion in calm.
-    Fear = gold trends for months as a safe haven.
-    Calm = gold oscillates around real-rate fair value.
+    Gold (GLD) regime: momentum in fear, mean reversion in calm.
+
+    In a fear environment (VIX > 25), gold trends as a safe-haven flow.
+    Investors pile into gold for months — mean-reverting against that flow
+    is dangerous.
+
+    In a calm environment (VIX < 25), gold oscillates around its real-rate
+    fair value.  The fear premium is absent and mean reversion works.
+
+    Returns 1 (momentum) when VIX > 25, 0 (mean reversion) otherwise.
+
+    Args:
+        df:    Feature DataFrame (used for index alignment).
+        macro: Macro DataFrame with column [vix].
+
+    Returns:
+        Binary Series (0 or 1) aligned to df.index.
+        Falls back to equity_index_regime(df) if macro is empty.
     """
     if macro.empty:
         return equity_index_regime(df)
@@ -111,8 +226,19 @@ def commodity_regime(df: pd.DataFrame, macro: pd.DataFrame) -> pd.Series:
 def liquidity_gate(df: pd.DataFrame) -> pd.Series:
     """
     Suppress signals on days when dollar volume is below its 20-day average.
-    Thin trading days produce unreliable signals — spreads widen and price
-    moves are more likely to reverse. Only matters for individual stocks.
+
+    Thin trading days produce unreliable signals: spreads widen, price
+    moves are more likely to reverse, and bid-ask slippage is higher.
+    Applied only to individual stocks (not ETFs or indices).
+
+    Uses shift(1) on the rolling average so today's volume must exceed
+    YESTERDAY's 20-day average — no look-ahead bias.
+
+    Args:
+        df: Feature DataFrame with column [dollar_volume].
+
+    Returns:
+        Binary Series (0 or 1).  1 = liquid (allow signal), 0 = thin (suppress).
     """
     # shift(1): today's volume must exceed yesterday's 20-day average — no lookahead
     avg_dv = df["dollar_volume"].rolling(20).mean().shift(1)
@@ -124,8 +250,23 @@ def liquidity_gate(df: pd.DataFrame) -> pd.Series:
 
 def vix_gate(macro: pd.DataFrame, index: pd.Index) -> pd.Series:
     """
-    Hard gate: 0 on extreme VIX spike days (z-score > 2.5, ~top 2% of days).
-    Fear drives prices on these days — technical signals break down.
+    Hard gate: suppress all signals on extreme VIX spike days.
+
+    A VIX z-score above 2.5 places the day in the top ~2% of historical
+    fear readings.  On such days, technical price signals break down — all
+    assets sell off together, correlations spike to 1, and trend/momentum
+    logic is essentially noise.
+
+    This is NOT a directional signal — it does not predict the VIX will
+    fall.  It simply says "this is not an environment for technical trading;
+    stand aside."
+
+    Args:
+        macro: Macro DataFrame with column [vix_zscore].
+        index: DatetimeIndex to align the gate Series to.
+
+    Returns:
+        Binary Series (0 or 1).  0 on spike days (block), 1 otherwise (pass).
     """
     if macro.empty:
         return pd.Series(1, index=index)
@@ -137,7 +278,20 @@ def vix_gate(macro: pd.DataFrame, index: pd.Index) -> pd.Series:
 # -----------------------------------------------------------------------------
 
 def momentum_rule(df: pd.DataFrame) -> pd.Series:
-    """Three-way confirmation: mom_20, mom_60, and MACD all agree."""
+    """
+    Three-way momentum confirmation signal.
+
+    Requires agreement from three independent momentum indicators:
+      - mom_20 > 0   (20-day return positive — medium-term momentum)
+      - mom_60 > 0   (60-day return positive — longer-term momentum)
+      - macd_hist > 0 (MACD histogram positive — short-term momentum turning up)
+
+    Three-way agreement reduces false signals compared to any single indicator.
+    All three disagreeing on direction produces a 0 (flat) signal.
+
+    Returns:
+        Series of {-1, 0, 1}.  Long (+1) or short (−1) only when all three agree.
+    """
     long  = (df["mom_20"] > 0) & (df["mom_60"] > 0) & (df["macd_hist"] > 0)
     short = (df["mom_20"] < 0) & (df["mom_60"] < 0) & (df["macd_hist"] < 0)
     return pd.Series(np.select([long, short], [1, -1], default=0), index=df.index)
@@ -145,16 +299,30 @@ def momentum_rule(df: pd.DataFrame) -> pd.Series:
 
 def mean_reversion_rule(df: pd.DataFrame) -> pd.Series:
     """
-    Two independent signals agree on extreme: zscore and RSI.
+    Volatility-adaptive mean reversion: buy oversold, sell overbought.
 
-    Thresholds are computed dynamically from the asset's own trailing 252-day
-    realized volatility — volatile assets get wider bands automatically so we
-    only fade genuine dislocations, not routine daily noise. No ticker-specific
-    hardcoding; new tickers inherit correct thresholds without any code changes.
+    Two independent signals must agree before generating a reversion trade:
+      - Price z-score is extreme (far from rolling mean)
+      - RSI confirms the same directional extreme
 
-      z_thresh = 1.0 + realized_vol  clipped to [1.0, 2.5]
-      rsi_lo   = 30 + int(realized_vol * 20)  clipped to [28, 40]
-      rsi_hi   = 100 - rsi_lo
+    Both thresholds scale with each asset's own trailing 252-day realized
+    volatility — more volatile assets naturally have wider price swings
+    that are NOT dislocations, so they require larger extremes before a
+    reversion signal fires.  This eliminates the need for per-ticker
+    parameter tuning.
+
+      z_thresh = (1.0 + realized_vol)  clipped to [1.0, 2.5]
+      rsi_lo   = (30 + int(realized_vol × 20))  clipped to [28, 40]
+      rsi_hi   = 100 − rsi_lo
+
+    Example (realized_vol = 0.20):
+      z_thresh = 1.2,  rsi_lo = 34,  rsi_hi = 66
+
+    Args:
+        df: Feature DataFrame with [zscore_20, rsi_14, log_return].
+
+    Returns:
+        Series of {-1, 0, 1}.
     """
     # Trailing 252-day realized vol (annualized) — no lookahead.
     # Fall back to expanding vol for the first ~63 days of history.
@@ -181,8 +349,31 @@ def volume_filter(df: pd.DataFrame, threshold: float = 1.0) -> pd.Series:
 
 def compute_scores(df: pd.DataFrame, regime: pd.Series, ticker: str = "") -> pd.DataFrame:
     """
-    Normalised composite score with regime-aware weighting.
-    No macro dampening — applied once in portfolio.py.
+    Build a normalised composite score combining momentum and mean-reversion.
+
+    Each raw feature is first rolled-z-scored (cross-sectionally standardised
+    within its own history) so features with different scales contribute equally.
+
+    Sub-scores:
+      score_momentum = mean(s_mom20, s_mom60, s_macd)
+      score_mean_rev = mean(s_zscore, s_rsi, s_bb)   — inverted (negative = oversold)
+      score_composite = regime-weighted blend × OBV amplifier
+
+    Regime-aware blending:
+      In a trending market (regime=1): 80% momentum, 20% mean reversion.
+      In a ranging market (regime=0):  20% momentum, 80% mean reversion.
+
+    Structural weights (0.6/0.2) are NOT per-ticker optimised — they reflect
+    the strategic decision to trust trend signals in trending markets and
+    reversion signals in ranging ones.
+
+    Args:
+        df:     Feature DataFrame.
+        regime: Binary regime Series from one of the regime functions.
+        ticker: Ticker string (used for logging only; does not affect scores).
+
+    Returns:
+        DataFrame of all sub-scores and the composite score.
     """
     scores = pd.DataFrame(index=df.index)
 
@@ -217,12 +408,34 @@ def compute_scores(df: pd.DataFrame, regime: pd.Series, ticker: str = "") -> pd.
 
 
 def _roll_zscore(series: pd.Series, window: int) -> pd.Series:
+    """
+    Rolling z-score of a series: (value − rolling_mean) / rolling_std.
+
+    Args:
+        series: Input pandas Series.
+        window: Rolling window length.  min_periods = window // 2 so the
+                early warm-up period is included (not dropped entirely).
+
+    Returns:
+        Series of z-scores.  Values outside ±3 indicate extreme readings.
+    """
     roll = series.rolling(window, min_periods=window // 2)
     return (series - roll.mean()) / roll.std()
 
 
 def scores_to_signal(score: pd.Series, long_thresh: float = 0.5,
                      short_thresh: float = -0.5) -> pd.Series:
+    """
+    Threshold a composite score Series into a {-1, 0, 1} signal.
+
+    Args:
+        score:        Composite score Series (unbounded float).
+        long_thresh:  Score above this generates a LONG signal (default 0.5).
+        short_thresh: Score below this generates a SHORT signal (default -0.5).
+
+    Returns:
+        Signal Series: +1 (long), -1 (short), 0 (flat / cash).
+    """
     signal = pd.Series(0, index=score.index)
     signal[score >  long_thresh]  =  1
     signal[score < short_thresh]  = -1
@@ -236,14 +449,23 @@ def scores_to_signal(score: pd.Series, long_thresh: float = 0.5,
 
 def apply_rsi_entry_filter(signal: pd.Series, rsi: pd.Series) -> pd.Series:
     """
-    Block new LONG entries when RSI_14 is above RSI_ENTRY_THRESH (70).
-    Once a position is open it is NOT closed by this rule — only entry is gated.
+    Block new LONG entries when RSI_14 > RSI_ENTRY_THRESH at the time of entry.
 
-    Why this improves quality without overfitting:
-      A golden cross that fires at RSI=80 means the fast MA crossed the slow MA
-      after a sustained run-up.  The crossover edge comes from catching early
-      trend moves, not from chasing extended ones.  Wilder's 70 threshold is a
-      published standard from 1978 — it was not chosen by looking at this data.
+    The golden cross identifies trend direction.  The RSI gate ensures we
+    only enter early in the trend, not after a sustained run-up where the
+    entry risk/reward is poor.  Wilder's original overbought level of 70
+    (published 1978) is used — not fitted to this data.
+
+    State machine: tracks whether we are currently in a position so the
+    filter only blocks NEW entries (not ongoing positions, which have
+    already made money from the initial move).
+
+    Args:
+        signal: Binary signal Series (0 or 1) BEFORE the RSI filter.
+        rsi:    RSI-14 Series aligned to signal.index.
+
+    Returns:
+        Filtered signal Series.  Same index and dtype (int) as input.
     """
     result      = signal.copy().astype(float)
     in_position = False
@@ -265,12 +487,22 @@ def apply_rsi_entry_filter(signal: pd.Series, rsi: pd.Series) -> pd.Series:
 
 def apply_min_hold_filter(signal: pd.Series) -> pd.Series:
     """
-    Once long, require MIN_HOLD_DAYS (5) before a death-cross exit fires.
-    Prevents same-week whipsaws where a golden/death cross pair triggers within
-    days and costs two round-trip commissions for negligible directional move.
+    Hold a long position for at least MIN_HOLD_DAYS trading days before exiting.
 
-    5 trading days = 1 calendar week — the smallest natural holding unit.
-    Not tuned to this dataset.
+    MA crossovers can produce same-week golden/death-cross pairs (whipsaws)
+    where the MA crosses up on Monday, then back down on Friday.  Without
+    this filter, that costs two round-trip commissions for near-zero net move.
+    MIN_HOLD_DAYS=5 (one trading week) is the natural minimum unit — any
+    shorter and the strategy is HFT, not systematic medium-term.
+
+    State machine: counts the number of consecutive days in the position.
+    Exit signals received before MIN_HOLD_DAYS are converted to holds (1s).
+
+    Args:
+        signal: Binary signal Series (0 or 1) BEFORE the min-hold filter.
+
+    Returns:
+        Filtered signal Series.  Same index and dtype (int) as input.
     """
     result      = signal.copy().astype(float)
     in_position = False
@@ -298,18 +530,27 @@ def apply_trailing_stop_signal(signal: pd.Series,
                                 close: pd.Series,
                                 atr: pd.Series) -> pd.Series:
     """
-    Override LONG→FLAT if price drops ATR_TRAILING_MULT × ATR below the
-    trailing high since position entry.  Falls back to 20% fixed stop if ATR
-    is unavailable.
+    Close a long position if price falls ATR_TRAILING_MULT × ATR below the
+    trailing high since entry.
 
-    Why 3× ATR and not a fixed %:
-      ATR-scaled stops adapt to each asset's own volatility.  A 3× stop on SPY
-      (~$15) is very different from 3× on a volatile individual stock (~$30).
-      Fixed-% stops over-fire on volatile names and under-protect on calm ones.
-      3× is a standard institutional parameter (documented in elder/schwager).
-      It was not chosen by optimising against this backtest.
+    ATR-scaled stops adapt to each asset's volatility automatically.  A 3×
+    stop on SPY (low vol) is tighter in dollar terms than 3× on NVDA (high
+    vol), which is the correct behaviour — NVDA has wider natural swings
+    that should not trigger a stop.
 
-    Applies only to long-only assets — bonds with short signals need separate logic.
+    ATR_TRAILING_MULT = 3.0 is an institutional standard (referenced in
+    Elder, Schwager).  It was not chosen by optimising against this backtest.
+
+    Fallback: if ATR data is unavailable, uses a fixed 20% below the
+    trailing high.
+
+    Args:
+        signal: Binary signal Series (0 or 1) after min-hold filter.
+        close:  Close price Series aligned to signal.index.
+        atr:    ATR-14 Series aligned to signal.index.
+
+    Returns:
+        Filtered signal Series.  Same index and dtype (int) as input.
     """
     result      = signal.copy().astype(float)
     in_pos      = False
@@ -348,6 +589,23 @@ def apply_trailing_stop_signal(signal: pd.Series,
 # -----------------------------------------------------------------------------
 
 def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame:
+    """
+    Master signal generator — routes each ticker to the correct logic and
+    applies all post-processors.
+
+    Args:
+        df:     Feature DataFrame from feature_engineering.engineer().
+        ticker: Ticker symbol string (used for asset-class routing).
+        macro:  Macro DataFrame from load_macro().
+
+    Returns:
+        DataFrame with columns:
+          Close, log_return, regime, asset_class,
+          volume_filter, signal_regime, signal_composite,
+          s_mom20, s_mom60, s_macd, s_adx, s_zscore, s_rsi, s_bb, s_obv,
+          score_momentum, score_mean_rev, score_composite.
+        Rows with NaN in any column are dropped.
+    """
     asset_class = ASSET_CLASS[ticker]
     out  = df[["Close", "log_return"]].copy()
     gate = vix_gate(macro, df.index)

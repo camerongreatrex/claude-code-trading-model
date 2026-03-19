@@ -1,14 +1,33 @@
 """
 live_signals.py
+---------------
+Fetches live market data via yfinance and computes today's signal state
+for the full trading universe.  Used by the dashboard's "Live Signals" tab.
 
-Fetches fresh daily OHLCV data via yfinance (free, no API key required)
-and computes today's signal state for the full universe.
+Why a separate module from signal_generation.py?
+────────────────────────────────────────────────
+signal_generation.py runs against the full historical dataset stored in
+data/features/ parquet files (produced by the offline pipeline).
 
-The strategy is a daily close strategy — signals update once per day.
-This module replicates the core MA-crossover regime logic from
-signal_generation.py against the most recent live prices.
+live_signals.py operates on fresh data downloaded in real time from
+yfinance, with no dependency on the parquet files.  This means the
+dashboard can show current signal states even if data_pipeline.py has not
+been run today.
 
-Used by dashboard.py for the Live Signals tab.
+The signal logic here intentionally mirrors signal_generation.generate()
+for the regime signal (MA crossover + regime filter).  The composite score
+is not replicated here — the MA signal is what paper_trader.py actually
+trades, so it is the most useful live indicator.
+
+Strategy (daily, long-only)
+────────────────────────────
+Signals update once per day at the official close.  During market hours,
+they reflect the most recently available close (which may be yesterday's
+if today's bar has not yet settled in yfinance).
+
+Consumed by
+───────────
+  dashboard.py — Live Signals tab
 """
 
 import numpy as np
@@ -21,8 +40,21 @@ from data_pipeline import TICKER_LIST, ASSET_CLASS
 
 def fetch_live_data(tickers: list, lookback_days: int = 700) -> dict:
     """
-    Download the last `lookback_days` of OHLCV data for each ticker.
-    Returns dict[ticker -> DataFrame].  Tickers that fail are silently skipped.
+    Download the most recent ``lookback_days`` of daily OHLCV for each ticker.
+
+    Uses yfinance.download() — free, no API key, approximately 15-minute
+    delayed data during market hours on the free tier.
+
+    Args:
+        tickers:       List of ticker symbols to download.
+        lookback_days: Number of calendar days of history to fetch.
+                       Default 700 days (~2.8 years) — enough for MA200
+                       to warm up (200 trading days ≈ 280 calendar days).
+
+    Returns:
+        dict[ticker -> DataFrame].  Tickers that fail (network error,
+        delisted, bad symbol) are silently skipped so one bad ticker does
+        not block the rest of the universe.
     """
     end   = datetime.today()
     start = end - timedelta(days=lookback_days)
@@ -50,7 +82,20 @@ def fetch_live_data(tickers: list, lookback_days: int = 700) -> dict:
 
 
 def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
-    """Wilder's EWM RSI — matches feature_engineering.py exactly."""
+    """
+    Wilder's RSI using EWM — matches feature_engineering.add_rsi() exactly.
+
+    Keeping this consistent is important: if the signal uses RSI=72 to
+    decide to hold vs. exit, the live dashboard should show the same 72,
+    not a slightly different number from a different RSI implementation.
+
+    Args:
+        close:  Close price Series.
+        window: Look-back period (default 14).
+
+    Returns:
+        RSI Series (0–100).
+    """
     delta    = close.diff()
     gains    = delta.clip(lower=0)
     losses   = delta.clip(upper=0).abs()
@@ -61,6 +106,15 @@ def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
 
 
 def _macd_hist(close: pd.Series) -> pd.Series:
+    """
+    MACD histogram (12/26/9) — matches feature_engineering.add_macd() exactly.
+
+    Args:
+        close: Close price Series.
+
+    Returns:
+        MACD histogram Series.  Positive = bullish momentum, negative = bearish.
+    """
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     signal_line = (ema12 - ema26).ewm(span=9, adjust=False).mean()
@@ -69,10 +123,29 @@ def _macd_hist(close: pd.Series) -> pd.Series:
 
 def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
     """
-    Compute the current MA-crossover signal and supporting indicators.
-    Mirrors the logic in signal_generation.generate() for the regime signal.
+    Compute the current signal state and supporting indicators for one ticker.
 
-    Returns a flat dict of scalars for the latest available bar.
+    Mirrors the regime signal logic from signal_generation.generate():
+      - MA50/200 for most assets; MA100/300 for sector ETFs
+      - Golden cross (fast MA > slow MA) = LONG signal = 1
+      - Otherwise = FLAT = 0
+
+    Note: The full post-processors (RSI entry filter, min-hold, trailing stop)
+    from signal_generation.py are NOT replicated here because they require
+    per-bar state tracking over the full history.  The live dashboard shows
+    the raw golden-cross signal — the post-processors only change the signal
+    on edge cases (overbought entries, short holds, stop hits).
+
+    Args:
+        df:     OHLCV DataFrame with ≥ slow_w rows from fetch_live_data().
+        ticker: Ticker symbol string (used for asset-class routing).
+
+    Returns:
+        Flat dict of scalars for the latest available bar:
+          ticker, asset_class, price, day_chg_pct, signal, signal_label,
+          ma_fast, ma_slow, ma_fast_label, ma_slow_label, ma_spread_pct,
+          rsi, macd_hist, ret_20d_pct, ret_60d_pct, hi_52w, lo_52w,
+          dist_from_high, last_date, volume, avg_vol_20d.
     """
     asset_class = ASSET_CLASS[ticker]
     close       = df["Close"]
@@ -141,11 +214,17 @@ def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
 
 def get_live_signals() -> tuple[pd.DataFrame, str]:
     """
-    Fetch live data and return (signals_df, fetch_timestamp).
+    Fetch live data for the full universe and return a display-ready DataFrame.
 
-    signals_df columns:
-        Ticker, Asset Class, Price, Day Chg %, Signal, MA Spread %,
-        RSI, 20d Ret %, 60d Ret %, Dist from High %, Last Date
+    This is the primary entry point called by dashboard.py.  Results are
+    cached by Streamlit (via @st.cache_data with a short TTL) to avoid
+    fetching the same data on every page interaction.
+
+    Returns:
+        Tuple of (display_df, fetch_timestamp):
+          display_df: DataFrame with human-readable column names, ready for
+                      st.dataframe().  Empty DataFrame if all fetches failed.
+          fetch_timestamp: ISO datetime string when the fetch ran.
     """
     raw     = fetch_live_data(TICKER_LIST, lookback_days=700)
     rows    = []

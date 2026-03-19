@@ -1,27 +1,44 @@
 """
 scheduler.py
+------------
+Automated end-of-day pipeline runner — keeps the paper portfolio in sync
+with market closes without any manual intervention.
 
-Automated daily pipeline — runs continuously as a background process.
-Fires the EOD update at exactly 4:45 PM US/Eastern on weekdays,
-generates tomorrow's pre-market order sheet, and enforces the kill switch.
+How it works
+────────────
+The scheduler sleeps in a 30-second loop, checking the ET clock on each
+wakeup.  On weekdays at exactly 4:45 PM ET it triggers the full EOD
+pipeline (kill-switch check → paper-trade update → data validation →
+order sheet).  After running, it sets ``last_run_date`` so it will not
+fire again on the same calendar day even if left running overnight.
 
-Usage:
-    python scheduler.py          # run in foreground (keep terminal open)
-    pythonw scheduler.py         # run silently in background (no window)
+Why 4:45 PM (not 4:00 PM)?
+────────────────────────────
+The 4 PM close marks the end of regular trading, but official closing
+prices (especially for less-liquid names) can take several minutes to
+settle in Yahoo Finance's API.  Waiting until 4:45 gives yfinance time
+to publish the final adjusted close so the strategy's signal for the next
+day is based on a clean, settled price.
 
-How it works:
-  - Sleeps most of the time, waking every 30 seconds to check the clock.
-  - On weekdays at 4:45 PM ET, calls paper_trader.end_of_day_update().
-  - After each EOD run, writes data/paper_trading/orders_tomorrow.json
-    so you know exactly what positions you're holding into tomorrow.
-  - Checks the kill switch on startup and before every trade session.
+Kill switch
+────────────
+If the rolling 20-day portfolio drawdown exceeds KILL_SWITCH_DD (15%),
+trading is paused and a warning is logged.  This mirrors the circuit-
+breaker logic used at systematic funds — a drawdown of that magnitude
+almost always means either a model break or a genuine market dislocation
+that warrants human review before further capital is risked.
 
-Comparison to professional systems:
-  - Two Sigma / AQR equivalent: a Cron job on a Linux server fires a
-    Python pipeline at market close.  This is the exact same pattern —
-    just running on your laptop instead of AWS.
-  - The key difference from HFT: no co-location, no sub-second latency.
-    Not needed for a daily strategy.
+Professional analogy
+────────────────────
+Two Sigma / AQR equivalent: a cron job on a Linux server fires a Python
+pipeline at market close.  This is the exact same pattern — just running
+on a laptop instead of AWS.  The key difference from HFT: no co-location
+or sub-millisecond latency (not needed for a daily strategy).
+
+Usage
+─────
+  python scheduler.py      # run in foreground (terminal must stay open)
+  pythonw scheduler.py     # run silently in the background (Windows, no window)
 """
 
 import time
@@ -99,16 +116,29 @@ def check_kill_switch() -> bool:
 
 def validate_prices(signals: dict) -> dict:
     """
-    Remove tickers whose closing price looks like a data error.
+    Remove tickers whose latest closing price fails basic sanity checks.
 
-    Checks:
-      1. Price is positive and finite.
-      2. Single-day move is within ±25% (beyond this = almost certainly bad data,
-         not a real move — even the 1987 crash was −22.6% in one day).
-      3. Price hasn't been unchanged for 5+ consecutive days (stale feed).
+    Three checks are applied in order:
+      1. **Finite positive price** — NaN, Inf, or ≤ 0 indicates a bad feed.
+      2. **Single-day move ≤ 25%** — The 1987 crash was −22.6% in one day;
+         anything beyond ±25% is almost certainly a data error, not a real
+         move.  Uses yfinance ``fast_info`` for the previous close.
+      3. **No stale feed** — 5+ consecutive unchanged closes suggest the
+         data provider stopped updating.  (Not yet implemented; placeholder
+         for future hardening.)
 
-    Professional equivalent: pre-trade data validation / 'sanity checks'
-    that every systematic firm runs before sending orders.
+    Args:
+        signals: dict[ticker -> signal_info dict] from compute_live_signals().
+
+    Returns:
+        A filtered copy of ``signals`` containing only tickers that passed
+        all checks.  Failures are logged as warnings, not exceptions, so one
+        bad ticker never blocks the rest of the order sheet.
+
+    Note:
+        ``fast_info`` is a lightweight yfinance endpoint.  If it is
+        unavailable (network error, delisted ticker) the check is skipped
+        rather than blocking the trade — a conservative design choice.
     """
     clean = {}
     for ticker, sig in signals.items():
@@ -138,23 +168,27 @@ def validate_prices(signals: dict) -> dict:
 
 def generate_order_sheet(signals: dict, state: dict):
     """
-    Write tomorrow's expected order list to orders_tomorrow.json.
+    Compute tomorrow's expected order list and persist it to orders_tomorrow.json.
 
-    Uses the signals dict from compute_live_signals() — which already has
-    all strategy filters applied (RSI entry, min-hold, ATR trailing stop).
-    The signal field is the final 0/1 decision; no need to re-implement logic here.
+    Reads the current portfolio state and the validated live signals to
+    determine the expected action for every ticker in the universe:
+      - ``BUY``      — signal=1, not already long, sufficient cash available
+      - ``SELL``     — signal=0, currently long (death cross / trailing stop)
+      - ``HOLD``     — signal=1, already long (no action needed)
+      - ``FLAT``     — signal=0, not long (stay in cash)
+      - ``SKIP``     — signal=1, but insufficient cash to size the position
+      - ``NO_DATA``  — ticker was not returned by compute_live_signals()
 
-    Format:
-      {
-        "generated_at": "2026-03-17 16:47:22",
-        "for_date":     "2026-03-18",
-        "orders": [
-          { "ticker": "SPY",  "action": "HOLD",  "unrealised_pnl": 320.0 },
-          { "ticker": "AMZN", "action": "BUY",   "size_usd": 5200.0 },
-          { "ticker": "GE",   "action": "SELL",  "reason": "signal_exit" },
-          ...
-        ]
-      }
+    The order sheet is informational only — positions are actually executed
+    by end_of_day_update().  The sheet exists so you can review what the
+    strategy is planning before prices open the next morning.
+
+    Args:
+        signals: Validated signal dict from compute_live_signals().
+        state:   Current portfolio state dict from load_state().
+
+    Returns:
+        The full order sheet dict (also written to ORDERS_FILE as JSON).
     """
     positions     = state.get("positions", {})
     cash          = state.get("cash", INITIAL_CAPITAL)
@@ -239,7 +273,16 @@ def generate_order_sheet(signals: dict, state: dict):
 # ── Market day check ──────────────────────────────────────────────────────────
 
 def _is_trading_day() -> bool:
-    """Check if today is a weekday (Mon–Fri). Doesn't check US holidays."""
+    """
+    Return True if today is a weekday (Monday–Friday).
+
+    Note:
+        Does not check US market holidays (MLK Day, Thanksgiving, etc.).
+        On those days the EOD job will fire but yfinance will return no new
+        data, so end_of_day_update() will simply re-use the previous close
+        prices and produce a no-change snapshot.  A future improvement
+        would be to integrate a holiday calendar (e.g., pandas_market_calendars).
+    """
     return datetime.now(ET_ZONE).weekday() < 5   # 0=Mon … 4=Fri
 
 
@@ -250,7 +293,13 @@ def _et_now() -> datetime:
 # ── Main EOD job ──────────────────────────────────────────────────────────────
 
 def run_eod_job():
-    """Full end-of-day pipeline: kill switch → update → validate → order sheet."""
+    """
+    Full end-of-day pipeline: kill-switch check → update → validate → order sheet.
+
+    Called exactly once per trading day at EOD_HOUR:EOD_MINUTE ET.
+    All exceptions are caught and logged so a single day's failure does
+    not crash the scheduler process.
+    """
     log.info("=" * 60)
     log.info("EOD pipeline starting")
 
@@ -285,6 +334,13 @@ def run_eod_job():
 # ── Scheduler loop ─────────────────────────────────────────────────────────────
 
 def main():
+    """
+    Entry point for the scheduler process.
+
+    Runs indefinitely — designed to be launched at startup and left running.
+    Logs a heartbeat every 30 minutes showing portfolio value and next EOD
+    time so you can verify it is alive without reading the full log.
+    """
     log.info("Scheduler started.  Will fire EOD at "
              f"{EOD_HOUR:02d}:{EOD_MINUTE:02d} ET on weekdays.")
     log.info(f"Kill-switch threshold: {KILL_SWITCH_DD*100:.0f}% rolling 20-day loss")

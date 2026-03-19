@@ -1,9 +1,42 @@
 """
-Fetches VIX, VIX9D, and yield curve data.
-Produces a daily macro regime DataFrame consumed by signal_generation.py
-and portfolio.py.
+macro_features.py
+-----------------
+Fetches market-level regime indicators and engineers derived features.
 
-Install if needed: pip install pandas-datareader
+The macro layer answers one question: "What kind of market environment are
+we in right now?"  This context is consumed by signal_generation.py (to
+gate signals on extreme VIX days) and portfolio.py (to scale position sizes
+up/down based on macro conditions).
+
+Data sources
+────────────
+  VIX  (^VIX)   — Yahoo Finance, free, no API key
+  VIX9D (^VIX9D) — Yahoo Finance, free, no API key
+  10Y-2Y spread  — FRED public CSV (no API key, no library required)
+
+Output
+──────
+  data/macro/macro_features.parquet
+
+  Columns:
+    vix              — CBOE 30-day implied volatility index
+    vix9d            — CBOE 9-day implied volatility (spikes faster)
+    yield_curve      — 10Y minus 2Y US Treasury spread (FRED T10Y2Y)
+    vix_calm         — 1 when vix < 20 (complacency)
+    vix_fear         — 1 when vix > 30 (stress)
+    vix_zscore       — rolling 60-day z-score of VIX level
+    vix_term_ratio   — vix9d / vix  (>1 = vol backwardation = acute stress)
+    vol_backwardation— 1 when vix_term_ratio > 1
+    curve_inverted   — 1 when yield_curve < 0 (recession signal)
+    curve_steep      — 1 when yield_curve > 1 (strong growth signal)
+    curve_momentum   — 20-day change in spread (steepening vs flattening)
+    macro_score      — composite -1 to +1 (−1 = full bear, +1 = full bull)
+    size_multiplier  — position size scalar for portfolio.py (0.50 to 1.25)
+
+Consumed by
+───────────
+  signal_generation.py — vix_gate(), commodity_regime()
+  portfolio.py         — apply_macro_multiplier()
 """
 
 import io
@@ -23,9 +56,24 @@ END   = "2026-01-01"
 
 def fetch_vix() -> pd.DataFrame:
     """
-    VIX: 30-day expected S&P volatility from options. Real-time fear gauge.
-    <15 = complacency, 15-20 = normal, 20-30 = anxious, >30 = fear, >40 = panic.
-    VIX9D: 9-day version — spikes faster, detects acute short-term stress.
+    Download VIX and VIX9D from Yahoo Finance.
+
+    VIX (^VIX): The CBOE 30-day expected S&P 500 volatility derived from
+    options prices.  Commonly called the "fear gauge".
+      <15  = market complacency / low demand for hedges
+      15–20 = normal / baseline
+      20–30 = elevated anxiety, some hedging demand
+      >30   = fear, forced selling likely
+      >40   = panic / crisis conditions
+
+    VIX9D (^VIX9D): The 9-day equivalent.  Because it uses shorter-dated
+    options, VIX9D spikes faster than VIX at the onset of a stress event.
+    When VIX9D > VIX (backwardation), near-term risk is elevated relative
+    to medium-term risk — a useful early warning signal.
+
+    Returns:
+        DataFrame with columns [vix, vix9d] indexed by timezone-naive date.
+        If VIX9D download fails, vix9d is filled with vix values.
     """
     print("  Fetching VIX...")
     vix = yf.download("^VIX", start=START, end=END, auto_adjust=True, progress=False)
@@ -51,11 +99,28 @@ def fetch_vix() -> pd.DataFrame:
 
 def fetch_yield_curve() -> pd.DataFrame:
     """
-    10Y-2Y Treasury spread from FRED public CSV (no API key, no library needed).
-    The most reliable recession indicator: >1 = steep, 0-1 = flat, <0 = inverted.
+    Download the 10Y-2Y Treasury yield spread from the FRED public CSV.
 
-    Uses direct CSV download — pandas-datareader is incompatible with Python 3.12+
-    (distutils removed) so we bypass it entirely.
+    The 10-year minus 2-year spread is the most widely cited recession
+    indicator.  Interpretation:
+      > 1.0  = steep yield curve → strong growth expectations, bank NIM favourable
+      0–1.0  = flat curve → late-cycle, growth slowing
+      < 0.0  = inverted curve → reliable recession predictor (historically
+               precedes recession by 6–18 months)
+
+    Uses a direct HTTP GET to the FRED CSV endpoint rather than
+    pandas-datareader, which is incompatible with Python 3.12+ (the
+    ``distutils`` module it depends on was removed from the standard library).
+
+    Returns:
+        DataFrame with column [yield_curve] indexed by timezone-naive date,
+        forward-filled and cropped to [START, END].
+
+    Fallback:
+        If the FRED download fails (network outage, API change), returns a
+        neutral (0.0) proxy so the macro score degrades gracefully rather
+        than crashing the pipeline.  Does NOT proxy from VIX to avoid
+        introducing circular correlation between the two macro indicators.
     """
     print("  Fetching yield curve from FRED...")
     try:
@@ -83,6 +148,28 @@ def fetch_yield_curve() -> pd.DataFrame:
 
 
 def compute_macro_features(vix: pd.DataFrame, curve: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute all derived macro features from raw VIX and yield curve data.
+
+    Args:
+        vix:   DataFrame with columns [vix, vix9d] from fetch_vix().
+        curve: DataFrame with column [yield_curve] from fetch_yield_curve().
+
+    Returns:
+        Joined DataFrame with all raw and derived macro columns.
+
+    Design notes
+    ────────────
+    All threshold values (VIX < 20, VIX > 30, spread < 0, spread > 1) are
+    published academic / industry standards, not fitted to this dataset.
+    Fitting thresholds to historical data would introduce in-sample bias
+    and make the features useless for prediction.
+
+    The size_multiplier scalar of 0.5 (giving range 0.50–1.25) was chosen
+    so that the "maximum bear" environment (all signals bad) cuts exposure
+    to 50% — a standard institutional risk heuristic.  The previous scalar
+    of 0.2 only varied from 0.80 to 1.20 and had virtually no effect.
+    """
     macro = vix.join(curve, how="outer").ffill().dropna()
 
     # VIX regime thresholds: industry-standard, not fitted to this dataset

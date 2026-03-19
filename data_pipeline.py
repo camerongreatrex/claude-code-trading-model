@@ -1,14 +1,42 @@
 """
 data_pipeline.py
+----------------
+Downloads, cleans, and persists raw OHLCV price data for the full universe.
 
-Downloads, cleans, and saves raw OHLCV data.
-Universe spans asset classes AND individual stocks with genuinely different
-economic drivers — the combination gives both macro diversification and
-idiosyncratic alpha opportunities.
+Outputs (written to data/raw/)
+──────────────────────────────
+  {TICKER}.parquet          — daily OHLCV for each ticker
+  closes_matrix.parquet     — aligned close prices for all tickers (T × N matrix)
 
-Survivorship-bias anchors (GE, INTC, VZ) are included deliberately.
-A realistic 2015 investor would have held these names. Excluding losers
-inflates backtest returns by 2-4% p.a. — a well-known data-mining trap.
+Consumed by
+───────────
+  feature_engineering.py    — reads individual ticker parquets
+  live_signals.py           — uses TICKER_LIST and ASSET_CLASS constants
+  signal_generation.py      — uses ASSET_CLASS to route signal logic
+  paper_trader.py           — uses TICKER_LIST for the trading universe
+
+Universe design principle
+─────────────────────────
+Every ticker in the universe should have a DIFFERENT primary economic driver.
+If two assets respond to the same macroeconomic shock, one is redundant.
+The current mix covers: broad equity (SPY, IWM, EEM), rates / safe-haven
+(TLT, GLD), sector rotation (XLE, XLU, XLF), and idiosyncratic company
+drivers (JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA).
+
+Survivorship bias
+─────────────────
+GE, INTC, and VZ are included as "survivorship-bias anchors".  A 2015
+investor would have held these large-cap names.  Excluding them because
+they underperformed would inflate backtest returns by ~2–4% p.a. — a
+well-documented data-mining trap that overstates strategy performance.
+
+Date range
+──────────
+START = 2015-01-01.  Chosen because:
+  - Covers two full market cycles (2015 correction, 2018 sell-off, COVID, 2022 bear).
+  - Enough data (≈2,500 days) for the MA200 and 252-day rolling windows to warm up.
+  - Avoids the 2008–2009 crisis which would require modelling a regime not
+    relevant to the current market structure.
 """
 
 import numpy as np
@@ -89,6 +117,21 @@ MIN_TRADING_DAYS = 1000
 
 
 def download(ticker: str) -> pd.DataFrame:
+    """
+    Download adjusted OHLCV data for a single ticker from Yahoo Finance.
+
+    Uses ``auto_adjust=True`` so prices are dividend- and split-adjusted —
+    essential for long backtests where unadjusted prices would show
+    artificial gaps on ex-dividend dates.
+
+    Args:
+        ticker: Yahoo Finance ticker symbol (e.g., "SPY", "BRK-B").
+
+    Returns:
+        DataFrame with columns [Open, High, Low, Close, Volume] indexed by
+        timezone-naive date.  Timezone is stripped to avoid merge issues when
+        combining tickers downloaded at different times.
+    """
     df = yf.download(ticker, start=START, end=END, auto_adjust=True, progress=False)
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -101,6 +144,26 @@ def download(ticker: str) -> pd.DataFrame:
 
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply quality filters to raw OHLCV data.
+
+    Filters applied (in order):
+      1. Forward-fill NaN gaps (e.g., bank holidays where one exchange is
+         closed).  Forward-fill preserves the most recent real price.
+         Interpolation is deliberately NOT used — it would look forward and
+         introduce look-ahead bias.
+      2. Drop rows where any OHLC price is non-positive (bad feed data).
+      3. Drop rows where High < Low (impossible candle — corrupt data).
+      4. Remove duplicate dates, keeping the last occurrence.
+      5. Sort chronologically.
+
+    Args:
+        df: Raw OHLCV DataFrame from download().
+
+    Returns:
+        Cleaned DataFrame.  May have fewer rows than the input if corrupt
+        rows were removed.
+    """
     df = df.ffill().dropna()  # forward-fill gaps — never interpolate (lookahead bias)
     df = df[(df[["Open", "High", "Low", "Close"]] > 0).all(axis=1)]
     df = df[df["High"] >= df["Low"]]
@@ -109,6 +172,13 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
+    """
+    Download and clean all tickers, then print a summary report.
+
+    Also computes and prints the cross-ticker correlation matrix so you
+    can quickly verify that the universe is genuinely diversified (target:
+    average pairwise correlation < 0.35).
+    """
     all_data = {}
     print("Downloading and processing...\n")
     print(f"  {'Ticker':<8} {'Class':<16} {'Rows':<8} {'Driver'}")

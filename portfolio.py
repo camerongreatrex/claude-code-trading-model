@@ -1,15 +1,50 @@
 """
 portfolio.py
+------------
+Turns +1/-1/0 signals into actual dollar position sizes and evaluates the
+combined portfolio using walk-forward validation.
 
-Turns +1/-1/0 signals into actual position sizes across the diversified universe.
-Walk-forward validation gives honest out-of-sample performance.
+Sizing methods (in order of complexity)
+────────────────────────────────────────
+  1. equal_weight      — Equal fraction of capital per active signal.
+                          Simple baseline; no volatility awareness.
+  2. atr_sizes         — Risk a fixed dollar amount (1% of capital) per
+                          1-ATR adverse move.  Normalises exposure across
+                          assets with very different volatility profiles.
+  3. kelly_sizes       — Half-Kelly: sizes positions by the signal's
+                          rolling edge (win rate × profit factor).
+  4. atr + pca         — ATR sizing scaled down when portfolio correlations
+                          spike (diversification benefit is falling).
+  5. atr + pca + macro — Full system: adds macro size_multiplier from
+                          macro_features.py (0.5× in fear / 1.25× in calm).
+  6. vol_target        — Scales all sizes so realised portfolio vol targets 10%.
+  7. drawdown_control  — Circuit breaker: halves positions when in a drawdown
+                          deeper than 12%.
 
-Sizing methods:
-  1. Equal weight  — baseline
-  2. ATR-based     — volatility normalised (primary method)
-  3. Half-Kelly    — edge-adjusted
-  4. ATR + PCA     — correlation-aware
-  5. ATR + PCA + macro — full system
+Key constants
+─────────────
+  CAPITAL          = $100,000  — starting capital for all simulations
+  MAX_POSITION_PCT = 20%       — single position capped at 20% of capital
+  RISK_PER_TRADE   = 1%        — dollar risk per 1-ATR adverse move
+
+Walk-forward validation
+────────────────────────
+walk_forward() divides history into rolling 3-year training / 1-year test
+windows.  Each test window is genuinely out-of-sample.  Comparing mean OOS
+Sharpe to in-sample Sharpe reveals whether a method is overfit.
+
+Output (written to data/results/)
+──────────────────────────────────
+  portfolio_comparison.parquet   — equity curves for all sizing methods
+  walk_forward_regime.parquet    — OOS results (equal-weight, regime signal)
+  walk_forward_atr_pca.parquet   — OOS results (ATR+PCA+macro sizing)
+  oos_selection.parquet          — IS vs OOS Sharpe comparison for 5 candidates
+  portfolio_equity_curve.parquet — equity curve for the best OOS method
+
+Consumed by
+───────────
+  dashboard.py  — reads all result parquets for the backtest / portfolio tabs
+  paper_trader.py — imports atr_sizes, apply_macro_multiplier for live sizing
 """
 
 import numpy as np
@@ -33,7 +68,20 @@ RISK_PER_TRADE   = 0.01
 
 
 def equal_weight_sizes(signals: pd.DataFrame, capital: float) -> pd.DataFrame:
-    """Equal capital split among active signals each day."""
+    """
+    Split capital equally among all active signals each day.
+
+    If N tickers are signalling LONG on day T, each gets capital/N.
+    If no tickers are active, no positions are held (cash).
+
+    Args:
+        signals:  DataFrame of signal values {-1, 0, 1}, shape (T × N).
+        capital:  Total capital in dollars.
+
+    Returns:
+        DataFrame of dollar position sizes, same shape as signals.
+        Clipped to ±MAX_POSITION_PCT × capital per position.
+    """
     n_active = signals.abs().sum(axis=1).replace(0, np.nan)
     sizes    = signals.multiply(capital / n_active, axis=0).fillna(0)
     return sizes.clip(-capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT)
@@ -41,9 +89,30 @@ def equal_weight_sizes(signals: pd.DataFrame, capital: float) -> pd.DataFrame:
 
 def atr_sizes(signals: pd.DataFrame, features: dict, capital: float) -> pd.DataFrame:
     """
-    Risk the same dollar amount per trade regardless of asset volatility.
-    dollar_risk / ATR = shares. 1-ATR adverse move always costs the same.
-    Prevents volatile assets (NVDA, GLD) from dominating portfolio PnL.
+    Volatility-normalised position sizing via ATR (Average True Range).
+
+    Goal: risk the same dollar amount (RISK_PER_TRADE × capital) per 1-ATR
+    adverse move, regardless of which asset is being traded.
+
+    Calculation:
+      dollar_risk = capital × RISK_PER_TRADE   (e.g., $1,000 on $100k)
+      shares      = dollar_risk / ATR
+      position $  = shares × close_price
+
+    Why this works:
+      A 1-ATR stop loss on the position would lose exactly dollar_risk.
+      This means NVDA (high ATR ≈ $30) gets a smaller position than
+      SPY (low ATR ≈ $4), automatically normalising risk across assets
+      with very different volatility profiles.
+
+    Args:
+        signals:  Signal DataFrame (T × N).
+        features: Dict[ticker -> feature DataFrame] with atr_14 and Close.
+        capital:  Total capital in dollars.
+
+    Returns:
+        Dollar position size DataFrame, same shape as signals.
+        Clipped to ±MAX_POSITION_PCT × capital.
     """
     dollar_risk = capital * RISK_PER_TRADE
     sizes       = pd.DataFrame(0.0, index=signals.index, columns=signals.columns)
@@ -65,8 +134,26 @@ def atr_sizes(signals: pd.DataFrame, features: dict, capital: float) -> pd.DataF
 def kelly_sizes(signals: pd.DataFrame, returns: pd.DataFrame,
                 capital: float, lookback: int = 252) -> pd.DataFrame:
     """
-    Rolling half-Kelly sizing: adapts as signal edge changes over time.
-    Uses only past data — no lookahead. Bigger when signal working, smaller when not.
+    Rolling half-Kelly position sizing based on the signal's recent edge.
+
+    The Kelly criterion sizes positions proportionally to the signal's
+    statistical edge: Kelly fraction = W − (1−W)/PF where W = win rate,
+    PF = profit factor.  Half-Kelly is used (×0.5) to reduce volatility —
+    full Kelly is theoretically optimal but in practice leads to very large
+    drawdowns from estimation error.
+
+    Critically: only past data is used for each window's W and PF.  The
+    window rolls forward in time — this is NOT look-ahead.
+
+    Args:
+        signals:  Signal DataFrame (T × N).
+        returns:  Daily return DataFrame (T × N) aligned to signals.
+        capital:  Total capital in dollars.
+        lookback: Rolling window length in days (default 252 = 1 year).
+
+    Returns:
+        Dollar position size DataFrame.  Clipped to ±MAX_POSITION_PCT × capital.
+        Filled with 0 where Kelly is non-positive (no edge).
     """
     sizes = pd.DataFrame(0.0, index=signals.index, columns=signals.columns)
 
@@ -91,9 +178,24 @@ def kelly_sizes(signals: pd.DataFrame, returns: pd.DataFrame,
 
 def pca_concentration(returns_window: pd.DataFrame) -> float:
     """
-    Largest eigenvalue / sum of eigenvalues.
-    Measures how much portfolio variance is explained by one shared factor.
-    0.2 = ideal diversification for 5 assets. 0.8+ = crisis correlation.
+    Measure portfolio concentration using PCA on the returns correlation matrix.
+
+    Returns the fraction of total variance explained by the first (largest)
+    principal component.
+
+    Interpretation:
+      1/n_assets = ideal diversification (variance evenly spread)
+      > 0.5      = one dominant factor (e.g., everything sells off together)
+      → 1.0      = crisis correlation (all assets move as one)
+
+    In normal markets for 21 assets: expect 0.15–0.25.
+    In a crisis (2008, COVID, 2022): can spike to 0.70+.
+
+    Args:
+        returns_window: Returns DataFrame slice for the lookback window.
+
+    Returns:
+        Float in [0, 1].  Returns 1/n_assets if insufficient data.
     """
     if len(returns_window) < 20 or returns_window.shape[1] < 2:
         return 1 / max(returns_window.shape[1], 1)
@@ -107,11 +209,27 @@ def pca_concentration(returns_window: pd.DataFrame) -> float:
 def apply_pca_scaling(sizes: pd.DataFrame, returns: pd.DataFrame,
                       window: int = 126) -> pd.DataFrame:
     """
-    Scale positions down when assets are highly correlated.
-    ideal_concentration = 1/n_tickers.
-    scale = ideal / actual, clipped 0.3-1.0.
-    Window = 126 days (~6 months) to reduce reactivity to short-term noise
-    while still catching genuine regime shifts in correlation.
+    Scale position sizes down when portfolio correlations spike.
+
+    When assets are highly correlated, holding many positions does not
+    actually diversify risk — the portfolio behaves like a concentrated bet.
+    This overlay reduces exposure proportionally as correlation rises.
+
+    scale = (1/n_assets) / pca_concentration, clipped to [0.3, 1.0]
+
+    Minimum scale of 0.3 ensures positions are never reduced below 30%
+    of their target size (prevents over-reacting to temporary correlation
+    spikes like those that occur during earnings seasons).
+
+    Args:
+        sizes:   Dollar position size DataFrame (T × N).
+        returns: Daily returns DataFrame (T × N).
+        window:  Lookback window for correlation computation (default 126 days = 6 months).
+                 6 months balances responsiveness to regime shifts vs.
+                 reactivity to short-term noise.
+
+    Returns:
+        Scaled position size DataFrame.
     """
     scaled = sizes.copy()
     n      = sizes.shape[1]
@@ -128,10 +246,28 @@ def apply_pca_scaling(sizes: pd.DataFrame, returns: pd.DataFrame,
 def vol_target_sizes(sizes: pd.DataFrame, returns: pd.DataFrame,
                      target_vol: float = 0.10, window: int = 63) -> pd.DataFrame:
     """
-    Scale all positions so the portfolio targets a given annualised volatility.
-    Uses lagged realised vol — no lookahead. sizes[t] is held at t+1 (via shift(1)
-    in portfolio_returns), so using realized_vol[t] for scale[t] is clean.
-    Clip 0.5–1.5x: never more than 1.5x levered, never less than half size.
+    Scale the portfolio so its realised volatility targets a fixed annualised level.
+
+    Target: 10% annual portfolio volatility (a common institutional benchmark).
+    Realised vol is computed from the last 63 trading days (~1 quarter).
+
+    Scaling logic:
+      scale = target_vol / realised_vol  clipped to [0.5, 1.5]
+
+    Clip range prevents extreme leverage in low-vol markets (cap 1.5×) and
+    prevents over-reducing in high-vol markets (floor 0.5×).
+
+    Uses lagged realised vol (computed from yesterday's returns) — no
+    look-ahead bias.
+
+    Args:
+        sizes:      Dollar position size DataFrame.
+        returns:    Daily returns DataFrame.
+        target_vol: Target annualised portfolio volatility (default 10%).
+        window:     Realised vol estimation window in days (default 63).
+
+    Returns:
+        Scaled position size DataFrame.
     """
     weights  = sizes.shift(1) / CAPITAL
     port_ret = (weights * returns.reindex(columns=sizes.columns)).sum(axis=1)
@@ -146,10 +282,23 @@ def apply_drawdown_control(sizes: pd.DataFrame, returns: pd.DataFrame,
                            scale_factor: float = 0.5) -> pd.DataFrame:
     """
     Circuit breaker: halve position sizes when the portfolio is in a drawdown
-    deeper than `threshold`. Uses yesterday's drawdown to set today's scale —
-    no lookahead. A standard institutional risk-management overlay that reduces
-    exposure in sustained downturns without trying to time the market.
-    threshold=0.12 (12%) is a common institutional stop-reduction level.
+    exceeding `threshold`.
+
+    Standard institutional risk overlay: sustained drawdowns often indicate
+    a regime shift where the strategy's edge has temporarily disappeared.
+    Reducing exposure during the drawdown limits further losses and preserves
+    capital for recovery.  It does NOT try to predict when the drawdown ends.
+
+    Uses yesterday's drawdown to set today's scale (shift(1)) — no look-ahead.
+
+    Args:
+        sizes:        Dollar position size DataFrame.
+        returns:      Daily returns DataFrame.
+        threshold:    Drawdown depth that triggers the halving (default 12%).
+        scale_factor: Position multiplier when triggered (default 0.5 = half).
+
+    Returns:
+        Scaled position size DataFrame.
     """
     weights  = sizes.shift(1) / CAPITAL
     port_ret = (weights * returns.reindex(columns=sizes.columns)).sum(axis=1)
@@ -165,9 +314,22 @@ def apply_drawdown_control(sizes: pd.DataFrame, returns: pd.DataFrame,
 
 def apply_macro_multiplier(sizes: pd.DataFrame) -> pd.DataFrame:
     """
-    Apply macro size_multiplier from macro_features.py once here.
-    Not applied in signal_generation — single application prevents double-dampening.
-    0.5x in fear/inverted environments, 1.2x in calm/steep environments.
+    Apply the macro size_multiplier from macro_features.py to all positions.
+
+    Multiplier range (from macro_features.compute_macro_features):
+      ~1.25× when macro_score is +1 (VIX calm, yield curve steep, no backwardation)
+      ~1.00× when macro_score is  0 (neutral conditions)
+      ~0.50× when macro_score is -1 (VIX fear, curve inverted, backwardation)
+
+    Applied ONCE here in portfolio.py — NOT in signal_generation.py — to avoid
+    double-dampening (applying it in both places would compound the effect).
+
+    Args:
+        sizes: Dollar position size DataFrame.
+
+    Returns:
+        Macro-scaled position size DataFrame.  Returns ``sizes`` unchanged
+        if the macro parquet file is not found.
     """
     path = MACRO_DIR / "macro_features.parquet"
     if not path.exists():
@@ -180,7 +342,23 @@ def apply_macro_multiplier(sizes: pd.DataFrame) -> pd.DataFrame:
 
 
 def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
-    """shift(1): sizes set today, returns realised tomorrow. No lookahead."""
+    """
+    Compute daily portfolio P&L from dollar position sizes and asset returns.
+
+    Converts dollar sizes to portfolio weights (sizes / CAPITAL), then sums
+    the weighted returns across all positions each day.
+
+    Uses shift(1): sizes set at end of day T are held starting at day T+1.
+    This is the fundamental anti-look-ahead mechanism — you cannot trade on
+    the signal you receive at the close of the same day.
+
+    Args:
+        sizes:   Dollar position size DataFrame (T × N).
+        returns: Daily return DataFrame (T × N).
+
+    Returns:
+        Daily portfolio return Series (T,).
+    """
     weights = sizes.shift(1) / CAPITAL
     return (weights * returns.reindex(columns=sizes.columns)).sum(axis=1)
 
@@ -189,12 +367,35 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
                  train_years: int = 3, test_years: int = 1,
                  sizing_fn=None) -> pd.DataFrame:
     """
-    Rolling OOS validation. Each test period is genuinely unseen.
+    Rolling out-of-sample validation using a 3-year train / 1-year test split.
 
-    sizing_fn: callable(signals, returns) -> pd.DataFrame of dollar sizes.
-        If None, uses equal-weight (equal fraction per active signal) to
-        isolate signal quality from sizing effects.
-    Mean OOS Sharpe close to in-sample = low overfitting.
+    Each test window is genuinely out-of-sample — the strategy parameters
+    (MA windows, ADX threshold, RSI level) were developed on pre-2015 data
+    and are not refit on each training window.  The walk-forward is purely
+    a validation of strategy stability across different market regimes.
+
+    Regime coverage:
+      2015–2018 (test 2018):  Late bull, 2018 sell-off, VIX spike
+      2016–2019 (test 2019):  Strong bull, trade war, Fed pivot
+      2017–2020 (test 2020):  COVID crash and V-shaped recovery
+      2018–2021 (test 2021):  Meme stock / growth rally, rising rates begin
+      2019–2022 (test 2022):  Bear market, 40-year high inflation, rate hikes
+      2020–2023 (test 2023):  Soft landing, AI rally begins
+
+    A mean OOS Sharpe close to the in-sample Sharpe indicates low overfitting.
+    A large IS–OOS gap indicates the method is overfit to the training period.
+
+    Args:
+        signals:    Signal DataFrame (T × N) from signal_generation.py.
+        returns:    Daily return DataFrame (T × N).
+        train_years: Training window in years (default 3).
+        test_years:  OOS test window in years (default 1).
+        sizing_fn:  Optional callable(signals, returns) → dollar sizes.
+                    If None, uses equal-weight strategy returns directly.
+
+    Returns:
+        DataFrame with one row per test period: period, sharpe, ann_return,
+        max_dd, n_days.
     """
     train_days = train_years * 252
     test_days  = test_years  * 252
