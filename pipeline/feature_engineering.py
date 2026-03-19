@@ -47,7 +47,7 @@ DATA_DIR    = Path("data/raw")
 FEATURE_DIR = Path("data/features")
 FEATURE_DIR.mkdir(parents=True, exist_ok=True)
 
-from data_pipeline import TICKER_LIST, ASSET_CLASS
+from .data_pipeline import TICKER_LIST, ASSET_CLASS
 
 
 def add_base_features(df: pd.DataFrame) -> pd.DataFrame:

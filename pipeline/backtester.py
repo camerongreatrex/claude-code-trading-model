@@ -40,7 +40,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from data_pipeline import TICKER_LIST, ASSET_CLASS
+from .data_pipeline import TICKER_LIST, ASSET_CLASS
 
 SIGNAL_DIR  = Path("data/signals")
 FEATURE_DIR = Path("data/features")

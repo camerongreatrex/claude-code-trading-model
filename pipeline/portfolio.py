@@ -50,11 +50,11 @@ Consumed by
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from backtester import (
+from .backtester import (
     compute_strategy_returns, sharpe_ratio, max_drawdown,
     calmar_ratio, win_rate, profit_factor, summarise, equity_curve
 )
-from data_pipeline import TICKER_LIST, ASSET_CLASS
+from .data_pipeline import TICKER_LIST, ASSET_CLASS
 
 SIGNAL_DIR  = Path("data/signals")
 FEATURE_DIR = Path("data/features")

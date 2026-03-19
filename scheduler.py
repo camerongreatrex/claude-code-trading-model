@@ -51,7 +51,7 @@ from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo       # stdlib since Python 3.9
 
-from data_pipeline import TICKER_LIST, ASSET_CLASS
+from pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 from paper_trader import (
     load_state, load_history, end_of_day_update,
     compute_live_signals, _fetch_daily, _atr_size,

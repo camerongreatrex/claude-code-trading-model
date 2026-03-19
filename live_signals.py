@@ -35,7 +35,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 
-from data_pipeline import TICKER_LIST, ASSET_CLASS
+from pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 
 
 def fetch_live_data(tickers: list, lookback_days: int = 700) -> dict:

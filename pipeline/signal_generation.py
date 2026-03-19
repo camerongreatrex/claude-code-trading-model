@@ -51,7 +51,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from data_pipeline import TICKER_LIST, ASSET_CLASS
+from .data_pipeline import TICKER_LIST, ASSET_CLASS
 
 # ── Strategy improvement constants ────────────────────────────────────────────
 # These are principled, not curve-fitted to the historical dataset.

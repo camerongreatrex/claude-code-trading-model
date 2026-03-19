@@ -34,20 +34,20 @@ import time
 from pathlib import Path
 
 STEPS = [
-    ("data_pipeline",       "Downloading and cleaning market data"),
-    ("feature_engineering", "Engineering features"),
-    ("macro_features",      "Fetching macro data"),
-    ("signal_generation",   "Generating signals"),
-    ("backtester",          "Running backtests"),
-    ("portfolio",           "Building portfolio"),
+    ("pipeline.data_pipeline",       "Downloading and cleaning market data"),
+    ("pipeline.feature_engineering", "Engineering features"),
+    ("pipeline.macro_features",      "Fetching macro data"),
+    ("pipeline.signal_generation",   "Generating signals"),
+    ("pipeline.backtester",          "Running backtests"),
+    ("pipeline.portfolio",           "Building portfolio"),
 ]
 
 # shortcut entry points — skip early steps when data already exists
 SHORTCUTS = {
-    "signals"   : "feature_engineering",  # skip data download
-    "portfolio" : "portfolio",             # run portfolio only
-    "backtest"  : "backtester",            # run backtester + portfolio
-    "macro"     : "macro_features",        # run from macro onward
+    "signals"   : "pipeline.feature_engineering",  # skip data download
+    "portfolio" : "pipeline.portfolio",             # run portfolio only
+    "backtest"  : "pipeline.backtester",            # run backtester + portfolio
+    "macro"     : "pipeline.macro_features",        # run from macro onward
 }
 
 
@@ -66,15 +66,15 @@ def run_step(module: str, description: str) -> bool:
     """
     print(f"\n{'='*60}")
     print(f"  {description}")
-    print(f"  running {module}.py")
+    print(f"  running {module}")
     print(f"{'='*60}")
 
     start  = time.time()
-    result = subprocess.run([sys.executable, f"{module}.py"], capture_output=False)
+    result = subprocess.run([sys.executable, "-m", module], capture_output=False)
     elapsed = time.time() - start
 
     if result.returncode != 0:
-        print(f"\n  FAILED: {module}.py exited with code {result.returncode}")
+        print(f"\n  FAILED: {module} exited with code {result.returncode}")
         return False
 
     print(f"\n  Done in {elapsed:.1f}s")

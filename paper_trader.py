@@ -44,10 +44,10 @@ import yfinance as yf
 from datetime import datetime, timedelta, date
 from pathlib import Path
 
-from data_pipeline import TICKER_LIST, ASSET_CLASS
-from feature_engineering import engineer
-from signal_generation import generate, load_macro
-from portfolio import atr_sizes, apply_macro_multiplier, CAPITAL, RISK_PER_TRADE, MAX_POSITION_PCT
+from pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
+from pipeline.feature_engineering import engineer
+from pipeline.signal_generation import generate, load_macro
+from pipeline.portfolio import atr_sizes, apply_macro_multiplier, CAPITAL, RISK_PER_TRADE, MAX_POSITION_PCT
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = float(CAPITAL)          # same as portfolio.py ($100k)
