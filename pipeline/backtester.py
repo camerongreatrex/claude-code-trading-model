@@ -50,16 +50,69 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Transaction cost model
 # ──────────────────────
-# 0.05% per side is conservative for liquid ETFs (real spread ≈ 0.01–0.02%)
-# and reasonable for large-cap stocks traded via a zero-commission broker.
-# A round-trip (buy + sell) costs 0.10%.  Applied to abs(position.diff())
-# so a 0→1 entry costs 1×, and a 1→0 exit costs 1×.  A full reversal
-# (1→-1) would cost 2× but does not occur in this long-only strategy.
-TRANSACTION_COST = 0.0005   # 0.05% per side; round-trip 0.10%
+# Costs are split into two components that are summed per trade:
+#
+#   1. Bid-ask spread (per asset class)
+#      The half-spread is what you pay to cross the market.  Each asset class
+#      has a different spread based on AUM, liquidity, and market-maker density.
+#
+#        equity_index ETFs (SPY, IWM, EEM):
+#          SPY spread ≈ $0.01 on $560 ≈ 0.002%.  Using 0.02% adds a safety
+#          margin for adverse fills and for IWM/EEM which are slightly wider.
+#
+#        bond / commodity ETFs (TLT, GLD):
+#          TLT spread ≈ $0.01 on $90 ≈ 0.011%.  Less AUM than equity index
+#          ETFs, slightly wider.  0.03% is a reasonable upper bound.
+#
+#        sector ETFs (XLE, XLU, XLF):
+#          AUM is 5–10× smaller than SPY; spreads run 0.02–0.05%.
+#          0.04% is a midpoint.
+#
+#        individual stocks (JPM, NVDA, AMZN, etc.):
+#          Large-caps have tight spreads (~0.01–0.03%) but experience more
+#          price impact than ETFs for the same dollar size.  0.05% covers
+#          spread + small-cap names like GE/INTC with wider spreads.
+#
+#   2. Open-price slippage (uniform 0.02%)
+#      Signals are observed at close T; trades execute at open T+1.
+#      Any pre-market movement, order queue position, or gap open moves
+#      your actual fill away from the expected price.  0.02% is a
+#      conservative estimate for non-urgent, patient limit-style orders.
+#
+# Total one-way cost = COST_BY_ASSET_CLASS[asset_class] + SLIPPAGE
+# A round-trip costs 2× the one-way total.
+
+COST_BY_ASSET_CLASS: dict[str, float] = {
+    "equity_index": 0.0002,   # 0.02% — SPY/IWM/EEM; massive liquidity, penny-wide spreads
+    "bond"        : 0.0003,   # 0.03% — TLT; liquid but slightly wider than equity index
+    "commodity"   : 0.0003,   # 0.03% — GLD; liquid, slight spread vs underlying spot
+    "sector_etf"  : 0.0004,   # 0.04% — XLE/XLU/XLF; smaller AUM, wider spreads
+    "stock"       : 0.0005,   # 0.05% — individual stocks; idiosyncratic spread + impact
+}
+
+SLIPPAGE = 0.0002   # 0.02% per trade — open-price execution uncertainty
+
+
+def get_cost(ticker: str) -> float:
+    """
+    Return the total one-way transaction cost for a given ticker.
+
+    Combines the asset-class-specific spread cost with a fixed slippage
+    component that models open-price execution uncertainty.
+
+    Args:
+        ticker: Ticker symbol present in ASSET_CLASS.
+
+    Returns:
+        One-way cost as a decimal fraction (e.g. 0.0007 = 0.07%).
+        Round-trip cost is 2× this value.
+    """
+    asset_class = ASSET_CLASS.get(ticker, "stock")
+    return COST_BY_ASSET_CLASS.get(asset_class, COST_BY_ASSET_CLASS["stock"]) + SLIPPAGE
 
 
 def compute_strategy_returns(signals: pd.Series, returns: pd.Series,
-                              cost: float = TRANSACTION_COST) -> pd.Series:
+                              cost: float = 0.0007) -> pd.Series:
     """
     Convert a signal Series into a returns Series, accounting for execution delay
     and transaction costs.
@@ -70,14 +123,20 @@ def compute_strategy_returns(signals: pd.Series, returns: pd.Series,
 
     Transaction cost:
       Charged on the absolute change in position each day.
-        Entry  (0→1): costs 1 unit × TRANSACTION_COST
-        Exit   (1→0): costs 1 unit × TRANSACTION_COST
+        Entry  (0→1): costs 1 unit × cost
+        Exit   (1→0): costs 1 unit × cost
         Hold   (1→1): costs 0 (no change)
+
+    Cost breakdown (default 0.07% for stocks):
+      Spread component: 0.05% (stocks) — bid-ask half-spread to cross market
+      Slippage:         0.02%          — open-price execution uncertainty
+      Equity index ETFs use a lower default via get_cost(); pass explicitly.
 
     Args:
         signals: Signal Series of {-1, 0, 1} values (from signal_generation.py).
         returns: Daily log return Series aligned to signals.index.
-        cost:    One-way transaction cost as fraction of notional (default 0.05%).
+        cost:    One-way transaction cost as fraction of notional.
+                 Use get_cost(ticker) for the per-asset-class default.
 
     Returns:
         Strategy daily return Series: (position × returns) − (turnover × cost).
@@ -303,8 +362,11 @@ def backtest_ticker(ticker: str) -> dict:
 
     returns = df["log_return"]
 
-    strat_regime    = compute_strategy_returns(df["signal_regime"],    returns)
-    strat_composite = compute_strategy_returns(df["signal_composite"], returns)
+    # Use per-asset-class cost so liquid ETFs (SPY, IWM) aren't over-penalised
+    # while individual stocks absorb their wider spreads + open-price slippage.
+    cost = get_cost(ticker)
+    strat_regime    = compute_strategy_returns(df["signal_regime"],    returns, cost=cost)
+    strat_composite = compute_strategy_returns(df["signal_composite"], returns, cost=cost)
     strat_bnh       = buy_and_hold(returns)
 
     results = {
@@ -331,8 +393,9 @@ def print_results(ticker: str, results: dict) -> None:
         results: Dict from backtest_ticker() containing performance metrics.
     """
     asset_class = ASSET_CLASS[ticker]
+    cost        = get_cost(ticker)
     print(f"\n{'='*68}")
-    print(f"  {ticker}  ({asset_class})")
+    print(f"  {ticker}  ({asset_class})  — cost {cost*100:.3f}% per side / {cost*200:.3f}% round-trip")
     print(f"{'='*68}")
     metrics = ["ann_return", "sharpe", "max_drawdown", "calmar", "win_rate", "profit_factor", "n_trades"]
     print(f"  {'Strategy':<26}" + "".join(f"{m:>14}" for m in metrics))
