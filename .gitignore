@@ -1,0 +1,30 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+venv/
+
+# ── Data — large pipeline outputs (regenerated each run from yfinance) ────────
+data/raw/
+data/features/
+data/signals/
+data/results/
+data/macro/
+
+# ── Data — paper trading state MUST be committed (persists positions/history) ─
+# These are explicitly tracked — do NOT add data/paper_trading/ to this file.
+# The scheduler.log is excluded (large, not needed for dashboard).
+data/paper_trading/scheduler.log
+data/paper_trading/pids.json
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
