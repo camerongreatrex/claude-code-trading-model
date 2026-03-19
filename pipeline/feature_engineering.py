@@ -13,6 +13,7 @@ features to act on for which asset class.
 
 Features produced (per ticker)
 ──────────────────────────────
+  Per-ticker technical features (always computed):
   log_return       — daily log return (lognormal, additive over time)
   dollar_volume    — close × volume (liquidity proxy)
   true_range       — Wilder's TR: max(H-L, |H-prev_C|, |L-prev_C|)
@@ -32,9 +33,24 @@ Features produced (per ticker)
   obv              — On-Balance Volume (cumulative volume-weighted direction)
   obv_zscore       — OBV z-score over 20-day window
 
+  Cross-sectional features (requires closes_matrix — see engineer()):
+  xsec_mom_20      — percentile rank of 20-day return vs full universe (0–1)
+  xsec_vol_rank    — percentile rank of 20-day realised vol vs full universe (0–1)
+  relative_strength — 60-day return minus equal-weighted universe 60-day return
+
+Cross-sectional features and look-ahead safety
+───────────────────────────────────────────────
+All three cross-sectional features use only data available up to and
+including date T:
+  xsec_mom_20      uses pct_change(20)  — looks back 20 days from T ✓
+  xsec_vol_rank    uses rolling(20).std() of log returns — looks back ✓
+  relative_strength uses pct_change(60) — looks back 60 days from T ✓
+  rank(axis=1, pct=True) ranks across tickers AT the same date T ✓
+
 Input / output
 ──────────────
   Reads:   data/raw/{TICKER}.parquet
+           data/raw/closes_matrix.parquet  (optional — for cross-sectional features)
   Writes:  data/features/{TICKER}.parquet
            data/features/returns_matrix.parquet
 """
@@ -49,6 +65,8 @@ FEATURE_DIR.mkdir(parents=True, exist_ok=True)
 
 from .data_pipeline import TICKER_LIST, ASSET_CLASS
 
+
+# ── Per-ticker technical features ──────────────────────────────────────────────
 
 def add_base_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -316,12 +334,108 @@ def add_volume_signals(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     return df
 
 
-def engineer(df: pd.DataFrame) -> pd.DataFrame:
+# ── Cross-sectional features ───────────────────────────────────────────────────
+
+def add_cross_sectional(
+    df: pd.DataFrame,
+    ticker: str,
+    closes_matrix: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Add cross-sectional features capturing how this ticker ranks within
+    the full universe on each date.
+
+    Three features are added:
+
+    xsec_mom_20 — percentile rank (0–1) of this ticker's 20-day return
+        compared to every other ticker in the universe on the same date.
+        0 = worst recent performer, 1 = best recent performer.
+        Rank is computed cross-sectionally across tickers at each date T
+        using only data available up to T (pct_change(20) looks 20 days
+        back from T — no look-ahead).
+
+    xsec_vol_rank — percentile rank (0–1) of this ticker's trailing
+        20-day realised volatility (annualised, computed as the rolling
+        std of daily log returns × √252) vs all other tickers at date T.
+        0 = quietest ticker, 1 = most volatile.
+        Uses rolling(20).std() — only uses data up to T ✓.
+
+    relative_strength — this ticker's 60-day percentage return minus the
+        equal-weighted average 60-day return across the full universe at
+        date T.  Positive = outperformed the universe over the past 60
+        days; negative = underperformed.
+        Uses pct_change(60) on both sides — no look-ahead ✓.
+
+    Args:
+        df:             Single-ticker feature DataFrame (output of per-ticker
+                        add_*() functions).  Index must be DatetimeIndex.
+        ticker:         This ticker's symbol — used to select its column from
+                        closes_matrix.
+        closes_matrix:  DataFrame of aligned close prices for the full
+                        universe (dates × tickers).  Sourced from
+                        data/raw/closes_matrix.parquet written by
+                        data_pipeline.main().
+
+    Returns:
+        Copy of df with three additional columns: xsec_mom_20,
+        xsec_vol_rank, relative_strength.
+
+    Note:
+        If ticker is not a column of closes_matrix, all three features
+        are set to NaN and a warning is printed rather than raising.
+        NaN rows are removed by the dropna() call in engineer().
+    """
+    df = df.copy()
+
+    if ticker not in closes_matrix.columns:
+        print(f"  Warning: {ticker} not found in closes_matrix — xsec features will be NaN")
+        df["xsec_mom_20"]      = np.nan
+        df["xsec_vol_rank"]    = np.nan
+        df["relative_strength"] = np.nan
+        return df
+
+    # Align closes_matrix to the dates in this ticker's DataFrame.
+    # forward-fill to handle sparse rows (e.g. cross-listed tickers with
+    # different holiday calendars) without introducing look-ahead.
+    closes = closes_matrix.reindex(df.index, method="ffill")
+
+    # ── xsec_mom_20: 20-day return percentile rank across universe ─────────────
+    mom20      = closes.pct_change(20)                # each ticker's 20d return at each T
+    xsec_mom20 = mom20.rank(axis=1, pct=True, na_option="keep")[ticker]
+    df["xsec_mom_20"] = xsec_mom20
+
+    # ── xsec_vol_rank: 20-day realised vol percentile rank ─────────────────────
+    log_ret      = np.log(closes / closes.shift(1))
+    vol20        = log_ret.rolling(20).std() * np.sqrt(252)    # annualised
+    xsec_vol_rk  = vol20.rank(axis=1, pct=True, na_option="keep")[ticker]
+    df["xsec_vol_rank"] = xsec_vol_rk
+
+    # ── relative_strength: 60-day return vs equal-weighted universe ────────────
+    mom60           = closes.pct_change(60)
+    universe_avg60  = mom60.mean(axis=1)               # equal-weight avg at each date
+    df["relative_strength"] = mom60[ticker] - universe_avg60
+
+    return df
+
+
+# ── Pipeline entry point ───────────────────────────────────────────────────────
+
+def engineer(
+    df: pd.DataFrame,
+    ticker: str = None,
+    closes_matrix: pd.DataFrame = None,
+) -> pd.DataFrame:
     """
     Apply all feature transformations in the correct dependency order.
 
     Args:
-        df: Raw OHLCV DataFrame from data_pipeline.py.
+        df:             Raw OHLCV DataFrame from data_pipeline.py.
+        ticker:         Ticker symbol for cross-sectional feature computation.
+                        If None, cross-sectional features are skipped.
+        closes_matrix:  Full-universe aligned close prices DataFrame.
+                        If None, cross-sectional features are skipped.
+                        Supply both ticker and closes_matrix to enable
+                        xsec_mom_20, xsec_vol_rank, and relative_strength.
 
     Returns:
         Feature-enriched DataFrame with all columns from each add_*
@@ -332,6 +446,11 @@ def engineer(df: pd.DataFrame) -> pd.DataFrame:
     Order matters:
         add_base_features() MUST run first — it produces true_range and
         log_return which are required by add_adx() and add_rsi().
+
+    Backward compatibility:
+        Calling engineer(df) with no extra arguments returns exactly the
+        same output as before cross-sectional features were added.  The
+        paper_trader and scheduler call this form and are unaffected.
     """
     df = add_base_features(df)
     df = add_momentum(df)
@@ -341,12 +460,30 @@ def engineer(df: pd.DataFrame) -> pd.DataFrame:
     df = add_zscore(df)
     df = add_bollinger_bands(df)
     df = add_volume_signals(df)
+
+    if ticker is not None and closes_matrix is not None:
+        df = add_cross_sectional(df, ticker, closes_matrix)
+
     df = df.dropna()
     return df
 
 
+# ── Script entry point ─────────────────────────────────────────────────────────
+
 def main():
     print("Engineering features...\n")
+
+    # Load closes matrix for cross-sectional features.
+    # Written by data_pipeline.main() — must exist before this step.
+    closes_path = DATA_DIR / "closes_matrix.parquet"
+    if closes_path.exists():
+        closes_matrix = pd.read_parquet(closes_path)
+        print(f"Closes matrix loaded: {closes_matrix.shape} (dates x tickers)\n")
+    else:
+        closes_matrix = None
+        print("Warning: closes_matrix.parquet not found — cross-sectional features "
+              "will be skipped. Run python run.py (full pipeline) to include them.\n")
+
     all_data = {}
 
     for ticker in TICKER_LIST:
@@ -354,11 +491,13 @@ def main():
         if not raw_path.exists():
             print(f"  {ticker}: raw parquet missing — skipped (run data_pipeline.py first)")
             continue
-        df  = pd.read_parquet(raw_path)
-        df  = engineer(df)
+        raw = pd.read_parquet(raw_path)
+        df  = engineer(raw, ticker=ticker, closes_matrix=closes_matrix)
         out = FEATURE_DIR / f"{ticker}.parquet"
         df.to_parquet(out, engine="pyarrow", compression="snappy")
-        print(f"  {ticker}: {len(df)} rows, {len(df.columns)} columns  ->  {out}")
+
+        xsec_note = " + xsec" if closes_matrix is not None else ""
+        print(f"  {ticker}: {len(df)} rows, {len(df.columns)} cols{xsec_note}  ->  {out}")
         all_data[ticker] = df
 
     returns = pd.DataFrame({t: d["log_return"] for t, d in all_data.items()}).dropna()

@@ -32,7 +32,9 @@
       "Bash(python -c \"import subprocess; subprocess.run\\([''taskkill'', ''/F'', ''/FI'', ''COMMANDLINE eq *streamlit*''], capture_output=True\\)\")",
       "Bash(tasklist)",
       "Bash(netstat -ano)",
-      "Bash(taskkill //F //PID 12948)"
+      "Bash(taskkill //F //PID 12948)",
+      "Bash(python -m pipeline.feature_research)",
+      "Bash(python -m pipeline.feature_engineering)"
     ]
   }
 }
