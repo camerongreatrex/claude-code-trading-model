@@ -1,8 +1,39 @@
 {
-  "cash": 100000.0,
-  "positions": {},
+  "cash": 1876.602794763683,
+  "positions": {
+    "SPY": {
+      "shares": 30.312216383786257,
+      "entry_price": 659.7999877929688,
+      "entry_date": "2026-03-20 22:00",
+      "cost_basis": 20000.0
+    },
+    "IWM": {
+      "shares": 80.76565684947883,
+      "entry_price": 247.6300048828125,
+      "entry_date": "2026-03-20 22:00",
+      "cost_basis": 20000.0
+    },
+    "EEM": {
+      "shares": 347.1017072326383,
+      "entry_price": 57.619998931884766,
+      "entry_date": "2026-03-20 22:00",
+      "cost_basis": 20000.0
+    },
+    "EFA": {
+      "shares": 207.210947944399,
+      "entry_price": 96.5199966430664,
+      "entry_date": "2026-03-20 22:00",
+      "cost_basis": 20000.0
+    },
+    "INTC": {
+      "shares": 391.38934399699343,
+      "entry_price": 46.18000030517578,
+      "entry_date": "2026-03-20 22:00",
+      "cost_basis": 18074.360025223705
+    }
+  },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-19",
-  "last_eod_date": null,
-  "portfolio_value": 100000.0
+  "last_eod_date": "2026-03-20",
+  "portfolio_value": 99950.96281998738
 }
