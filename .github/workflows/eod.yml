@@ -2,8 +2,13 @@ name: End-of-Day Pipeline
 
 on:
   schedule:
-    # 21:45 UTC = 4:45 PM EST (winter) / 5:45 PM EDT (summer)
-    # Runs after market close every weekday. Data is fully settled by then.
+    # Two cron times handle the EST/EDT shift so the pipeline always fires
+    # near 4:45 PM Eastern, regardless of daylight saving time:
+    #   20:45 UTC = 4:45 PM EDT (summer, Mar–Nov)
+    #   21:45 UTC = 4:45 PM EST (winter, Nov–Mar)
+    # The duplicate-day guard in end_of_day_update() prevents double processing
+    # when both fire on the same calendar day.
+    - cron: '45 20 * * 1-5'
     - cron: '45 21 * * 1-5'
 
   # Also lets you trigger a run manually from the GitHub Actions tab
@@ -33,14 +38,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run end-of-day update
-        run: python -c "from paper_trader import end_of_day_update; end_of_day_update()"
+      - name: Run catch-up and end-of-day update
+        run: |
+          python -c "
+          from paper_trader import catchup, end_of_day_update
+          catchup()
+          end_of_day_update()
+          "
 
-      - name: Commit updated portfolio state
+      - name: Commit and push portfolio state
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/paper_trading/state.json data/paper_trading/history.csv
+          git add data/paper_trading/state.json data/paper_trading/history.csv data/paper_trading/trades.csv
           # Only commit if something actually changed (avoids empty commits on holidays)
-          git diff --staged --quiet || git commit -m "EOD update $(date -u '+%Y-%m-%d')"
+          git diff --staged --quiet && exit 0
+          git commit -m "EOD update $(date -u '+%Y-%m-%d')"
+          # Pull latest with rebase to avoid push rejection if user committed in parallel
+          git pull --rebase origin main
           git push

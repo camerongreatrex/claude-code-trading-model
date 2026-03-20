@@ -43,6 +43,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta, date
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 from pipeline.feature_engineering import engineer
@@ -52,6 +53,12 @@ from pipeline.portfolio import atr_sizes, apply_macro_multiplier, CAPITAL, RISK_
 # ── Constants ─────────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = float(CAPITAL)          # same as portfolio.py ($100k)
 COMMISSION_PCT  = 0.0005                  # 0.05% per side — matches backtest
+ET_ZONE         = ZoneInfo("America/New_York")
+
+
+def _today_et() -> str:
+    """Today's date string in US Eastern time (handles DST correctly)."""
+    return str(datetime.now(ET_ZONE).date())
 
 PT_DIR       = Path("data/paper_trading")
 STATE_FILE   = PT_DIR / "state.json"
@@ -367,7 +374,7 @@ def _buy(state: dict, ticker: str, price: float,
     state["positions"][ticker] = {
         "shares"    : shares,
         "entry_price": price,
-        "entry_date" : datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "entry_date" : trade_date,
         "cost_basis" : dollar_amount,
     }
     _append_csv(TRADES_FILE, {
@@ -556,7 +563,13 @@ def end_of_day_update():
         print("No portfolio found.  Run 'python paper_trader.py init' first.")
         return
 
-    today_str  = str(date.today())
+    today_str  = _today_et()
+
+    # Skip if already ran today (prevents duplicates from scheduler + manual + GH Actions)
+    if state.get("last_eod_date") == today_str:
+        print(f"EOD already ran for {today_str} — skipping.")
+        return
+
     prev_value = state.get("portfolio_value", INITIAL_CAPITAL)
 
     print(f"\nEnd-of-day update  ({today_str})\n")
@@ -706,6 +719,13 @@ def _end_of_day_update_for_date(as_of: date) -> None:
         return
 
     as_of_str  = str(as_of)
+
+    # Skip if this date was already processed (prevents duplicates from
+    # concurrent dashboard + scheduler catch-up or interrupted previous runs)
+    if state.get("last_eod_date", "") >= as_of_str:
+        print(f"  Catch-up: {as_of_str} — already processed, skipping")
+        return
+
     prev_value = state.get("portfolio_value", INITIAL_CAPITAL)
 
     print(f"  Catch-up: {as_of_str} ...", end=" ", flush=True)
@@ -775,7 +795,7 @@ def catchup() -> int:
         return 0
 
     last  = date.fromisoformat(last_str)
-    today = date.today()
+    today = datetime.now(ET_ZONE).date()
 
     missed = _trading_days_between(last, today)
     if not missed:

@@ -74,7 +74,7 @@ import streamlit as st
 from datetime import datetime
 from live_signals import get_live_signals
 from paper_trader import (
-    load_state, load_trades, load_history,
+    load_state, load_trades, load_history, catchup,
     get_intraday_curve, end_of_day_update, INITIAL_CAPITAL as PT_INITIAL_CAPITAL,
 )
 from scheduler import check_kill_switch, ORDERS_FILE
@@ -102,6 +102,14 @@ st.set_page_config(
 st.markdown(CSS, unsafe_allow_html=True)
 
 
+# ── Startup catch-up ──────────────────────────────────────────────────────────
+
+@st.cache_resource(ttl=3600, show_spinner=False)
+def _startup_catchup() -> int:
+    """Replay missed trading days on first dashboard load (once per hour)."""
+    return catchup()
+
+
 # ── Main layout ───────────────────────────────────────────────────────────────
 def main():
     """
@@ -119,6 +127,16 @@ def main():
       Tab 5 — Paper Trading & Live Signals (auto-refreshing fragment)
       Tab 6 — vs S&P 500 (auto-refreshing fragment)
     """
+    # Catch up missed trading days before rendering any tabs.
+    # st.cache_resource(ttl=3600) ensures this runs at most once per hour,
+    # not on every Streamlit rerun.  The idempotency guard in
+    # _end_of_day_update_for_date prevents conflicts with the scheduler.
+    with st.spinner("Catching up missed trading days..."):
+        n_caught_up = _startup_catchup()
+    if n_caught_up and "_catchup_done" not in st.session_state:
+        st.cache_data.clear()
+        st.session_state["_catchup_done"] = True
+
     # Load all data first so n_assets is available before header renders
     df_port       = load_portfolio_curves()
     ticker_curves = load_ticker_curves()
