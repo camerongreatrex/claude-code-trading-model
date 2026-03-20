@@ -33,6 +33,11 @@ Features produced (per ticker)
   obv              — On-Balance Volume (cumulative volume-weighted direction)
   obv_zscore       — OBV z-score over 20-day window
 
+  Volatility regime features (always computed):
+  vol_regime       — 1 if 21-day realized vol > 252-day realized vol (expanding)
+  vol_ratio        — 5-day realized vol / 63-day realized vol (term structure; >1 = short-term stress)
+  garch_vol        — RiskMetrics EWMA 1-day forward vol estimate (λ=0.94, annualised)
+
   Cross-sectional features (requires closes_matrix — see engineer()):
   xsec_mom_20      — percentile rank of 20-day return vs full universe (0–1)
   xsec_vol_rank    — percentile rank of 20-day realised vol vs full universe (0–1)
@@ -334,6 +339,82 @@ def add_volume_signals(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     return df
 
 
+def add_volatility_regime(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Volatility regime features that capture volatility clustering and term structure.
+
+    A golden cross (or any MA signal) occurring in a low-vol regime is far more
+    reliable than one occurring during a vol spike.  These features let downstream
+    models condition on the current volatility environment.
+
+    Args:
+        df: DataFrame with column [log_return] (added by add_base_features()).
+
+    Returns:
+        Copy of df with columns: vol_regime, vol_ratio, garch_vol.
+
+    Features
+    ────────
+    vol_regime (binary)
+        1  = short-term realized vol (21-day) is ABOVE long-term (252-day) →
+             vol is expanding / regime is stressed.
+        0  = vol is contracting or normal.
+        Rationale: comparing a 1-month window to a 1-year window is the
+        simplest non-parametric way to detect a vol-regime shift without
+        overfitting to a specific threshold.
+
+    vol_ratio (continuous, >0)
+        5-day realized vol divided by 63-day realized vol.
+        >1 = short-term stress elevated relative to the 3-month baseline.
+        <1 = vol term structure is normal / in contango.
+        This is the realized-vol analogue of the VIX9D/VIX term ratio in
+        macro_features.py, but computed from actual price moves rather than
+        implied vol.
+
+    garch_vol (continuous, annualised %)
+        RiskMetrics EWMA 1-day forward variance estimate:
+            σ²_t = λ·σ²_{t-1} + (1−λ)·r²_{t-1},  λ = 0.94
+        Reported as annualised daily vol: sqrt(σ²_t) × sqrt(252).
+        λ = 0.94 is J.P. Morgan's original 1994 RiskMetrics constant for
+        daily data — chosen to give a half-life of ~11 trading days, matching
+        the empirically observed speed of vol mean-reversion in equities.
+
+        Unlike simple rolling vol, EWMA vol reacts immediately to a vol spike
+        and decays smoothly afterward — essential for capturing vol clustering
+        (the "GARCH effect": large moves cluster in time).
+
+    Implementation note on vol_regime / vol_ratio:
+        All realized vols are annualised (×√252) before comparison so the
+        ratio is dimensionless and comparable across different base-vol regimes.
+        min_periods equals the window length so the first observation is only
+        produced once the full window of data is available.
+    """
+    df = df.copy()
+    r  = df["log_return"]
+
+    # Realised vol at multiple horizons (annualised)
+    rv5   = r.rolling(5,   min_periods=5).std()   * np.sqrt(252)
+    rv21  = r.rolling(21,  min_periods=21).std()  * np.sqrt(252)
+    rv63  = r.rolling(63,  min_periods=63).std()  * np.sqrt(252)
+    rv252 = r.rolling(252, min_periods=252).std() * np.sqrt(252)
+
+    # vol_regime: 1 when short-term vol is above long-term vol (expanding)
+    df["vol_regime"] = (rv21 > rv252).astype(int)
+
+    # vol_ratio: 5d / 63d realised vol term structure
+    # >1 = short-term stress elevated vs 3-month baseline
+    df["vol_ratio"] = rv5 / rv63
+
+    # garch_vol: RiskMetrics EWMA variance, lambda = 0.94
+    # σ²_t = λ·σ²_{t-1} + (1−λ)·r²_{t-1}
+    # Equivalent to EWM of r² with alpha = 1 − λ = 0.06
+    lam      = 0.94
+    ewma_var = (r ** 2).ewm(alpha=1.0 - lam, adjust=False).mean()
+    df["garch_vol"] = np.sqrt(ewma_var) * np.sqrt(252)  # annualised 1-day forward vol
+
+    return df
+
+
 # ── Cross-sectional features ───────────────────────────────────────────────────
 
 def add_cross_sectional(
@@ -445,7 +526,8 @@ def engineer(
 
     Order matters:
         add_base_features() MUST run first — it produces true_range and
-        log_return which are required by add_adx() and add_rsi().
+        log_return which are required by add_adx(), add_rsi(), and
+        add_volatility_regime().
 
     Backward compatibility:
         Calling engineer(df) with no extra arguments returns exactly the
@@ -460,6 +542,7 @@ def engineer(
     df = add_zscore(df)
     df = add_bollinger_bands(df)
     df = add_volume_signals(df)
+    df = add_volatility_regime(df)
 
     if ticker is not None and closes_matrix is not None:
         df = add_cross_sectional(df, ticker, closes_matrix)

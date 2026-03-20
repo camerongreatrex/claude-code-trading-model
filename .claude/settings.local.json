@@ -34,7 +34,9 @@
       "Bash(netstat -ano)",
       "Bash(taskkill //F //PID 12948)",
       "Bash(python -m pipeline.feature_research)",
-      "Bash(python -m pipeline.feature_engineering)"
+      "Bash(python -m pipeline.feature_engineering)",
+      "Bash(python run.py signals)",
+      "Bash(python -m pipeline.portfolio)"
     ]
   }
 }

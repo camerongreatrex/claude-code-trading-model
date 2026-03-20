@@ -1,8 +1,9 @@
 """
 portfolio.py
 ------------
-Turns +1/-1/0 signals into actual dollar position sizes and evaluates the
-combined portfolio using walk-forward validation.
+Turns +1/-1/0 signals (and continuous ensemble scores) into actual dollar
+position sizes and evaluates the combined portfolio using walk-forward
+validation.
 
 Sizing methods (in order of complexity)
 ────────────────────────────────────────
@@ -20,6 +21,11 @@ Sizing methods (in order of complexity)
   6. vol_target        — Scales all sizes so realised portfolio vol targets 10%.
   7. drawdown_control  — Circuit breaker: halves positions when in a drawdown
                           deeper than 12%.
+  8. ensemble_sizes    — Uses the continuous IC-weighted ensemble signal from
+                          signal_generation.ensemble_signal() as a fractional
+                          position weight (signal × ATR base position), then
+                          applies PCA scaling and macro multiplier.  Conviction
+                          magnitude directly controls size — no binary threshold.
 
 Key constants
 ─────────────
@@ -38,7 +44,7 @@ Output (written to data/results/)
   portfolio_comparison.parquet   — equity curves for all sizing methods
   walk_forward_regime.parquet    — OOS results (equal-weight, regime signal)
   walk_forward_atr_pca.parquet   — OOS results (ATR+PCA+macro sizing)
-  oos_selection.parquet          — IS vs OOS Sharpe comparison for 5 candidates
+  oos_selection.parquet          — IS vs OOS Sharpe comparison for all candidates
   portfolio_equity_curve.parquet — equity curve for the best OOS method
 
 Consumed by
@@ -47,9 +53,15 @@ Consumed by
   paper_trader.py — imports atr_sizes, apply_macro_multiplier for live sizing
 """
 
+import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
+
+# Windows terminals default to cp1252 which can't encode box-drawing characters.
+# Force UTF-8 so all print() output works regardless of terminal locale.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from .backtester import (
     compute_strategy_returns, sharpe_ratio, max_drawdown,
     calmar_ratio, win_rate, profit_factor, summarise, equity_curve
@@ -99,6 +111,11 @@ def atr_sizes(signals: pd.DataFrame, features: dict, capital: float) -> pd.DataF
       shares      = dollar_risk / ATR
       position $  = shares × close_price
 
+    Works for both binary {-1, 0, 1} and continuous signals: the
+    multiplication is linear, so a signal of 0.5 produces exactly half
+    the position of a signal of 1.0.  This property is exploited by
+    ensemble_sizes() which passes continuous [-1, +1] ensemble values.
+
     Why this works:
       A 1-ATR stop loss on the position would lose exactly dollar_risk.
       This means NVDA (high ATR ≈ $30) gets a smaller position than
@@ -106,7 +123,7 @@ def atr_sizes(signals: pd.DataFrame, features: dict, capital: float) -> pd.DataF
       with very different volatility profiles.
 
     Args:
-        signals:  Signal DataFrame (T × N).
+        signals:  Signal DataFrame (T × N).  Values may be binary or continuous.
         features: Dict[ticker -> feature DataFrame] with atr_14 and Close.
         capital:  Total capital in dollars.
 
@@ -128,7 +145,13 @@ def atr_sizes(signals: pd.DataFrame, features: dict, capital: float) -> pd.DataF
         sizes[ticker] = (signals[ticker] * dollar_pos).clip(
             -capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT
         )
-    return sizes
+
+    # Portfolio-level cap: scale all positions down if total gross exposure
+    # exceeds capital.  Without this, 21 assets × 20%-cap each = 4.2× leverage,
+    # inflating returns with unrealistic borrowed-money assumptions.
+    gross = sizes.abs().sum(axis=1).replace(0, np.nan)
+    scale = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return sizes.multiply(scale, axis=0)
 
 
 def kelly_sizes(signals: pd.DataFrame, returns: pd.DataFrame,
@@ -341,6 +364,58 @@ def apply_macro_multiplier(sizes: pd.DataFrame) -> pd.DataFrame:
     return sizes.multiply(multiplier, axis=0)
 
 
+def ensemble_sizes(
+    ensemble_signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+) -> pd.DataFrame:
+    """
+    Continuous-signal position sizing using the IC-weighted ensemble values.
+
+    Hypothesis
+    ──────────
+    A continuous signal with adaptive feature weights should produce higher
+    OOS Sharpe than binary MA crossover because:
+      1. Conviction scaling — a signal of 0.3 bets less than 0.9; the strategy
+         never "goes full size" on borderline signals.
+      2. Continuous adjustment — the position ramps up/down smoothly rather
+         than flipping all-on / all-off at a binary threshold.
+      3. Adaptive weighting — features that predicted well recently get more
+         weight; stale factors naturally fade to zero without any manual recalibration.
+
+    Sizing mechanics
+    ────────────────
+    atr_sizes() is reused directly because its multiplication is linear:
+
+        size = ensemble_signal × (dollar_risk / ATR) × close_price
+
+    When ensemble_signal = 1.0 → full ATR-risk position (same as binary long).
+    When ensemble_signal = 0.4 → 40% of the ATR-risk position.
+    When ensemble_signal = 0.0 → flat.
+    When ensemble_signal < 0   → short (if asset class allows it).
+
+    PCA scaling reduces exposure during correlated sell-offs (same logic as
+    "ATR + PCA + macro", the best binary method).  Macro multiplier adds the
+    regime-level overlay from macro_features.py.
+
+    Args:
+        ensemble_signals: DataFrame of continuous [-1, +1] signal values (T × N).
+                          Sourced from data/signals/ensemble_signals.parquet.
+        features:         Dict[ticker -> feature DataFrame] with atr_14 and Close.
+        returns:          Daily returns DataFrame (T × N).
+        capital:          Total capital in dollars.
+
+    Returns:
+        Dollar position size DataFrame, same shape as ensemble_signals.
+        Clipped to ±MAX_POSITION_PCT × capital per position.
+    """
+    sizes = atr_sizes(ensemble_signals, features, capital)
+    sizes = apply_pca_scaling(sizes, returns)
+    sizes = apply_macro_multiplier(sizes)
+    return sizes
+
+
 def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
     """
     Compute daily portfolio P&L from dollar position sizes and asset returns.
@@ -387,6 +462,7 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
 
     Args:
         signals:    Signal DataFrame (T × N) from signal_generation.py.
+                    May contain binary or continuous values.
         returns:    Daily return DataFrame (T × N).
         train_years: Training window in years (default 3).
         test_years:  OOS test window in years (default 1).
@@ -403,23 +479,31 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
     start      = train_days
 
     while start + test_days <= len(signals):
-        test_sig = signals.iloc[start : start + test_days]
-        test_ret = returns.iloc[start : start + test_days]
+        # Include the training window as context so sizing functions that require
+        # historical lookback (Kelly needs 252 days, PCA needs 126, vol_target 63)
+        # are fully warmed-up at the start of the test window.  Without this,
+        # Kelly rolling(252) on a 252-day test window produces a single valid row
+        # (day 252) and zeros everywhere else — effectively a flat strategy.
+        ctx_start = max(0, start - train_days)
+        all_sig   = signals.iloc[ctx_start : start + test_days]
+        all_ret   = returns.iloc[ctx_start : start + test_days]
 
         if sizing_fn is None:
             # Equal-weight: each ticker contributes equally via strategy returns
-            # (compute_strategy_returns handles the shift(1) and transaction costs)
-            period_ret = pd.Series(0.0, index=test_sig.index)
-            for ticker in test_sig.columns:
-                if ticker in test_ret.columns:
-                    strat = compute_strategy_returns(test_sig[ticker], test_ret[ticker])
-                    period_ret += strat / len(test_sig.columns)
+            period_ret = pd.Series(0.0, index=signals.index[start : start + test_days])
+            for ticker in all_sig.columns:
+                if ticker in all_ret.columns:
+                    strat = compute_strategy_returns(all_sig[ticker], all_ret[ticker])
+                    period_ret += strat.iloc[-test_days:].values / len(all_sig.columns)
         else:
-            # Custom sizing chain: portfolio_returns applies shift(1) internally
-            sizes      = sizing_fn(test_sig, test_ret)
-            period_ret = portfolio_returns(sizes, test_ret)
+            # Custom sizing: compute over full context, evaluate only on test slice.
+            # portfolio_returns uses shift(1) so the first test-day return is 0
+            # (no carry-over position from training) — this is correct.
+            sizes      = sizing_fn(all_sig, all_ret)
+            period_ret = portfolio_returns(sizes.iloc[-test_days:], all_ret.iloc[-test_days:])
 
-        y0, y1 = test_sig.index[0].year, test_sig.index[-1].year
+        y0 = signals.index[start].year
+        y1 = signals.index[start + test_days - 1].year
         results.append({
             "period"     : f"{y0}-{y1}",
             "sharpe"     : round(sharpe_ratio(period_ret), 3),
@@ -435,9 +519,18 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
 def main():
     print("Building portfolio...\n")
 
+    # ── Load signal matrices ───────────────────────────────────────────────────
     regime_signals    = pd.read_parquet(SIGNAL_DIR / "regime_signals.parquet")
     composite_signals = pd.read_parquet(SIGNAL_DIR / "composite_signals.parquet")
 
+    ensemble_path = SIGNAL_DIR / "ensemble_signals.parquet"
+    has_ensemble  = ensemble_path.exists()
+    if has_ensemble:
+        ensemble_signals = pd.read_parquet(ensemble_path)
+    else:
+        print("  NOTE: ensemble_signals.parquet not found — run signal_generation.py first\n")
+
+    # ── Load features and returns ──────────────────────────────────────────────
     features, returns = {}, pd.DataFrame()
     for ticker in TICKER_LIST:
         feat_path = FEATURE_DIR / f"{ticker}.parquet"
@@ -456,19 +549,15 @@ def main():
     print(returns.corr().round(2))
     print()
 
-    # --- Regime-signal portfolio chain ---
-    sizes_eq      = equal_weight_sizes(signals_regime, CAPITAL)
-    sizes_atr     = atr_sizes(signals_regime, features, CAPITAL)
-    sizes_kelly   = kelly_sizes(signals_regime, returns, CAPITAL)
-    sizes_atr_pca = apply_pca_scaling(sizes_atr, returns)
-    sizes_final   = apply_macro_multiplier(sizes_atr_pca)
-    sizes_vol     = vol_target_sizes(sizes_final, returns)
-    # Circuit-breaker applied to equal-weight (the highest-Sharpe method).
-    # ATR+PCA+macro already has <12% max DD so the breaker never fires there.
-    # Equal-weight hits -17.9% so the 12% threshold is actually tested.
-    sizes_dd      = apply_drawdown_control(sizes_eq, returns)
+    # ── Compute all position size DataFrames ──────────────────────────────────
+    sizes_eq        = equal_weight_sizes(signals_regime, CAPITAL)
+    sizes_atr       = atr_sizes(signals_regime, features, CAPITAL)
+    sizes_kelly     = kelly_sizes(signals_regime, returns, CAPITAL)
+    sizes_atr_pca   = apply_pca_scaling(sizes_atr, returns)
+    sizes_final     = apply_macro_multiplier(sizes_atr_pca)
+    sizes_vol       = vol_target_sizes(sizes_final, returns)
+    sizes_dd        = apply_drawdown_control(sizes_eq, returns)
 
-    # --- Composite-signal portfolio chain (tests richer signal) ---
     sizes_comp_atr   = atr_sizes(signals_composite, features, CAPITAL)
     sizes_comp_pca   = apply_pca_scaling(sizes_comp_atr, returns)
     sizes_comp_macro = apply_macro_multiplier(sizes_comp_pca)
@@ -484,135 +573,164 @@ def main():
     ret_comp_vol = portfolio_returns(sizes_comp_vol,  returns)
     ret_bnh      = returns.mean(axis=1)
 
-    print(f"{'='*76}")
+    if has_ensemble:
+        signals_ensemble = ensemble_signals.reindex(returns.index).fillna(0)
+        sizes_ens        = ensemble_sizes(signals_ensemble, features, returns, CAPITAL)
+        ret_ens          = portfolio_returns(sizes_ens, returns)
+
+    # ── Unified method registry ────────────────────────────────────────────────
+    # Each entry: (label, full-period return series, signal matrix for WF, sizing_fn for WF)
+    # signal matrix must match what the sizing_fn expects — regime methods use
+    # signals_regime, composite uses signals_composite, ensemble uses signals_ensemble.
+    all_methods = [
+        (
+            "equal weight",
+            ret_eq, signals_regime,
+            lambda sig, ret: equal_weight_sizes(sig, CAPITAL),
+        ),
+        (
+            "ATR sized",
+            ret_atr, signals_regime,
+            lambda sig, ret: atr_sizes(sig, features, CAPITAL),
+        ),
+        (
+            "half-Kelly",
+            ret_kelly, signals_regime,
+            lambda sig, ret: kelly_sizes(sig, ret, CAPITAL),
+        ),
+        (
+            "ATR + PCA",
+            ret_atr_pca, signals_regime,
+            lambda sig, ret: apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret),
+        ),
+        (
+            "ATR + PCA + macro",
+            ret_final, signals_regime,
+            lambda sig, ret: apply_macro_multiplier(
+                apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)),
+        ),
+        (
+            "equal wt + DD control",
+            ret_dd, signals_regime,
+            lambda sig, ret: apply_drawdown_control(equal_weight_sizes(sig, CAPITAL), ret),
+        ),
+        (
+            "regime + vol target",
+            ret_vol, signals_regime,
+            lambda sig, ret: vol_target_sizes(
+                apply_macro_multiplier(
+                    apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)), ret),
+        ),
+        (
+            "composite + vol target",
+            ret_comp_vol, signals_composite,
+            lambda sig, ret: vol_target_sizes(
+                apply_macro_multiplier(
+                    apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)), ret),
+        ),
+    ]
+    if has_ensemble:
+        all_methods.append((
+            "ensemble + ATR + PCA + macro",
+            ret_ens, signals_ensemble,
+            lambda sig, ret: ensemble_sizes(sig, features, ret, CAPITAL),
+        ))
+
+    # ── Portfolio comparison table ─────────────────────────────────────────────
+    print(f"{'='*84}")
     print("  PORTFOLIO COMPARISON  (transaction costs included in all strategy returns)")
-    print(f"{'='*76}")
+    print(f"{'='*84}")
     metrics = ["ann_return", "sharpe", "max_drawdown", "calmar", "win_rate", "profit_factor"]
-    print(f"  {'Method':<30}" + "".join(f"{m:>14}" for m in metrics))
-    print("  " + "-" * (30 + 14 * len(metrics)))
+    print(f"  {'Method':<32}" + "".join(f"{m:>12}" for m in metrics))
+    print("  " + "-" * (32 + 12 * len(metrics)))
 
-    for label, ret in [
-        ("equal weight",             ret_eq),
-        ("ATR sized",                ret_atr),
-        ("half-Kelly",               ret_kelly),
-        ("ATR + PCA",                ret_atr_pca),
-        ("ATR + PCA + macro",        ret_final),
-        ("equal wt + DD control",    ret_dd),
-        ("regime + vol target",      ret_vol),
-        ("composite + vol target",   ret_comp_vol),
-        ("buy & hold",               ret_bnh),
-    ]:
+    for label, ret, _, _ in all_methods:
         s   = summarise(ret, label)
-        row = f"  {s['label']:<30}" + "".join(f"{str(s[m]):>14}" for m in metrics)
-        print(row)
+        print(f"  {s['label']:<32}" + "".join(f"{str(s[m]):>12}" for m in metrics))
+    bnh = summarise(ret_bnh, "buy & hold")
+    print(f"  {bnh['label']:<32}" + "".join(f"{str(bnh[m]):>12}" for m in metrics))
 
-    # Walk-forward on regime signals — equal-weight to isolate signal quality
-    print(f"\n{'='*76}")
-    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — regime signals, equal-weight")
-    print(f"{'='*76}")
-    wf_regime = walk_forward(signals_regime, returns)
-    print(wf_regime.to_string(index=False))
-    print(f"\n  Mean OOS Sharpe : {wf_regime['sharpe'].mean():.3f}")
-    print(f"  Std  OOS Sharpe : {wf_regime['sharpe'].std():.3f}")
+    # ── Walk-forward for every method ─────────────────────────────────────────
+    # Runs the full 3yr-train / 1yr-test roll for each method and collects
+    # IS + OOS Sharpe.  Every method gets the same treatment — no cherry-picking
+    # which ones to validate.
+    print(f"\n{'='*84}")
+    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — ALL METHODS")
+    print(f"{'='*84}")
 
-    # Walk-forward on regime signals with the full ATR+PCA+macro sizing chain
-    print(f"\n{'='*76}")
-    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — regime signals, ATR+PCA+macro")
-    print(f"{'='*76}")
-
-    def _atr_pca_macro_fn(sig, ret):
-        s = atr_sizes(sig, features, CAPITAL)
-        s = apply_pca_scaling(s, ret)
-        s = apply_macro_multiplier(s)
-        return s
-
-    wf_regime_full = walk_forward(signals_regime, returns, sizing_fn=_atr_pca_macro_fn)
-    print(wf_regime_full.to_string(index=False))
-    print(f"\n  Mean OOS Sharpe : {wf_regime_full['sharpe'].mean():.3f}")
-    print(f"  Std  OOS Sharpe : {wf_regime_full['sharpe'].std():.3f}")
-
-    print(f"\n{'='*76}")
-    print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — composite signals")
-    print(f"{'='*76}")
-    wf_comp = walk_forward(signals_composite, returns)
-    print(wf_comp.to_string(index=False))
-    print(f"\n  Mean OOS Sharpe : {wf_comp['sharpe'].mean():.3f}")
-    print(f"  Std  OOS Sharpe : {wf_comp['sharpe'].std():.3f}")
-
-    # ── Portfolio method selection by mean OOS Sharpe (not in-sample) ─────────
-    # Running walk-forward for each candidate eliminates in-sample selection bias:
-    # the winner is the one that generalises best to unseen data, not just the
-    # one that fit the training period best.
-    candidates = {
-        "equal weight"          : ret_eq,
-        "ATR sized"             : ret_atr,
-        "ATR + PCA + macro"     : ret_final,
-        "ATR + PCA + DD control": ret_dd,
-        "regime + vol target"   : ret_vol,
-    }
-
-    candidate_sizing_fns = {
-        "equal weight"          : lambda sig, ret: equal_weight_sizes(sig, CAPITAL),
-        "ATR sized"             : lambda sig, ret: atr_sizes(sig, features, CAPITAL),
-        "ATR + PCA + macro"     : lambda sig, ret: apply_macro_multiplier(
-                                      apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)),
-        "ATR + PCA + DD control": lambda sig, ret: apply_drawdown_control(
-                                      equal_weight_sizes(sig, CAPITAL), ret),
-        "regime + vol target"   : lambda sig, ret: vol_target_sizes(
-                                      apply_macro_multiplier(
-                                          apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)
-                                      ), ret),
-    }
-
-    print(f"\n{'='*76}")
-    print("  PORTFOLIO SELECTION — In-Sample vs Mean OOS Sharpe  (OOS = walk-forward)")
-    print(f"{'='*76}")
-    print(f"  {'Method':<30} {'IS Sharpe':>12} {'OOS Sharpe':>12}")
-    print("  " + "-" * 54)
-
+    wf_store    = {}
     is_sharpes  = {}
     oos_sharpes = {}
-    for label in candidates:
-        is_sharpes[label] = summarise(candidates[label], label)["sharpe"]
-        wf_cand           = walk_forward(signals_regime, returns,
-                                         sizing_fn=candidate_sizing_fns[label])
-        oos_sharpes[label] = round(wf_cand["sharpe"].mean(), 3)
-        print(f"  {label:<30} {is_sharpes[label]:>12.3f} {oos_sharpes[label]:>12.3f}")
 
-    best_label = max(oos_sharpes, key=lambda k: oos_sharpes[k])
-    best_ret   = candidates[best_label]
+    for label, ret, sig_matrix, sizing_fn in all_methods:
+        wf = walk_forward(sig_matrix, returns, sizing_fn=sizing_fn)
+        wf_store[label]    = wf
+        is_sharpes[label]  = round(summarise(ret, label)["sharpe"], 3)
+        oos_sharpes[label] = round(wf["sharpe"].mean(), 3)
 
-    print(f"\n  Best portfolio (highest mean OOS Sharpe): {best_label}")
+        print(f"\n  -- {label}")
+        print(f"     IS Sharpe {is_sharpes[label]:.3f}  |  "
+              f"Mean OOS {oos_sharpes[label]:.3f}  |  "
+              f"Std OOS {wf['sharpe'].std():.3f}  |  "
+              f"IS-OOS gap {is_sharpes[label] - oos_sharpes[label]:+.3f}")
+        print(wf.to_string(index=False))
+
+    # ── IS vs OOS comparison — all methods ────────────────────────────────────
+    print(f"\n{'='*84}")
+    print("  IS vs OOS SHARPE — all methods ranked by OOS Sharpe")
+    print(f"{'='*84}")
+    print(f"  {'Method':<32} {'IS Sharpe':>10} {'OOS Sharpe':>10} {'IS-OOS gap':>12}  note")
+    print("  " + "-" * 76)
+
+    ranked = sorted(all_methods, key=lambda m: oos_sharpes[m[0]], reverse=True)
+    for label, _, _, _ in ranked:
+        gap  = is_sharpes[label] - oos_sharpes[label]
+        note = "<-- best OOS" if label == ranked[0][0] else (
+               "overfit" if gap > 0.5 else "")
+        print(f"  {label:<32} {is_sharpes[label]:>10.3f} {oos_sharpes[label]:>10.3f} "
+              f"{gap:>+12.3f}  {note}")
+
+    best_label = ranked[0][0]
+    best_ret   = dict((m[0], m[1]) for m in all_methods)[best_label]
+    print(f"\n  Winner (highest OOS Sharpe): {best_label}")
     print()
-    print("  OOS Sharpe close to IS Sharpe -> low overfitting")
-    print("  Large IS-OOS gap -> overfit; consider simplifying that method")
+    print("  IS-OOS gap interpretation:")
+    print("    < 0.3  -> robust, generalises well")
+    print("    0.3-0.6 -> moderate overfitting, acceptable")
+    print("    > 0.6  -> overfit; simplify or add regularisation")
 
-    # ── Persist all equity curves for dashboard.py ────────────────────────────
-    comparison_df = pd.DataFrame({
+    # ── Persist results ────────────────────────────────────────────────────────
+    comparison_curves = {
         "equal_weight"  : equity_curve(ret_eq,    CAPITAL),
         "atr_sized"     : equity_curve(ret_atr,   CAPITAL),
         "atr_pca_macro" : equity_curve(ret_final, CAPITAL),
         "eq_dd_control" : equity_curve(ret_dd,    CAPITAL),
         "vol_target"    : equity_curve(ret_vol,   CAPITAL),
         "buy_hold"      : equity_curve(ret_bnh,   CAPITAL),
-    })
-    comparison_df.to_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
-    wf_regime.to_parquet(RESULTS_DIR / "walk_forward_regime.parquet", index=False)
-    wf_regime_full.to_parquet(RESULTS_DIR / "walk_forward_atr_pca.parquet", index=False)
+    }
+    if has_ensemble:
+        comparison_curves["ensemble_atr_pca_macro"] = equity_curve(ret_ens, CAPITAL)
 
-    # OOS selection table — used by dashboard for the IS vs OOS comparison panel
+    pd.DataFrame(comparison_curves).to_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
+
+    # Dashboard compatibility: keep the two named walk-forward parquets it expects
+    wf_store["equal weight"].to_parquet(
+        RESULTS_DIR / "walk_forward_regime.parquet", index=False)
+    wf_store["ATR + PCA + macro"].to_parquet(
+        RESULTS_DIR / "walk_forward_atr_pca.parquet", index=False)
+
     oos_df = pd.DataFrame([
         {"method": lbl, "is_sharpe": is_sharpes[lbl], "oos_sharpe": oos_sharpes[lbl]}
-        for lbl in candidates
+        for lbl in is_sharpes
     ])
     oos_df.to_parquet(RESULTS_DIR / "oos_selection.parquet", index=False)
 
     equity_curve(best_ret, CAPITAL).to_frame("portfolio").to_parquet(
         RESULTS_DIR / "portfolio_equity_curve.parquet"
     )
-    print(f"\nEquity curves saved    -> {RESULTS_DIR / 'portfolio_comparison.parquet'}")
-    print(f"Walk-forward saved     -> {RESULTS_DIR / 'walk_forward_regime.parquet'}")
-    print(f"OOS selection saved    -> {RESULTS_DIR / 'oos_selection.parquet'}")
+    print(f"\nEquity curves saved -> {RESULTS_DIR / 'portfolio_comparison.parquet'}")
+    print(f"Walk-forward saved  -> {RESULTS_DIR / 'walk_forward_regime.parquet'}")
+    print(f"OOS selection saved -> {RESULTS_DIR / 'oos_selection.parquet'}")
 
 
 if __name__ == "__main__":

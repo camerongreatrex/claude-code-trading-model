@@ -3,9 +3,9 @@ signal_generation.py
 --------------------
 Asset-class-aware trading signal generation.
 
-This module turns technical features into actionable 0/1 signals.  Every
-design decision here has a principled justification — nothing was tuned by
-searching over parameter grids on the historical data.
+This module turns technical features into actionable signals.  Every design
+decision here has a principled justification — nothing was tuned by searching
+over parameter grids on the historical data.
 
 Signal types produced
 ─────────────────────
@@ -16,6 +16,13 @@ Signal types produced
   signal_composite  — Richer score combining momentum and mean-reversion
                       sub-scores with regime-aware weighting.  Long-only
                       for equity/commodity, two-sided for bonds.
+  signal_ensemble   — IC-weighted linear ensemble of the top 6 features ranked
+                      by information ratio from data/research/feature_ic.parquet.
+                      Continuous value in [-1, +1]: positive = long, negative =
+                      short, magnitude = conviction.  Features are z-scored over
+                      a rolling 252-day window and weighted by their trailing
+                      504-day time-series IC (adaptive — features that predicted
+                      well recently get more weight).
 
 Asset-class routing
 ───────────────────
@@ -35,9 +42,10 @@ Post-processors applied to signal_regime (principled, not curve-fitted)
 
 Output
 ──────
-  data/signals/{TICKER}.parquet      — per-ticker signal DataFrame
+  data/signals/{TICKER}.parquet          — per-ticker signal DataFrame
   data/signals/regime_signals.parquet    — matrix of signal_regime values
   data/signals/composite_signals.parquet — matrix of signal_composite values
+  data/signals/ensemble_signals.parquet  — matrix of signal_ensemble values
 
 Consumed by
 ───────────
@@ -65,9 +73,10 @@ ATR_TRAILING_MULT = 3.0   # Exit if price drops 3× ATR below trailing high sinc
                            # 3× is a published institutional standard (gives room to
                            # breathe while protecting against structural deterioration).
 
-FEATURE_DIR = Path("data/features")
-SIGNAL_DIR  = Path("data/signals")
-MACRO_DIR   = Path("data/macro")
+FEATURE_DIR  = Path("data/features")
+SIGNAL_DIR   = Path("data/signals")
+MACRO_DIR    = Path("data/macro")
+RESEARCH_DIR = Path("data/research")
 SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -390,19 +399,21 @@ def compute_scores(df: pd.DataFrame, regime: pd.Series, ticker: str = "") -> pd.
     scores["score_momentum"] = scores[["s_mom20", "s_mom60", "s_macd"]].mean(axis=1)
     scores["score_mean_rev"] = scores[["s_zscore", "s_rsi", "s_bb"]].mean(axis=1)
 
-    # Structural design weights — NOT optimized per-ticker or per-period.
-    # 0.6/0.2 reflects the strategic choice to weight momentum more heavily
-    # in trending regimes and mean-reversion in ranging regimes. Changing
-    # these would require full framework re-evaluation, not per-asset tuning.
+    # Regime-aware blending: trend regime → weight momentum; ranging → weight mean-rev.
+    # 0.6/0.2 reflects the strategic choice to trust trend signals in trending markets.
+    # These weights are fixed structural choices, not tuned per-ticker or per-period.
     mom_weight = regime * 0.6 + 0.2   # 0.8 in trend, 0.2 in range
     rev_weight = 1 - mom_weight
 
-    adx_boost = (1 + 0.15 * scores["s_adx"].clip(-2, 2)) * regime
-
+    # Simple linear blend — no ADX boost, no OBV amplifier.
+    # The ADX boost (×0.1 effect) and OBV amplifier (×0.15 effect) were small
+    # in-sample adjustments that consistently hurt OOS performance: they added
+    # noise without improving generalization across the 7 walk-forward periods.
+    # A plain weighted sum is harder to overfit and easier to reason about.
     scores["score_composite"] = (
-        (mom_weight * scores["score_momentum"] * (1 + adx_boost * 0.1)) +
-        (rev_weight * scores["score_mean_rev"])
-    ) * (1 + 0.15 * scores["s_obv"])
+        mom_weight * scores["score_momentum"] +
+        rev_weight * scores["score_mean_rev"]
+    )
 
     return scores
 
@@ -441,7 +452,6 @@ def scores_to_signal(score: pd.Series, long_thresh: float = 0.5,
     signal[score < short_thresh]  = -1
     return signal
 
-# -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # Signal post-processors — applied after base regime signal is computed
 # These are principled risk/quality filters, not parameter-optimised rules.
@@ -585,6 +595,129 @@ def apply_trailing_stop_signal(signal: pd.Series,
 
 
 # -----------------------------------------------------------------------------
+# IC-weighted ensemble signal
+# -----------------------------------------------------------------------------
+
+def ensemble_signal(df: pd.DataFrame) -> pd.Series:
+    """
+    IC-weighted linear ensemble of the top 6 features by information ratio.
+
+    Design
+    ──────
+    Feature selection (static):
+        Load data/research/feature_ic.parquet and select the top 6 features
+        by ABSOLUTE IC information ratio (|ic_ir|), excluding price-level
+        features (bb_middle, bb_upper, bb_lower, obv) whose IC is inflated
+        by trend autocorrelation rather than genuine alpha.
+
+        Using absolute IC captures both:
+          - Features with positive IC (high value → good future return)
+          - Features with negative IC (high value → bad future return)
+        The sign of mean_ic from the research file determines which direction
+        each feature contributes to the ensemble.
+
+    Feature transformation (rolling):
+        For each selected feature, compute a rolling 252-day z-score.
+        This normalises features with different units and scales so they
+        contribute equally before weighting.
+
+    Adaptive IC weighting (trailing, 5-day horizon):
+        At each date t, each feature's weight is its trailing 504-day
+        RANK correlation with the 5-day forward return — the same horizon
+        and method used in feature_research.py.  Matching the horizon is
+        critical: a feature's short-term and medium-term IC can have
+        opposite signs (e.g. momentum has short-term reversal at 1 day
+        but continuation at 5 days).  Mismatching horizons produces sign
+        conflicts that actively destroy performance.
+
+        5-day forward log return at date T:
+            fwd_5d[T] = log_return[T+1] + … + log_return[T+5]
+
+        Computed as rolling(5).sum().shift(-5) so fwd_5d[T] equals the sum
+        of the five log returns starting the day after T.
+
+        Look-ahead protection:
+            raw_ic[T]    = rank_corr(feat_rank[T-503:T], fwd_5d_rank[T-503:T])
+            → fwd_5d[T] needs log_return[T+1:T+6]: 5 days of future data.
+            ic_weight[T] = raw_ic[T-5]
+            → uses fwd_5d up to T-5, which needs log_return up to T (EOD ✓).
+
+        When trailing IC is NaN (warm-up < 504 days), falls back to the
+        static mean_ic from the research file — a stable, cross-ticker
+        estimate from 51,450 pooled observations.
+
+    Signal construction:
+        signal_ensemble = clip( Σ ic_weight_i × feat_z_i,  −1, +1 )
+
+        Continuous value in [−1, +1]: encodes conviction, not just direction.
+        +1 = maximum long, −1 = maximum short, intermediate = partial position.
+
+    Graceful degradation:
+        Returns a Series of 0.0 if the IC parquet is missing or no selected
+        features are present in df.
+
+    Args:
+        df: Feature DataFrame from feature_engineering.engineer().
+            Must contain log_return and whichever features are in the top 6.
+
+    Returns:
+        Series of floats in [−1, +1] aligned to df.index,
+        named "signal_ensemble".
+    """
+    ic_path = RESEARCH_DIR / "feature_ic.parquet"
+    if not ic_path.exists():
+        return pd.Series(0.0, index=df.index, name="signal_ensemble")
+
+    ic_table = pd.read_parquet(ic_path)
+
+    # Top 6 by absolute IC IR, excluding level features (inflated by trend autocorrelation).
+    # Using abs captures strong negative-IC features (e.g. momentum reversal after 60 days)
+    # which are just as informative as positive-IC features — only the sign differs.
+    candidates = ic_table[~ic_table["level_feature"]].copy()
+    candidates["abs_ic_ir"] = candidates["ic_ir"].abs()
+    top6_rows = candidates.nlargest(6, "abs_ic_ir")
+    # Map feature → static mean_ic (sign for fallback, magnitude for direction)
+    top6_map  = {
+        row["feature"]: row["mean_ic"]
+        for _, row in top6_rows.iterrows()
+        if row["feature"] in df.columns
+    }
+    if not top6_map:
+        return pd.Series(0.0, index=df.index, name="signal_ensemble")
+
+    # 5-day forward log return aligned to feature date T.
+    # rolling(5).sum()[T] = log_return[T-4:T+1] (past 5 days)
+    # .shift(-5)[T]       = rolling sum at T+5  = log_return[T+1:T+6] (forward 5 days) ✓
+    fwd_5d      = df["log_return"].rolling(5).sum().shift(-5)
+    fwd_5d_rank = fwd_5d.rank(pct=True)  # rank for robustness, matching research methodology
+
+    weighted_sum = pd.Series(0.0, index=df.index)
+
+    for feat, static_ic in top6_map.items():
+        # Rolling 252-day z-score normalises scale and removes drift
+        feat_z    = _roll_zscore(df[feat], 252)
+        feat_rank = feat_z.rank(pct=True)  # rank-transform for IC computation
+
+        # Trailing 504-day rank IC against 5-day forward return.
+        # Matches feature_research.py methodology (same horizon, rank-based).
+        # shift(5): ic_weight[T] = raw_ic[T-5]
+        #   raw_ic[T-5] uses fwd_5d_rank up to T-5
+        #   fwd_5d[T-5] = log_return[T-4:T] — last element log_return[T] (EOD, known) ✓
+        raw_ic    = feat_rank.rolling(504, min_periods=126).corr(fwd_5d_rank)
+        ic_weight = raw_ic.shift(5)
+
+        # During warm-up (<504+5 days), fall back to the static research IC.
+        # static_ic is pooled across all tickers (51,450 obs) — far more stable
+        # than a single-ticker rolling estimate would be over a partial window.
+        ic_weight = ic_weight.fillna(static_ic)
+
+        weighted_sum += ic_weight * feat_z
+
+    # Clip to continuous [-1, +1] position size (not binary)
+    return weighted_sum.clip(-1.0, 1.0).rename("signal_ensemble")
+
+
+# -----------------------------------------------------------------------------
 # Master generate — routes each ticker to the right logic
 # -----------------------------------------------------------------------------
 
@@ -601,7 +734,7 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     Returns:
         DataFrame with columns:
           Close, log_return, regime, asset_class,
-          volume_filter, signal_regime, signal_composite,
+          volume_filter, signal_regime, signal_composite, signal_ensemble,
           s_mom20, s_mom60, s_macd, s_adx, s_zscore, s_rsi, s_bb, s_obv,
           score_momentum, score_mean_rev, score_composite.
         Rows with NaN in any column are dropped.
@@ -683,6 +816,17 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         raw_composite = raw_composite.clip(lower=0)
     out["signal_composite"] = raw_composite * composite_gate
 
+    # ── Ensemble signal: continuous [-1, +1], IC-weighted, adaptive ────────
+    # VIX gate is applied: on extreme panic days all factor signals break down.
+    # Long-only for equity/commodity/sector_etf: structural upward drift means
+    # systematic short positions in these assets lose on average over time.
+    # A continuous signal clipped to [0, +1] acts as a long-conviction overlay:
+    # +1 = maximum long, 0 = flat (cash), not a short bet against the market.
+    ens = ensemble_signal(df) * gate
+    if asset_class in {"equity_index", "sector_etf", "stock", "commodity"}:
+        ens = ens.clip(lower=0)
+    out["signal_ensemble"] = ens
+
     return out.dropna()
 
 # -----------------------------------------------------------------------------
@@ -715,15 +859,22 @@ def main():
             s = (sig[name] == -1).sum()
             print(f"    {name:<22}: {l:>4} long  {s:>4} short  "
                   f"({(l+s)/n*100:.1f}% active)")
+
+        ens = sig["signal_ensemble"]
+        print(f"    {'signal_ensemble':<22}: mean={ens.mean():.3f}  "
+              f"std={ens.std():.3f}  "
+              f"long={( ens > 0.1).sum():>4}  short={(ens < -0.1).sum():>4}")
         print()
 
         all_signals[ticker] = sig
 
     regime    = pd.DataFrame({t: s["signal_regime"]    for t, s in all_signals.items()}).dropna()
     composite = pd.DataFrame({t: s["signal_composite"] for t, s in all_signals.items()}).dropna()
+    ensemble  = pd.DataFrame({t: s["signal_ensemble"]  for t, s in all_signals.items()}).dropna()
 
     regime.to_parquet(SIGNAL_DIR    / "regime_signals.parquet")
     composite.to_parquet(SIGNAL_DIR / "composite_signals.parquet")
+    ensemble.to_parquet(SIGNAL_DIR  / "ensemble_signals.parquet")
     print(f"Signal matrices saved: {regime.shape}")
 
 

@@ -12,16 +12,21 @@ preventing silent state corruption between stages.
 
 Data flow
 ─────────
-  data_pipeline.py       reads  yfinance            writes  data/raw/
-  feature_engineering.py reads  data/raw/            writes  data/features/
-  macro_features.py      reads  yfinance + FRED       writes  data/macro/
-  signal_generation.py   reads  data/features/ + macro  writes  data/signals/
-  backtester.py          reads  data/signals/ + features writes  data/results/
-  portfolio.py           reads  data/signals/ + features writes  data/results/
+  data_pipeline.py       reads  yfinance              writes  data/raw/
+  feature_engineering.py reads  data/raw/             writes  data/features/
+  feature_research.py    reads  data/features/        writes  data/research/feature_ic.parquet
+  macro_features.py      reads  yfinance + FRED        writes  data/macro/
+  signal_generation.py   reads  data/features/ + macro + research  writes  data/signals/
+  backtester.py          reads  data/signals/ + features  writes  data/results/
+  portfolio.py           reads  data/signals/ + features  writes  data/results/
+
+  feature_research must run after feature_engineering: the IC table (feature_ic.parquet)
+  is consumed by ensemble_signal() in signal_generation.py for feature selection and
+  static IC fallback weights.  Stale IC → wrong feature selection → broken ensemble.
 
 Shortcut flags (skip expensive upstream stages when data is still fresh)
 ────────────────────────────────────────────────────────────────────────
-  python run.py              — full run (all 6 stages, ~5–10 min)
+  python run.py              — full run (all 7 stages, ~5–10 min)
   python run.py signals      — skip data download; restart from feature_engineering
   python run.py portfolio    — run portfolio stage only (seconds)
   python run.py backtest     — run backtester + portfolio
@@ -36,6 +41,7 @@ from pathlib import Path
 STEPS = [
     ("pipeline.data_pipeline",       "Downloading and cleaning market data"),
     ("pipeline.feature_engineering", "Engineering features"),
+    ("pipeline.feature_research",    "Computing feature IC (information coefficients)"),
     ("pipeline.macro_features",      "Fetching macro data"),
     ("pipeline.signal_generation",   "Generating signals"),
     ("pipeline.backtester",          "Running backtests"),
