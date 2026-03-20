@@ -82,6 +82,12 @@ ATR_TIGHTEN_THRESHOLD = 5.0  # Tighten stop once price is 5× ATR above entry pr
                                # revert more aggressively; protect them with a tighter stop.
 ATR_TIGHTEN_MULT      = 1.5  # Tightened stop distance: 1.5× ATR (vs 3× normal).
                                # Locks in most of a 5×-ATR gain while allowing trend to run.
+TIME_DECAY_DAYS   = 126  # Close stale longs held > 6 months that are drifting negative.
+                           # 126 = half the MA200 lookback — a structural timescale.
+                           # Addresses bear_calm underperformance: equities held flat/down for
+                           # months while TLT/GLD/TIP rally. Exit the dead weight, free cash.
+TIME_DECAY_WINDOW = 21   # Trailing return window for the decay check: 1 calendar month.
+                           # close[t] / close[t-21] - 1 < 0 → position is drifting down.
 
 FEATURE_DIR  = Path("data/features")
 SIGNAL_DIR   = Path("data/signals")
@@ -623,6 +629,76 @@ def apply_trailing_stop_signal(signal: pd.Series,
     return result.astype(int)
 
 
+def apply_time_decay_exit(signal: pd.Series, close: pd.Series) -> pd.Series:
+    """
+    Close positions held more than TIME_DECAY_DAYS if the trailing
+    TIME_DECAY_WINDOW return is negative.
+
+    Motivation
+    ──────────
+    The MA200 crossover can hold a position for 6-12+ months even as the
+    asset drifts sideways-to-down while uncorrelated assets (TLT, GLD, TIP)
+    rally strongly.  The ATR trailing stop protects against sharp declines
+    but lets slow bleeds persist.  A time-based staleness check closes
+    "dead" positions — ones that have had negative drift for a full month
+    after being held for at least 6 months.
+
+    Parameters (structural, not fitted)
+    ────────────────────────────────────
+      TIME_DECAY_DAYS   = 126  (half the MA200 lookback = 6 trading months)
+      TIME_DECAY_WINDOW = 21   (1 calendar month of trailing return)
+
+    Logic (state machine)
+    ─────────────────────
+      Track days_held: reset to 0 on exit, increment to 1 on entry.
+      On each bar where in_pos is True and the upstream signal is still 1:
+        - If days_held > TIME_DECAY_DAYS:
+            Compute trailing 21-day return = close[i] / close[i-21] - 1.
+            If < 0: set signal to 0 (exit), reset state.
+      The check fires every bar once the threshold is crossed, so the
+      position closes the first day drift turns negative after 6 months.
+
+    Applied after apply_trailing_stop_signal() — acute deterioration is
+    caught by the ATR stop; this catches chronic low-grade drift.
+
+    Args:
+        signal: Binary signal Series (0 or 1) after ATR stop filter.
+        close:  Close price Series aligned to signal.index.
+
+    Returns:
+        Filtered signal Series.  Same index and dtype (int) as input.
+    """
+    result    = signal.copy().astype(float)
+    in_pos    = False
+    days_held = 0
+
+    for i in range(len(result)):
+        val = int(result.iloc[i])
+
+        if not in_pos:
+            if val == 1:
+                in_pos    = True
+                days_held = 1
+        else:
+            if val == 0:
+                # Upstream filter (ATR stop or death cross) already exited
+                in_pos    = False
+                days_held = 0
+            else:
+                # Still holding — increment counter and check staleness
+                days_held += 1
+                if days_held > TIME_DECAY_DAYS and i >= TIME_DECAY_WINDOW:
+                    trailing_ret = (
+                        float(close.iloc[i]) / float(close.iloc[i - TIME_DECAY_WINDOW]) - 1
+                    )
+                    if trailing_ret < 0:
+                        result.iloc[i] = 0      # stale position with negative drift
+                        in_pos         = False
+                        days_held      = 0
+
+    return result.astype(int)
+
+
 # -----------------------------------------------------------------------------
 # IC-weighted ensemble signal
 # -----------------------------------------------------------------------------
@@ -819,12 +895,14 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         signal_r = (ma50 > ma200).astype(int) * regime_gate
 
         # ── Principled signal improvements (not curve-fitted) ───────────────
-        # Applied in this order: entry quality → exit discipline → stop loss.
-        # All three use standard financial constants (RSI_ENTRY_THRESH=70,
-        # MIN_HOLD_DAYS=5, ATR_TRAILING_MULT=3.0) — none chosen to fit this data.
+        # Applied in order: entry quality → exit discipline → stop loss → staleness.
+        # All constants are published structural timescales, none fitted to this data:
+        #   RSI_ENTRY_THRESH=70 (Wilder 1978), MIN_HOLD_DAYS=5 (1 week),
+        #   ATR_TRAILING_MULT=3.0 (Elder/Schwager), TIME_DECAY_DAYS=126 (Elder).
         signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
         signal_r = apply_min_hold_filter(signal_r)
         signal_r = apply_trailing_stop_signal(signal_r, df["Close"], df["atr_14"])
+        signal_r = apply_time_decay_exit(signal_r, df["Close"])   # close stale longs
         signal_r = signal_r * regime_gate  # re-apply gate after post-processing
 
     else:
