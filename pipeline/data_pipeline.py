@@ -19,9 +19,22 @@ Universe design principle
 ─────────────────────────
 Every ticker in the universe should have a DIFFERENT primary economic driver.
 If two assets respond to the same macroeconomic shock, one is redundant.
-The current mix covers: broad equity (SPY, IWM, EEM), rates / safe-haven
-(TLT, GLD), sector rotation (XLE, XLU, XLF), and idiosyncratic company
-drivers (JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA).
+The current mix covers:
+  - Broad equity    : SPY, IWM, EEM, EFA, VWO
+  - Rates/safe-haven: TLT, GLD
+  - Credit/inflation: HYG (credit cycle), TIP (real rates)
+  - Commodity basket: DBC (broad commodities), UUP (USD/FX)
+  - Sector rotation : XLE, XLU, XLF, VNQ
+  - Company drivers : JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA
+  - Survivorship anchors: GE, INTC, VZ
+
+Phase 4 additions (EFA, VWO, HYG, TIP, DBC, UUP, VNQ):
+  - EFA/VWO: international diversification reduces US-equity-block concentration
+  - HYG: credit cycle signal independent of TLT rate direction
+  - TIP: real rate proxy (opposite to TLT nominal duration in inflation regimes)
+  - DBC: broad commodity basket with oil/agriculture/metals diversification vs GLD
+  - UUP: USD dollar index — inverse to EM/commodities, distinct FX driver
+  - VNQ: REITs — rental income driver distinct from XLU utility regulated revenue
 
 Survivorship bias
 ─────────────────
@@ -58,19 +71,30 @@ from pathlib import Path
 # -------------------------------------------------------------------------
 
 TICKERS = {
-    # --- Macro / index ---
+    # --- Broad equity indices ---
     "SPY" : "equity_index",   # US large cap — the benchmark everything is measured against
     "IWM" : "equity_index",   # US small cap — different risk profile, outperforms in early cycle
-    "EEM" : "equity_index",   # Emerging markets — China policy, commodity prices, USD strength
+    "EEM" : "equity_index",   # EM (China-heavy) — China policy, commodity prices, USD strength
+    "EFA" : "equity_index",   # Developed international ex-US (MSCI EAFE) — EU/Japan/UK macro, USD weakness tailwind
+    "VWO" : "equity_index",   # Broad EM (less China-concentrated than EEM) — broader EM macro, commodities
 
     # --- Rates / safe haven ---
-    "TLT" : "bond",           # 20yr Treasury — rate direction, inverse equities in risk-off
+    "TLT" : "bond",           # 20yr Treasury — nominal rate direction, inverse equities in risk-off
+
+    # --- Credit and inflation bonds (distinct drivers from TLT) ---
+    "HYG" : "bond",           # High yield corporate — credit cycle proxy, widens in risk-off (spread risk ≠ duration risk)
+    "TIP" : "bond",           # TIPS inflation-linked — real rate proxy; rises when inflation > nominal rates
+
+    # --- Commodities ---
     "GLD" : "commodity",      # Gold — fear hedge, real rate driven (rises when real rates fall)
+    "DBC" : "commodity",      # Broad commodity basket (oil + agriculture + metals) — diversified supply/demand driver
+    "UUP" : "commodity",      # US Dollar Index ETF — FX exposure; inversely correlated to EM and commodities
 
     # --- Sector ETFs ---
     "XLE" : "sector_etf",     # Energy — oil supply/demand, NOT Fed policy
     "XLU" : "sector_etf",     # Utilities — defensive, rate sensitive, counter-cyclical
     "XLF" : "sector_etf",     # Financials — yield curve slope, credit cycle
+    "VNQ" : "sector_etf",     # REITs — rental income driver distinct from XLU regulated utility revenue; rate sensitive
 
     # --- Individual stocks: each with a distinct economic driver ---
     "JPM" : "stock",          # Financials — interest rate spreads, commercial banking, credit
@@ -188,11 +212,18 @@ def main():
         "SPY" : "broad US equity market",
         "IWM" : "small cap, early cycle outperformance",
         "EEM" : "China/EM macro, USD strength, commodities",
-        "TLT" : "10yr+ Treasury rate direction",
+        "EFA" : "developed international ex-US (MSCI EAFE): EU/Japan/UK macro, USD weakness tailwind",
+        "VWO" : "broad EM (less China-heavy than EEM): EM rates, commodity exporters, USD",
+        "TLT" : "10yr+ Treasury nominal rate direction",
+        "HYG" : "high yield credit cycle — spread widens in risk-off; distinct from TLT duration risk",
+        "TIP" : "TIPS real rate proxy — rises when inflation > nominal rates; distinct from TLT",
         "GLD" : "real rates, fear, USD weakness",
+        "DBC" : "broad commodity basket (oil, agriculture, metals): diversified supply/demand",
+        "UUP" : "US Dollar Index: FX exposure; inversely correlated to EM and commodities",
         "XLE" : "oil supply/demand, OPEC decisions",
         "XLU" : "defensive, regulated utility revenue",
         "XLF" : "yield curve slope, credit cycle",
+        "VNQ" : "REITs: rental income + rate sensitivity; distinct driver from XLU utility revenue",
         "JPM" : "NIM spread, commercial lending, credit quality",
         "JNJ" : "healthcare non-cyclical, FDA pipeline",
         "XOM" : "oil major capex, production volumes",

@@ -26,11 +26,16 @@ Signal types produced
 
 Asset-class routing
 ───────────────────
-  equity_index  → MA50/200 + ADX > 25 regime filter
-  sector_etf    → MA100/300 + ADX > 20 (slower: sector rotations take months)
-  stock         → MA50/200 + ADX > dynamic threshold (higher vol → higher bar)
+  equity_index  → MA50/200 + ADX > 25 regime filter; long-only
+                  Tickers: SPY, IWM, EEM, EFA, VWO
+  sector_etf    → MA100/300 + ADX > 20 (slower: sector rotations take months); long-only
+                  Tickers: XLE, XLU, XLF, VNQ
+  stock         → MA50/200 + ADX > dynamic threshold (higher vol → higher bar); long-only
+                  Tickers: JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA, GE, INTC, VZ
   bond          → Two-sided momentum (rates go both ways; mean reversion is risky)
-  commodity     → Momentum in fear (VIX > 25), mean reversion in calm
+                  Tickers: TLT (nominal rates), HYG (credit cycle), TIP (real rates)
+  commodity     → Momentum in fear (VIX > 25), mean reversion in calm; long-only
+                  Tickers: GLD (fear/real rates), DBC (broad basket), UUP (USD/FX)
 
 Post-processors applied to signal_regime (principled, not curve-fitted)
 ────────────────────────────────────────────────────────────────────────
@@ -72,6 +77,11 @@ MIN_HOLD_DAYS     = 5     # 1 trading week. Hold at least this long before a dea
 ATR_TRAILING_MULT = 3.0   # Exit if price drops 3× ATR below trailing high since entry.
                            # 3× is a published institutional standard (gives room to
                            # breathe while protecting against structural deterioration).
+ATR_TIGHTEN_THRESHOLD = 5.0  # Tighten stop once price is 5× ATR above entry price.
+                               # Source: Elder, "Trading for a Living" — large gains mean-
+                               # revert more aggressively; protect them with a tighter stop.
+ATR_TIGHTEN_MULT      = 1.5  # Tightened stop distance: 1.5× ATR (vs 3× normal).
+                               # Locks in most of a 5×-ATR gain while allowing trend to run.
 
 FEATURE_DIR  = Path("data/features")
 SIGNAL_DIR   = Path("data/signals")
@@ -541,7 +551,7 @@ def apply_trailing_stop_signal(signal: pd.Series,
                                 atr: pd.Series) -> pd.Series:
     """
     Close a long position if price falls ATR_TRAILING_MULT × ATR below the
-    trailing high since entry.
+    trailing high since entry, with profit-target stop tightening.
 
     ATR-scaled stops adapt to each asset's volatility automatically.  A 3×
     stop on SPY (low vol) is tighter in dollar terms than 3× on NVDA (high
@@ -550,6 +560,15 @@ def apply_trailing_stop_signal(signal: pd.Series,
 
     ATR_TRAILING_MULT = 3.0 is an institutional standard (referenced in
     Elder, Schwager).  It was not chosen by optimising against this backtest.
+
+    Profit-target tightening:
+        Once price is more than ATR_TIGHTEN_THRESHOLD (5×) ATR above entry,
+        the trailing stop tightens from 3× ATR to ATR_TIGHTEN_MULT (1.5×) ATR.
+        Rationale (Elder, "Trading for a Living"): large gains mean-revert
+        more aggressively than small gains; protecting a 5×-ATR winner with
+        a tighter stop locks in profit while still allowing the trend to run.
+        Both constants (5× threshold, 1.5× tightened stop) are published,
+        not fitted to this data.
 
     Fallback: if ATR data is unavailable, uses a fixed 20% below the
     trailing high.
@@ -565,6 +584,7 @@ def apply_trailing_stop_signal(signal: pd.Series,
     result      = signal.copy().astype(float)
     in_pos      = False
     trail_high  = 0.0
+    entry_price = 0.0
 
     for i in range(len(result)):
         price       = float(close.iloc[i])
@@ -573,23 +593,32 @@ def apply_trailing_stop_signal(signal: pd.Series,
 
         if not in_pos:
             if val == 1:
-                in_pos     = True
-                trail_high = price
+                in_pos      = True
+                trail_high  = price
+                entry_price = price
         else:
             if price > trail_high:
                 trail_high = price
 
-            stop = (trail_high - ATR_TRAILING_MULT * current_atr
-                    if current_atr and current_atr > 0
-                    else trail_high * 0.80)
+            if current_atr and current_atr > 0:
+                # Tighten stop if price has run ATR_TIGHTEN_THRESHOLD × ATR above entry
+                if (price - entry_price) > ATR_TIGHTEN_THRESHOLD * current_atr:
+                    stop_mult = ATR_TIGHTEN_MULT
+                else:
+                    stop_mult = ATR_TRAILING_MULT
+                stop = trail_high - stop_mult * current_atr
+            else:
+                stop = trail_high * 0.80
 
             if price < stop:
                 result.iloc[i] = 0              # trailing stop fires
                 in_pos         = False
                 trail_high     = 0.0
+                entry_price    = 0.0
             elif val == 0:
-                in_pos     = False              # normal death-cross exit
-                trail_high = 0.0
+                in_pos      = False             # normal death-cross exit
+                trail_high  = 0.0
+                entry_price = 0.0
 
     return result.astype(int)
 
