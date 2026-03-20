@@ -240,8 +240,8 @@ def main():
 
     # ── Tab 1: Equity curves + drawdown + summary table ──────────────────────
     with tab1:
-        st.plotly_chart(chart_equity(df_port), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
-        st.plotly_chart(chart_drawdown(df_port), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
+        st.plotly_chart(chart_equity(df_port), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
+        st.plotly_chart(chart_drawdown(df_port), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
         st.markdown('<div class="section-head">All portfolio methods — summary</div>',
                     unsafe_allow_html=True)
@@ -251,7 +251,7 @@ def main():
                 lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
                           "color:#ff5555" if (isinstance(v, str) and "-" in v and "%" in v and v != "-0.0%") else "",
             ),
-            width="stretch", hide_index=True,
+            use_container_width=True, hide_index=True,
         )
 
         # Monthly returns heatmap
@@ -259,7 +259,7 @@ def main():
         st.markdown('<div class="section-head">Monthly returns — equal weight strategy</div>',
                     unsafe_allow_html=True)
         if not eq_ret.empty:
-            st.plotly_chart(chart_monthly_heatmap(eq_ret), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
+            st.plotly_chart(chart_monthly_heatmap(eq_ret), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
     # ── Tab 2: Monte Carlo ───────────────────────────────────────────────────
     with tab2:
@@ -291,9 +291,9 @@ def main():
             actual_norm = (1 + eq_ret).cumprod().values
 
             st.plotly_chart(chart_monte_carlo(eq_curves, actual_norm),
-                            theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
+                            theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
             st.plotly_chart(chart_mc_histogram(eq_curves),
-                            theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
+                            theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
             # MC summary stats
             finals = eq_curves[:, -1]
@@ -346,7 +346,7 @@ def main():
             if wf.empty:
                 st.warning("Walk-forward data not found.")
             else:
-                st.plotly_chart(chart_walk_forward(wf), theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
+                st.plotly_chart(chart_walk_forward(wf), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
                 mean_s = wf["sharpe"].mean()
                 color  = "#50fa7b" if mean_s > 0 else "#ff5555"
                 st.markdown(f"""
@@ -374,7 +374,7 @@ def main():
         with right:
             if ticker_curves:
                 st.plotly_chart(chart_asset_sharpe(ticker_curves),
-                                theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
+                                theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
         # OOS selection comparison table
         if not oos_sel.empty:
@@ -407,7 +407,7 @@ def main():
                     "IS Sharpe (full period)"   : "{:.3f}",
                     "OOS Sharpe (walk-fwd mean)": "{:.3f}",
                 }),
-                width="stretch", hide_index=True,
+                use_container_width=True, hide_index=True,
             )
             st.markdown(
                 f"<span style='color:#50fa7b;font-size:.82rem'>"
@@ -428,7 +428,7 @@ def main():
                 unsafe_allow_html=True,
             )
             st.plotly_chart(chart_macro_overlay(df_port, macro),
-                            theme=None, width="stretch", config={"scrollZoom": True, "displayModeBar": True})
+                            theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
             # Regime statistics
             st.markdown('<div class="section-head">Macro regime statistics (full history)</div>',
@@ -656,7 +656,7 @@ def main():
                                           now=now, entry_value=prev_pv,
                                           x_range=st.session_state["paper_chart_x_range"],
                                           spy_curve=spy_curve),
-                    theme=None, width="stretch",
+                    theme=None, use_container_width=True,
                     config={
                         "scrollZoom": True,
                         "displayModeBar": True,
@@ -723,7 +723,7 @@ def main():
                         .format({"Invested": "${:,.2f}", "Entry $": "${:.2f}",
                                  "Current $": "${:.2f}", "Chg %": "{:+.2f}%",
                                  "Unreal P&L": "${:+,.2f}"}),
-                        width="stretch", hide_index=True,
+                        use_container_width=True, hide_index=True,
                     )
 
 
@@ -738,7 +738,7 @@ def main():
                         return ""
                     st.dataframe(
                         recent.style.map(_color_action, subset=["action"]),
-                        width="stretch", hide_index=True,
+                        use_container_width=True, hide_index=True,
                     )
 
                 # ── Kill switch + order sheet ─────────────────────────────────
@@ -769,7 +769,7 @@ def main():
                             return ""
                         st.dataframe(
                             orders_df.style.map(_color_order, subset=["action"]),
-                            width="stretch", hide_index=True,
+                            use_container_width=True, hide_index=True,
                         )
                 else:
                     st.caption(
@@ -826,7 +826,7 @@ def main():
                 avg_rsi_long = live_df.loc[live_df["Signal"] == "LONG", "RSI"].mean()
                 with lv4: st.metric("Avg RSI (longs)", f"{avg_rsi_long:.1f}" if n_long > 0 else "—")
 
-                st.plotly_chart(chart_ma_spread(live_df), theme=None, width="stretch",
+                st.plotly_chart(chart_ma_spread(live_df), theme=None, use_container_width=True,
                                 config={"scrollZoom": True, "displayModeBar": True})
 
                 st.markdown('<div class="section-head">Full universe — current signal state</div>',
@@ -853,7 +853,7 @@ def main():
                              "MA Spread %": "{:+.2f}%", "RSI": "{:.1f}",
                              "20d Ret %": "{:+.1f}%", "60d Ret %": "{:+.1f}%",
                              "Dist High %": "{:+.1f}%"}),
-                    width="stretch", hide_index=True,
+                    use_container_width=True, hide_index=True,
                 )
 
         _live_section()
@@ -1039,7 +1039,7 @@ def main():
                                range=[f"{_vs_today}T09:25:00", _vs_right.strftime('%Y-%m-%dT%H:%M:00')]),
                     margin=dict(l=70),
                 ))
-                st.plotly_chart(fig_intra, theme=None, width="stretch",
+                st.plotly_chart(fig_intra, theme=None, use_container_width=True,
                                 config={"scrollZoom": True, "displayModeBar": False},
                                 key="vs_spy_intra_chart")
 
@@ -1139,7 +1139,7 @@ def main():
                         xaxis=dict(type="date", tickformat="%b %d", rangeslider=dict(visible=False)),
                         margin=dict(l=70),
                     ))
-                    st.plotly_chart(fig_hist, theme=None, width="stretch",
+                    st.plotly_chart(fig_hist, theme=None, use_container_width=True,
                                    config={"scrollZoom": True, "displayModeBar": False})
 
                     # Daily comparison table
@@ -1175,7 +1175,7 @@ def main():
                             .map(_color_beat, subset=["Beating S&P"])
                             .format({"Portfolio %": "{:+.2f}%", "S&P 500 %": "{:+.2f}%",
                                      "Alpha": "{:+.2f}%"}),
-                            width="stretch", hide_index=True,
+                            use_container_width=True, hide_index=True,
                         )
 
                     st.caption(
