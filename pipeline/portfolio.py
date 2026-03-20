@@ -62,6 +62,8 @@ from pathlib import Path
 # Force UTF-8 so all print() output works regardless of terminal locale.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+from .risk_model import estimate_covariance, risk_parity_weights
 from .backtester import (
     compute_strategy_returns, sharpe_ratio, max_drawdown,
     calmar_ratio, win_rate, profit_factor, summarise, equity_curve
@@ -416,6 +418,121 @@ def ensemble_sizes(
     return sizes
 
 
+def risk_parity_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    cov_window: int = 126,
+    rebalance_freq: int = 21,
+) -> pd.DataFrame:
+    """
+    Risk-parity position sizing using Ledoit-Wolf covariance estimation.
+
+    Two-step process
+    ────────────────
+    1. ATR base sizing: compute dollar positions using ATR-based risk sizing.
+       This gives a total gross-exposure dollar amount per day that already
+       accounts for individual asset volatility.
+
+    2. Risk-parity reweighting: redistribute that total gross exposure across
+       active positions so each asset contributes equally to portfolio variance.
+       Uses a trailing 126-day Ledoit-Wolf shrinkage covariance estimate,
+       recomputed every 21 trading days (~monthly).
+
+    Why this improves on ATR sizing
+    ────────────────────────────────
+    ATR sizing normalises each asset's INDIVIDUAL volatility but ignores
+    cross-asset correlations.  During a correlated sell-off (e.g., 2022),
+    holding many correlated positions is riskier than holding a few
+    uncorrelated ones of the same per-asset ATR size.
+
+    Risk parity accounts for the covariance structure: it up-weights assets
+    that are less correlated with the rest of the portfolio and down-weights
+    assets that cluster with the dominant market factor (e.g., large-cap US
+    equities).  The result is a portfolio where each asset genuinely
+    contributes 1/N of total variance.
+
+    Macro multiplier
+    ────────────────
+    Applied last — reduces all positions in fear regimes (VIX spike, inverted
+    curve) and slightly increases in calm regimes.  Applied once here, not in
+    signal_generation.py, to avoid double-dampening.
+
+    Args:
+        signals:        Signal DataFrame (T × N).  Binary {-1, 0, 1} regime signals.
+        features:       Dict[ticker -> feature DataFrame] with atr_14 and Close.
+        returns:        Daily return DataFrame (T × N).
+        capital:        Total capital in dollars.
+        cov_window:     Lookback for covariance estimation (default 126 = 6 months).
+                        6 months balances responsiveness to regime shifts vs.
+                        stability of the Ledoit-Wolf estimate.
+        rebalance_freq: Days between covariance recomputation (default 21 = monthly).
+                        Daily recomputation is unnecessary — covariance changes slowly.
+
+    Returns:
+        Dollar position size DataFrame, same shape as signals.
+        Clipped to ±MAX_POSITION_PCT × capital per position.
+    """
+    # Step 1: ATR base sizes — total gross exposure per day
+    base_sizes = atr_sizes(signals, features, capital)
+
+    adjusted = base_sizes.copy()
+    tickers  = [t for t in signals.columns if t in returns.columns]
+    col_locs = {t: signals.columns.get_loc(t) for t in tickers}
+
+    # Cache risk-parity weights for the full universe; update monthly.
+    # Weights are indexed by ticker name so they survive active-set changes.
+    rp_weights_cache: dict = {}   # {ticker: weight}
+
+    for i in range(cov_window, len(signals)):
+        # Monthly rebalance: refit covariance on the most recent cov_window days.
+        # We compute weights for the full universe regardless of which assets
+        # are active today — the active mask is applied below at signal time.
+        if (i - cov_window) % rebalance_freq == 0:
+            ret_window = returns.iloc[i - cov_window : i][tickers]
+            # Drop any ticker with >10% missing returns (illiquid / just listed)
+            ret_window = ret_window.dropna(thresh=int(len(ret_window) * 0.90), axis=1)
+            available  = ret_window.columns.tolist()
+
+            if len(available) >= 2 and len(ret_window) >= 20:
+                ret_clean = ret_window.ffill().fillna(0)
+                cov       = estimate_covariance(ret_clean)
+                w_rp      = risk_parity_weights(cov)
+                rp_weights_cache = {t: float(w_rp[j]) for j, t in enumerate(available)}
+            # else: keep previous cache (or empty → fall through to ATR below)
+
+        if not rp_weights_cache:
+            continue  # warm-up: not enough history yet, keep ATR sizes
+
+        sig_today = signals.iloc[i]
+        active    = [t for t in tickers if sig_today[t] != 0 and t in rp_weights_cache]
+        if not active:
+            continue
+
+        # Total gross ATR exposure today (preserve the overall size level)
+        total_atr = base_sizes.iloc[i][[t for t in active]].abs().sum()
+        if total_atr <= 0:
+            continue
+
+        # Renormalise risk-parity weights among today's active assets
+        w_sum = sum(rp_weights_cache[t] for t in active)
+        if w_sum <= 0:
+            continue
+
+        # Redistribute ATR total using risk-parity proportions
+        for ticker in active:
+            w_norm = rp_weights_cache[ticker] / w_sum
+            sign   = float(sig_today[ticker])
+            adjusted.iloc[i, col_locs[ticker]] = np.clip(
+                sign * w_norm * total_atr,
+                -capital * MAX_POSITION_PCT,
+                capital * MAX_POSITION_PCT,
+            )
+
+    return apply_macro_multiplier(adjusted)
+
+
 def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
     """
     Compute daily portfolio P&L from dollar position sizes and asset returns.
@@ -563,6 +680,9 @@ def main():
     sizes_comp_macro = apply_macro_multiplier(sizes_comp_pca)
     sizes_comp_vol   = vol_target_sizes(sizes_comp_macro, returns)
 
+    print("  Computing risk-parity sizes (Ledoit-Wolf, monthly rebalance)...")
+    sizes_rp = risk_parity_sizes(signals_regime, features, returns, CAPITAL)
+
     ret_eq       = portfolio_returns(sizes_eq,       returns)
     ret_atr      = portfolio_returns(sizes_atr,      returns)
     ret_kelly    = portfolio_returns(sizes_kelly,     returns)
@@ -571,6 +691,7 @@ def main():
     ret_vol      = portfolio_returns(sizes_vol,       returns)
     ret_dd       = portfolio_returns(sizes_dd,        returns)
     ret_comp_vol = portfolio_returns(sizes_comp_vol,  returns)
+    ret_rp       = portfolio_returns(sizes_rp,        returns)
     ret_bnh      = returns.mean(axis=1)
 
     if has_ensemble:
@@ -627,6 +748,11 @@ def main():
             lambda sig, ret: vol_target_sizes(
                 apply_macro_multiplier(
                     apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)), ret),
+        ),
+        (
+            "risk parity",
+            ret_rp, signals_regime,
+            lambda sig, ret: risk_parity_sizes(sig, features, ret, CAPITAL),
         ),
     ]
     if has_ensemble:
@@ -706,6 +832,7 @@ def main():
         "atr_pca_macro" : equity_curve(ret_final, CAPITAL),
         "eq_dd_control" : equity_curve(ret_dd,    CAPITAL),
         "vol_target"    : equity_curve(ret_vol,   CAPITAL),
+        "risk_parity"   : equity_curve(ret_rp,    CAPITAL),
         "buy_hold"      : equity_curve(ret_bnh,   CAPITAL),
     }
     if has_ensemble:

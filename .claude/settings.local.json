@@ -36,7 +36,9 @@
       "Bash(python -m pipeline.feature_research)",
       "Bash(python -m pipeline.feature_engineering)",
       "Bash(python run.py signals)",
-      "Bash(python -m pipeline.portfolio)"
+      "Bash(python -m pipeline.portfolio)",
+      "Bash(python -m pipeline.risk_model)",
+      "Bash(python -c \"import sklearn; print\\(sklearn.__version__\\)\")"
     ]
   }
 }
