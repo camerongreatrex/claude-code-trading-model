@@ -671,9 +671,22 @@ def apply_time_decay_exit(signal: pd.Series, close: pd.Series) -> pd.Series:
     result    = signal.copy().astype(float)
     in_pos    = False
     days_held = 0
+    cooldown  = 0   # bars remaining before a new entry is allowed after decay exit
 
     for i in range(len(result)):
         val = int(result.iloc[i])
+
+        # ── Cooldown: force cash for TIME_DECAY_WINDOW bars after a decay exit ──
+        # Without this, the MA crossover (still golden) re-opens the position the
+        # very next day, turning every time-decay exit into a 1-day round-trip that
+        # adds transaction cost with no P&L benefit.  Waiting one full 21-day window
+        # before allowing re-entry gives the drift time to either reverse (and the
+        # position merits re-opening) or continue (and the MA death cross / ATR stop
+        # takes over).
+        if cooldown > 0:
+            cooldown       -= 1
+            result.iloc[i]  = 0
+            continue
 
         if not in_pos:
             if val == 1:
@@ -692,9 +705,10 @@ def apply_time_decay_exit(signal: pd.Series, close: pd.Series) -> pd.Series:
                         float(close.iloc[i]) / float(close.iloc[i - TIME_DECAY_WINDOW]) - 1
                     )
                     if trailing_ret < 0:
-                        result.iloc[i] = 0      # stale position with negative drift
+                        result.iloc[i] = 0          # stale position with negative drift
                         in_pos         = False
                         days_held      = 0
+                        cooldown       = TIME_DECAY_WINDOW  # stay out for 21 days
 
     return result.astype(int)
 
