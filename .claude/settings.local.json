@@ -39,7 +39,9 @@
       "Bash(python -m pipeline.portfolio)",
       "Bash(python -m pipeline.risk_model)",
       "Bash(python -c \"import sklearn; print\\(sklearn.__version__\\)\")",
-      "Bash(python -c \"from pipeline.data_pipeline import TICKER_LIST, TICKERS; print\\(f''Universe: {len\\(TICKER_LIST\\)} tickers''\\); [print\\(f''  {t:<8} {c}''\\) for t, c in TICKERS.items\\(\\)]\")"
+      "Bash(python -c \"from pipeline.data_pipeline import TICKER_LIST, TICKERS; print\\(f''Universe: {len\\(TICKER_LIST\\)} tickers''\\); [print\\(f''  {t:<8} {c}''\\) for t, c in TICKERS.items\\(\\)]\")",
+      "Bash(python -m pipeline.sensitivity)",
+      "Bash(python -m pipeline.regime_analysis)"
     ]
   }
 }
