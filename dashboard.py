@@ -38,7 +38,7 @@ Paper Trading chart details
   Historical daily closes → go.Scatter (blue line)
   Today's 5-min bars     → go.Candlestick (green/red candles)
   After close extension  → go.Scatter (blue dotted flat line to now)
-  SPY benchmark          → go.Scatter (purple dotted, normalised to same start)
+  ^GSPC benchmark        → go.Scatter (purple dotted, normalised to close-to-close baseline)
   Now vertical line      → add_shape with orange dotted line
   uirevision="paper_portfolio" — Plotly preserves user zoom/pan across
                                  5-second fragment refreshes.
@@ -864,7 +864,11 @@ def main():
         @st.cache_data(ttl=300, show_spinner=False)
         def _spy_history(start_date: str):
             """
-            Fetch daily SPY closing prices from portfolio inception to today.
+            Fetch daily ^GSPC (S&P 500 index) closing prices from portfolio inception to today.
+
+            Uses ^GSPC instead of the SPY ETF so the historical returns match
+            what Yahoo Finance and TradingView display as the S&P 500 (no
+            dividend-adjustment distortion from auto_adjust on an ETF).
 
             Cached with TTL=300s to avoid repeated yfinance calls on each
             fragment refresh.  Tries yf.download() first; falls back to
@@ -875,12 +879,12 @@ def main():
                             the paper portfolio, used as the yfinance start param.
 
             Returns:
-                pd.Series of SPY daily closes indexed by tz-naive datetime.
+                pd.Series of ^GSPC daily closes indexed by tz-naive datetime.
                 Returns empty Series if both download attempts fail.
             """
             import yfinance as yf
             try:
-                raw = yf.download("SPY", start=start_date, auto_adjust=True,
+                raw = yf.download("^GSPC", start=start_date, auto_adjust=True,
                                   progress=False)
                 if isinstance(raw.columns, pd.MultiIndex):
                     raw.columns = raw.columns.droplevel(1)
@@ -891,7 +895,7 @@ def main():
                 pass
             # Fallback: Ticker.history()
             try:
-                raw = yf.Ticker("SPY").history(start=start_date, auto_adjust=True)
+                raw = yf.Ticker("^GSPC").history(start=start_date, auto_adjust=True)
                 raw.index = pd.to_datetime(raw.index).tz_localize(None)
                 if "Close" in raw.columns and not raw.empty:
                     return raw["Close"].dropna()
@@ -943,12 +947,13 @@ def main():
             )
             pv = (tot_cur_val + cash) if live_prices else prev_pv
 
-            # Portfolio today % — uses cost_basis denominator to match positions table.
-            port_today_pct = (tot_cur_val / tot_invested - 1) * 100 if tot_invested else 0.0
+            # Portfolio today % — measured from yesterday's EOD value (same baseline
+            # as SPY's close-to-close metric) so chart and alpha metric agree.
+            port_today_pct = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
 
-            # SPY % from yesterday's close (matches TradingView / Yahoo Finance display).
+            # SPY % from yesterday's close.
             # spy_pct_from_prev is None when the daily fetch failed — fall back to
-            # first-bar-of-day calculation (misses the open gap but is always available).
+            # intraday-only calculation (misses the open gap but is always available).
             if spy_pct_from_prev is not None:
                 spy_today_pct = spy_pct_from_prev
             elif not spy_intraday.empty:
@@ -973,10 +978,10 @@ def main():
             # S&P 500 Today: informational, no delta colouring needed
             with c2:
                 _spy_help = (
-                    "SPY % change from yesterday's close — same baseline as TradingView. "
+                    "^GSPC (S&P 500 index) % change from yesterday's close — "
+                    "matches Yahoo Finance and TradingView exactly. "
                     f"Last bar: {_last_bar_str} ET. "
-                    "Data source: Yahoo Finance free tier (≈15 min delay). "
-                    "Real-time sources (Bloomberg, Polygon) would reduce this gap."
+                    "Data source: Yahoo Finance free tier (≈15 min delay)."
                 )
                 st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%", help=_spy_help)
             with c3:
@@ -1009,7 +1014,10 @@ def main():
                     ))
 
                 if not spy_intraday.empty:
-                    # Extend SPY line to current time (flat after last bar)
+                    # spy_intraday is already normalized to the close-to-close baseline
+                    # in paper_trader.get_intraday_curve() — last bar equals
+                    # prev_pv × (1 + gspc_pct/100) — so no rescaling needed here.
+                    # Extend ^GSPC line to current time (flat after last bar)
                     _spy_x = list(spy_intraday.index)
                     _spy_y = list(spy_intraday.values)
                     if now_et > pd.Timestamp(_spy_x[-1]):
@@ -1017,7 +1025,7 @@ def main():
                         _spy_y.append(_spy_y[-1])
                     fig_intra.add_trace(go.Scatter(
                         x=_spy_x, y=_spy_y,
-                        name="S&P 500 (SPY)", line=dict(color="#ffb86c", width=2, dash="dot"),
+                        name="S&P 500 (^GSPC)", line=dict(color="#ffb86c", width=2, dash="dot"),
                         hovertemplate="<b>S&P 500</b><br>%{x|%H:%M}  $%{y:,.0f}<extra></extra>",
                     ))
 
@@ -1032,7 +1040,7 @@ def main():
                 fig_intra.update_layout(**_layout(
                     height=300, uirevision="vs_spy_intra",
                     dragmode="pan",
-                    title=dict(text="Today — Portfolio vs S&P 500 (both normalized to same open value)",
+                    title=dict(text="Today — Portfolio vs S&P 500 (both vs yesterday's close)",
                                font=dict(size=12)),
                     yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
                     xaxis=dict(type="date", tickformat="%H:%M", rangeslider=dict(visible=False),
@@ -1055,11 +1063,11 @@ def main():
                 )
             else:
                 start_date = str(pt_history["date"].min().date())
-                with st.spinner("Fetching SPY history…"):
+                with st.spinner("Fetching S&P 500 history…"):
                     spy_closes = _spy_history(start_date)
 
                 if spy_closes.empty:
-                    st.error("Could not fetch SPY data.")
+                    st.error("Could not fetch ^GSPC data.")
                 else:
                     # Align history and SPY on the same dates
                     hist = pt_history.set_index("date")["portfolio_value"].copy()
@@ -1102,18 +1110,18 @@ def main():
                     with h1: st.metric("Portfolio Return", f"{port_total:+.2f}%",
                                        help="Total return since portfolio inception.")
                     with h2: st.metric("S&P 500 Return",  f"{spy_total:+.2f}%",
-                                       help="SPY total return over the same period.")
+                                       help="^GSPC (S&P 500 index) return over the same period.")
                     # Total Alpha: delta_color switches dynamically so "Underperforming"
                     # renders in red (inverse) and "Outperforming" renders in green (normal).
                     with h3: st.metric("Total Alpha",     f"{total_alpha:+.2f}%",
                                        delta="Outperforming" if total_alpha > 0 else "Underperforming",
                                        delta_color="normal" if total_alpha > 0 else "inverse",
-                                       help="Portfolio return minus SPY return. Positive = beating the index.")
+                                       help="Portfolio return minus ^GSPC return. Positive = beating the index.")
                     with h4: st.metric("Beta",            f"{beta:.2f}",
                                        help="Portfolio sensitivity to S&P moves. 1.0 = moves with the market. "
                                             "<1 = less volatile than S&P, >1 = more volatile.")
                     with h5: st.metric("Days Beating S&P", f"{win_days}/{total_days}",
-                                       help="Number of days the portfolio's daily return exceeded SPY's daily return.")
+                                       help="Number of days the portfolio's daily return exceeded ^GSPC's daily return.")
 
                     # Historical chart
                     fig_hist = go.Figure()
@@ -1124,7 +1132,7 @@ def main():
                     ))
                     fig_hist.add_trace(go.Scatter(
                         x=spy_norm.index, y=spy_norm.values,
-                        name="S&P 500 (SPY)", line=dict(color="#ffb86c", width=2, dash="dot"),
+                        name="S&P 500 (^GSPC)", line=dict(color="#ffb86c", width=2, dash="dot"),
                         hovertemplate="<b>S&P 500</b><br>%{x|%b %d, %Y}  $%{y:,.0f}<extra></extra>",
                     ))
                     fig_hist.add_hline(y=PT_INITIAL_CAPITAL, line_color="#444", line_dash="dot",
@@ -1180,7 +1188,7 @@ def main():
 
                     st.caption(
                         "Beta and correlation are meaningful only with 20+ days of data. "
-                        "Alpha = portfolio daily return − SPY daily return. "
+                        "Alpha = portfolio daily return − ^GSPC daily return. "
                         "Both series normalized to $100k at portfolio inception date."
                     )
 

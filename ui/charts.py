@@ -736,7 +736,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 hovertemplate="<b>Portfolio</b> (market closed)<br>%{x|%H:%M} $%{y:,.0f}<extra></extra>",
             ))
 
-    # ── S&P 500 benchmark (subtle dashed line, normalized to same start) ──────
+    # ── S&P 500 benchmark (subtle dashed line, close-to-close baseline) ──────
     if spy_curve is not None and not spy_curve.empty:
         # Extend SPY benchmark to current time (flat after close)
         _spy_x = list(spy_curve.index)
@@ -754,7 +754,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 "<b>S&P 500 Benchmark</b><br>"
                 "%{x|%H:%M}<br>"
                 "Equivalent value: <b>$%{y:,.0f}</b><br>"
-                "<i>$100k in SPY — normalized to the same starting value. "
+                "<i>^GSPC (S&P 500 index) — both measured from yesterday's close. "
                 "Drift shows relative over/under-performance vs the index.</i>"
                 "<extra></extra>"
             ),

@@ -205,7 +205,7 @@ def fetch_intraday_batch(tickers: list) -> dict:
         timestamps against ET thresholds would silently drop all morning bars.
 
     Args:
-        tickers: List of ticker symbols to fetch (SPY always included by caller).
+        tickers: List of ticker symbols to fetch (^GSPC always included by caller).
 
     Returns:
         Dict[ticker -> DataFrame] where each DataFrame has columns
@@ -855,9 +855,10 @@ def get_intraday_curve() -> tuple:
 
     cash      = state["cash"]
     positions = state["positions"]
-    # Always include SPY so the benchmark curve is available even when SPY
-    # is not one of the portfolio holdings.
-    intraday  = fetch_intraday_batch(list(set(list(positions) + ["SPY"])))
+    # Always include ^GSPC (the actual S&P 500 index) so the benchmark curve
+    # is available.  Using ^GSPC instead of the SPY ETF means the % shown
+    # matches Yahoo Finance and TradingView exactly (SPY's auto_adjust distorts it).
+    intraday  = fetch_intraday_batch(list(set(list(positions) + ["^GSPC"])))
 
     col_map     = {"open": "Open", "high": "High", "low": "Low", "close": "Close"}
     all_series  = {key: {} for key in col_map}   # key -> {ticker: weighted series}
@@ -915,46 +916,55 @@ def get_intraday_curve() -> tuple:
 
     today_str = pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d')
 
-    # S&P 500 benchmark: normalize SPY to the portfolio's FIRST intraday bar value
-    # so both lines start at the same point at market open and diverge from there.
-    # Using prev_pv (yesterday's close) was wrong — the portfolio may gap up/down
-    # at open, pushing the SPY line above/below the portfolio artificially.
-    spy_curve        = _empty_spy
+    # S&P 500 benchmark: use ^GSPC (the actual index, not the SPY ETF) so the
+    # percentage displayed matches Yahoo Finance and TradingView exactly.
+    # SPY with auto_adjust=True adjusts for dividends which distorts the daily %.
+    #
+    # Normalize spy_curve so its LAST bar equals prev_pv × (1 + gspc_pct/100).
+    # This anchors BOTH the main equity chart and the vs-S&P chart to the same
+    # close-to-close baseline — "line above/below" always matches the metric.
+    spy_curve         = _empty_spy
     spy_pct_from_prev = None   # None = daily fetch failed; dashboard falls back to first-bar %
-    portfolio_open = float(result["close"].iloc[0]) if not result.empty else state.get("portfolio_value", INITIAL_CAPITAL)
-    if "SPY" in intraday:
-        spy_df  = intraday["SPY"]
-        spy_col = spy_df["Close"] if "Close" in spy_df.columns else spy_df.iloc[:, 3]
-        if isinstance(spy_col, pd.DataFrame):
-            spy_col = spy_col.iloc[:, 0]
-        # fetch_intraday_batch already clipped to today's regular hours
-        spy_today = spy_col
-        if not spy_today.empty:
-            spy_curve = (spy_today / float(spy_today.iloc[0])) * portfolio_open
+    prev_pv_state     = state.get("portfolio_value", INITIAL_CAPITAL)
+    if "^GSPC" in intraday:
+        gspc_df  = intraday["^GSPC"]
+        gspc_col = gspc_df["Close"] if "Close" in gspc_df.columns else gspc_df.iloc[:, 3]
+        if isinstance(gspc_col, pd.DataFrame):
+            gspc_col = gspc_col.iloc[:, 0]
+        gspc_today = gspc_col
+        if not gspc_today.empty:
+            # Compute ^GSPC % from yesterday's official close.
+            # period="5d" ensures enough rows; filter to dates < today so the
+            # incomplete in-progress row never corrupts the prev-close calculation.
+            try:
+                gspc_daily = yf.download("^GSPC", period="5d", interval="1d",
+                                         auto_adjust=True, progress=False)
+                if isinstance(gspc_daily.columns, pd.MultiIndex):
+                    gspc_daily.columns = gspc_daily.columns.droplevel(1)
+                gspc_dc = gspc_daily["Close"] if "Close" in gspc_daily.columns else gspc_daily.iloc[:, 3]
+                if isinstance(gspc_dc, pd.DataFrame):
+                    gspc_dc = gspc_dc.iloc[:, 0]
+                gspc_dc.index = pd.to_datetime(gspc_dc.index).tz_localize(None).normalize()
+                today_ts  = pd.Timestamp(today_str)
+                prev_rows = gspc_dc[gspc_dc.index < today_ts]
+                if not prev_rows.empty:
+                    gspc_prev_close = float(prev_rows.iloc[-1])
+                    if gspc_prev_close > 0:
+                        spy_pct_from_prev = (float(gspc_today.iloc[-1]) / gspc_prev_close - 1) * 100
+            except Exception:
+                pass
 
-        # Compute SPY % from yesterday's official close (matches TradingView/Yahoo daily %).
-        # Use period="5d" so we get enough rows, then filter to dates BEFORE today —
-        # when the market is open, period="2d" returns an incomplete today row too,
-        # causing .iloc[-1] to grab today's price (~same as current) → ~0% change.
-        try:
-            spy_daily = yf.download("SPY", period="5d", interval="1d",
-                                    auto_adjust=True, progress=False)
-            if isinstance(spy_daily.columns, pd.MultiIndex):
-                spy_daily.columns = spy_daily.columns.droplevel(1)
-            spy_dc = spy_daily["Close"] if "Close" in spy_daily.columns else spy_daily.iloc[:, 3]
-            if isinstance(spy_dc, pd.DataFrame):
-                spy_dc = spy_dc.iloc[:, 0]
-            # Normalise index to date-only so comparison with today_str works regardless
-            # of whether yfinance returns tz-aware timestamps or plain dates.
-            spy_dc.index = pd.to_datetime(spy_dc.index).tz_localize(None).normalize()
-            today_ts = pd.Timestamp(today_str)
-            prev_rows = spy_dc[spy_dc.index < today_ts]
-            if not prev_rows.empty and not spy_today.empty:
-                spy_prev_close = float(prev_rows.iloc[-1])   # confirmed yesterday close
-                if spy_prev_close > 0:
-                    spy_pct_from_prev = (float(spy_today.iloc[-1]) / spy_prev_close - 1) * 100
-        except Exception:
-            pass
+            # Build spy_curve anchored to the close-to-close baseline.
+            # last bar = prev_pv × (1 + spy_pct_from_prev/100) guarantees
+            # chart visual and outperforming/underperforming metric always agree.
+            gspc_last = float(gspc_today.iloc[-1])
+            if spy_pct_from_prev is not None and prev_pv_state > 0 and gspc_last > 0:
+                spy_target = (1 + spy_pct_from_prev / 100) * prev_pv_state
+                spy_curve  = gspc_today * (spy_target / gspc_last)
+            elif gspc_last > 0:
+                # Fallback when daily fetch fails: intraday-only (no overnight gap)
+                portfolio_open = float(result["close"].iloc[0]) if not result.empty else prev_pv_state
+                spy_curve = gspc_today / float(gspc_today.iloc[0]) * portfolio_open
 
     return result, last_prices, spy_curve, spy_pct_from_prev
 
