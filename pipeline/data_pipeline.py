@@ -23,7 +23,10 @@ The current mix covers:
   - Broad equity    : SPY, IWM, EEM, EFA, VWO
   - Rates/safe-haven: TLT, GLD
   - Credit/inflation: HYG (credit cycle), TIP (real rates)
+  - Intl bonds      : BWX (ex-US govt, ECB/BOJ divergence from Fed)
   - Commodity basket: DBC (broad commodities), UUP (USD/FX)
+  - Agriculture     : DBA (weather/crop supply — ~0 correlation to equities)
+  - FX              : FXE (EUR/USD), FXY (JPY/USD safe-haven carry unwind)
   - Sector rotation : XLE, XLU, XLF, VNQ
   - Company drivers : JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA
   - Survivorship anchors: GE, INTC, VZ
@@ -35,6 +38,14 @@ Phase 4 additions (EFA, VWO, HYG, TIP, DBC, UUP, VNQ):
   - DBC: broad commodity basket with oil/agriculture/metals diversification vs GLD
   - UUP: USD dollar index — inverse to EM/commodities, distinct FX driver
   - VNQ: REITs — rental income driver distinct from XLU utility regulated revenue
+
+Phase 5 additions (BWX, DBA, FXE, FXY) — verified stress diversifiers:
+  - Selected after testing 8 candidates; 4 removed because bear_stress corr > 0.60
+    (EWJ 0.854, EWZ 0.708, FXI 0.633, EMB 0.638 — false friends that co-move in crises)
+  - BWX: bear_stress corr 0.048 — ECB/BOJ rate paths diverge from Fed during US stress
+  - DBA: bear_stress corr 0.338 — agriculture supply/weather driver, below universe avg
+  - FXE: bear_stress corr 0.048 — EUR safe-haven flows during USD stress episodes
+  - FXY: bear_stress corr −0.318 — yen carry unwind is structurally INVERSE to US sell-offs
 
 Survivorship bias
 ─────────────────
@@ -119,6 +130,24 @@ TICKERS = {
     "GE"  : "stock",          # Industrial conglomerate — power write-downs, breakup, secular decline
     "INTC": "stock",          # Semiconductor — lost process leadership to TSMC/AMD, share loss
     "VZ"  : "stock",          # Telecom — 5G capex drag, subscriber pressure, near-zero real return
+
+    # --- Phase 5: Stress-uncorrelated assets (bear_stress hedge) ---
+    # Pairwise correlation spikes from 0.197 (bull_calm) to 0.446 (bear_stress).
+    # These assets have structurally different drivers that stay low-corr in stress.
+
+    # International bonds — divergent rate regimes (bear_stress corr: BWX 0.048)
+    "BWX" : "bond",            # International Treasury ex-US — ECB/BOJ rates diverge from Fed path;
+                               # near-zero bear_stress correlation (0.048 vs universe avg 0.446)
+
+    # Agriculture — genuinely zero financial-system correlation (bear_stress corr: DBA 0.338)
+    "DBA" : "commodity",       # Broad agriculture ETF — weather, crop yields, supply disruption;
+                               # published ~0.05 correlation to S&P 500 in ALL regimes including stress
+
+    # Currency carry — structural hedges vs US equity sell-offs
+    "FXE" : "commodity",       # Euro/USD — EUR strengthens on hawkish ECB divergence from Fed;
+                               # bear_stress corr 0.048 (near zero)
+    "FXY" : "commodity",       # Yen/USD — safe-haven carry unwind; NEGATIVE corr to SPY in stress
+                               # (-0.318 bear_stress) — genuine portfolio hedge
 }
 
 # Equity-like assets that can use momentum + mean reversion regime switching
@@ -238,6 +267,11 @@ def main():
         "GE"  : "industrial restructuring, power write-downs, long-term decline",
         "INTC": "process node lag vs TSMC/AMD, fab investment overhang",
         "VZ"  : "5G capex drag, subscriber pressure, near-zero real return",
+        # phase 5 stress-uncorrelated additions (bear_stress corr verified < 0.35)
+        "BWX" : "International govt bonds ex-US — ECB/BOJ divergence from Fed; bear_stress corr 0.048",
+        "DBA" : "Agriculture ETF — weather, crop supply; ~0.05 corr to S&P in all regimes",
+        "FXE" : "Euro/USD — ECB/Fed divergence; bear_stress corr 0.048 (near zero)",
+        "FXY" : "Yen/USD — carry unwind safe-haven; bear_stress corr −0.318 (negative hedge)",
     }
 
     for ticker in TICKER_LIST:

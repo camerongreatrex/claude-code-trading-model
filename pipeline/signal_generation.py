@@ -34,8 +34,9 @@ Asset-class routing
                   Tickers: JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA, GE, INTC, VZ
   bond          → Two-sided momentum (rates go both ways; mean reversion is risky)
                   Tickers: TLT (nominal rates), HYG (credit cycle), TIP (real rates)
-  commodity     → Momentum in fear (VIX > 25), mean reversion in calm; long-only
+  commodity     → Momentum in fear (VIX > 25), mean reversion in calm; TWO-SIDED
                   Tickers: GLD (fear/real rates), DBC (broad basket), UUP (USD/FX)
+                  Short side enabled: gold/DBC trend down in rising real-rate regimes
 
 Post-processors applied to signal_regime (principled, not curve-fitted)
 ────────────────────────────────────────────────────────────────────────
@@ -691,35 +692,29 @@ def apply_time_decay_exit(signal: pd.Series, close: pd.Series) -> pd.Series:
     Returns:
         Filtered signal Series.  Same index and dtype (int) as input.
     """
-    result    = signal.copy().astype(float)
-    in_pos    = False
-    days_held = 0
-    cooldown  = 0   # bars remaining before a new entry is allowed after decay exit
+    result       = signal.copy().astype(float)
+    position_dir = 0   # 0 = flat, +1 = long, -1 = short
+    days_held    = 0
+    cooldown     = 0   # bars remaining before a new entry is allowed after decay exit
 
     for i in range(len(result)):
         val = int(result.iloc[i])
 
         # ── Cooldown: force cash for TIME_DECAY_WINDOW bars after a decay exit ──
-        # Without this, the MA crossover (still golden) re-opens the position the
-        # very next day, turning every time-decay exit into a 1-day round-trip that
-        # adds transaction cost with no P&L benefit.  Waiting one full 21-day window
-        # before allowing re-entry gives the drift time to either reverse (and the
-        # position merits re-opening) or continue (and the MA death cross / ATR stop
-        # takes over).
         if cooldown > 0:
             cooldown       -= 1
             result.iloc[i]  = 0
             continue
 
-        if not in_pos:
-            if val == 1:
-                in_pos    = True
-                days_held = 1
+        if position_dir == 0:
+            if val != 0:
+                position_dir = val
+                days_held    = 1
         else:
             if val == 0:
-                # Upstream filter (ATR stop or death cross) already exited
-                in_pos    = False
-                days_held = 0
+                # Upstream filter already exited
+                position_dir = 0
+                days_held    = 0
             else:
                 # Still holding — increment counter and check staleness
                 days_held += 1
@@ -727,9 +722,12 @@ def apply_time_decay_exit(signal: pd.Series, close: pd.Series) -> pd.Series:
                     trailing_ret = (
                         float(close.iloc[i]) / float(close.iloc[i - TIME_DECAY_WINDOW]) - 1
                     )
-                    if trailing_ret < 0:
-                        result.iloc[i] = 0          # stale position with negative drift
-                        in_pos         = False
+                    # Long: negative drift = stale. Short: positive drift = stale.
+                    stale = (position_dir == 1 and trailing_ret < 0) or \
+                            (position_dir == -1 and trailing_ret > 0)
+                    if stale:
+                        result.iloc[i] = 0
+                        position_dir   = 0
                         days_held      = 0
                         cooldown       = TIME_DECAY_WINDOW  # stay out for 21 days
 
@@ -921,29 +919,41 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     out["volume_filter"] = volume_filter(df)
 
     # ── Revised signal routing ──────────────────────────────────────────────
-    if asset_class in {"equity_index", "sector_etf", "stock", "commodity"}:
-        # Long-only: equities and gold have structural upward drift over the long run.
-        # Equity risk premium + central bank gold buying make both assets net-long.
+    if asset_class in {"equity_index", "sector_etf", "stock"}:
+        # Long-only: equities have structural upward drift (equity risk premium).
         # MA golden cross (MA50 > MA200) avoids noisy short-term momentum flips.
-        # No shorts — being short these in secular uptrends consistently loses and
-        # ignores structural demand. In flat/down regimes: be in cash, not short.
+        # In flat/down regimes: be in cash, not short.
         ma50  = df["Close"].rolling(50).mean()
         ma200 = df["Close"].rolling(200).mean()
         signal_r = (ma50 > ma200).astype(int) * regime_gate
 
         # ── Principled signal improvements (not curve-fitted) ───────────────
-        # Applied in order: entry quality → exit discipline → stop loss → staleness.
-        # All constants are published structural timescales, none fitted to this data:
-        #   RSI_ENTRY_THRESH=70 (Wilder 1978), MIN_HOLD_DAYS=5 (1 week),
-        #   ATR_TRAILING_MULT=3.0 (Elder/Schwager), TIME_DECAY_DAYS=126 (Elder).
         signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
         signal_r = apply_min_hold_filter(signal_r)
         signal_r = apply_trailing_stop_signal(signal_r, df["Close"], df["atr_14"])
-        signal_r = apply_time_decay_exit(signal_r, df["Close"])   # close stale longs
+        signal_r = apply_time_decay_exit(signal_r, df["Close"])
         signal_r = signal_r * regime_gate  # re-apply gate after post-processing
 
+    elif asset_class == "commodity":
+        # Two-sided MA50/200 crossover. Commodities have no structural upward
+        # drift (no equity risk premium), so death-cross periods are shorted
+        # rather than held as cash. MA50/200 generates ~1300 long + ~1200 short
+        # days vs momentum_rule()'s 3-way consensus which barely fires.
+        # commodity_regime() is still used for composite score blending below.
+        ma50  = df["Close"].rolling(50).mean()
+        ma200 = df["Close"].rolling(200).mean()
+        signal_r = pd.Series(
+            np.where(ma50 > ma200, 1, -1),
+            index=df.index,
+        ).astype(int) * regime_gate
+        signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
+        signal_r = apply_min_hold_filter(signal_r)
+        signal_r = apply_trailing_stop_signal(signal_r, df["Close"], df["atr_14"])
+        signal_r = apply_time_decay_exit(signal_r, df["Close"])
+        signal_r = signal_r * regime_gate
+
     else:
-        # Bonds: two-sided momentum. Rate cycles genuinely go both ways.
+        # Bonds: two-sided momentum. Rate cycles genuinely go both ways for years.
         signal_r = pd.Series(np.where(regime == 1, mom, rev), index=df.index) * regime_gate
 
     out["signal_regime"] = signal_r
@@ -952,23 +962,18 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     out    = pd.concat([out, scores], axis=1)
 
     raw_composite = scores_to_signal(scores["score_composite"])
-    if asset_class in {"equity_index", "sector_etf", "stock", "commodity"}:
-        # Long-only for equity and commodity: convert short signals to flat (cash).
-        # The mean-reversion score components are already positive when the
-        # asset is oversold, so they act as dip-buying signals — compatible
-        # with a long-only mandate.
+    if asset_class in {"equity_index", "sector_etf", "stock"}:
+        # Long-only for equities: convert short signals to flat (cash).
         raw_composite = raw_composite.clip(lower=0)
+    # bonds and commodities pass through both long and short composite signals
     out["signal_composite"] = raw_composite * composite_gate
 
     # ── Ensemble signal: continuous [-1, +1], IC-weighted, adaptive ────────
-    # VIX gate is applied: on extreme panic days all factor signals break down.
-    # Long-only for equity/commodity/sector_etf: structural upward drift means
-    # systematic short positions in these assets lose on average over time.
-    # A continuous signal clipped to [0, +1] acts as a long-conviction overlay:
-    # +1 = maximum long, 0 = flat (cash), not a short bet against the market.
     ens = ensemble_signal(df) * gate
-    if asset_class in {"equity_index", "sector_etf", "stock", "commodity"}:
+    if asset_class in {"equity_index", "sector_etf", "stock"}:
+        # Long-only for equities: clip short side to flat.
         ens = ens.clip(lower=0)
+    # bonds and commodities pass through full [-1, +1] range
     out["signal_ensemble"] = ens
 
     return out.dropna()
