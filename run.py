@@ -56,6 +56,11 @@ SHORTCUTS = {
     "macro"     : "pipeline.macro_features",        # run from macro onward
 }
 
+# standalone diagnostics — run directly, not part of the main pipeline
+DIAGNOSTICS = {
+    "diagnostic": "pipeline.correlation_diagnostic",  # regime / beta / dead-weight analysis
+}
+
 
 def run_step(module: str, description: str) -> bool:
     """
@@ -97,10 +102,17 @@ def main():
     start_from = None
     if len(sys.argv) > 1:
         arg = sys.argv[1].lower()
-        if arg in SHORTCUTS:
+        if arg in DIAGNOSTICS:
+            # run the diagnostic module directly and exit — not part of the pipeline
+            module = DIAGNOSTICS[arg]
+            print(f"\nRunning diagnostic: {module}\n")
+            result = subprocess.run([sys.executable, "-m", module], capture_output=False)
+            sys.exit(result.returncode)
+        elif arg in SHORTCUTS:
             start_from = SHORTCUTS[arg]
         else:
-            print(f"Unknown shortcut '{arg}'. Options: {list(SHORTCUTS.keys())}")
+            all_opts = list(SHORTCUTS.keys()) + list(DIAGNOSTICS.keys())
+            print(f"Unknown shortcut '{arg}'. Options: {all_opts}")
             sys.exit(1)
 
     # find which index to start from

@@ -475,79 +475,75 @@ def scores_to_signal(score: pd.Series, long_thresh: float = 0.5,
 
 def apply_rsi_entry_filter(signal: pd.Series, rsi: pd.Series) -> pd.Series:
     """
-    Block new LONG entries when RSI_14 > RSI_ENTRY_THRESH at the time of entry.
+    Block new entries at RSI extremes: longs when RSI > 70 (overbought),
+    shorts when RSI < 30 (oversold — symmetric rule for short side).
 
-    The golden cross identifies trend direction.  The RSI gate ensures we
-    only enter early in the trend, not after a sustained run-up where the
-    entry risk/reward is poor.  Wilder's original overbought level of 70
-    (published 1978) is used — not fitted to this data.
-
-    State machine: tracks whether we are currently in a position so the
-    filter only blocks NEW entries (not ongoing positions, which have
-    already made money from the initial move).
+    State machine tracks current position direction (0 = flat, +1 = long,
+    -1 = short) so the filter only blocks NEW entries, not ongoing positions.
 
     Args:
-        signal: Binary signal Series (0 or 1) BEFORE the RSI filter.
+        signal: Signal Series {-1, 0, 1} BEFORE the RSI filter.
         rsi:    RSI-14 Series aligned to signal.index.
 
     Returns:
         Filtered signal Series.  Same index and dtype (int) as input.
     """
-    result      = signal.copy().astype(float)
-    in_position = False
+    result       = signal.copy().astype(float)
+    position_dir = 0   # 0 = flat, +1 = long, -1 = short
+    rsi_oversold = 100 - RSI_ENTRY_THRESH   # symmetric short-entry gate: 30
 
     for i in range(len(result)):
         val = int(result.iloc[i])
-        if not in_position:
+        if position_dir == 0:
             if val == 1:
                 if float(rsi.iloc[i]) > RSI_ENTRY_THRESH:
-                    result.iloc[i] = 0          # block overbought entry
+                    result.iloc[i] = 0          # block overbought long entry
                 else:
-                    in_position = True
+                    position_dir = 1
+            elif val == -1:
+                if float(rsi.iloc[i]) < rsi_oversold:
+                    result.iloc[i] = 0          # block oversold short entry
+                else:
+                    position_dir = -1
         else:
             if val == 0:
-                in_position = False
+                position_dir = 0
 
     return result.astype(int)
 
 
 def apply_min_hold_filter(signal: pd.Series) -> pd.Series:
     """
-    Hold a long position for at least MIN_HOLD_DAYS trading days before exiting.
+    Hold any position (long or short) for at least MIN_HOLD_DAYS before exiting.
 
-    MA crossovers can produce same-week golden/death-cross pairs (whipsaws)
-    where the MA crosses up on Monday, then back down on Friday.  Without
-    this filter, that costs two round-trip commissions for near-zero net move.
-    MIN_HOLD_DAYS=5 (one trading week) is the natural minimum unit — any
-    shorter and the strategy is HFT, not systematic medium-term.
-
-    State machine: counts the number of consecutive days in the position.
-    Exit signals received before MIN_HOLD_DAYS are converted to holds (1s).
+    State machine tracks current direction (+1/-1) so the min-hold applies
+    symmetrically to both sides.  Early exit signals are converted to
+    "hold current direction" rather than flat.
 
     Args:
-        signal: Binary signal Series (0 or 1) BEFORE the min-hold filter.
+        signal: Signal Series {-1, 0, 1} BEFORE the min-hold filter.
 
     Returns:
         Filtered signal Series.  Same index and dtype (int) as input.
     """
-    result      = signal.copy().astype(float)
-    in_position = False
-    days_held   = 0
+    result       = signal.copy().astype(float)
+    position_dir = 0   # 0 = flat, +1 = long, -1 = short
+    days_held    = 0
 
     for i in range(len(result)):
         val = int(result.iloc[i])
-        if not in_position:
-            if val == 1:
-                in_position = True
-                days_held   = 1
+        if position_dir == 0:
+            if val != 0:
+                position_dir = val
+                days_held    = 1
         else:
             days_held += 1
             if val == 0:
                 if days_held <= MIN_HOLD_DAYS:
-                    result.iloc[i] = 1          # hold open — min hold not met yet
+                    result.iloc[i] = position_dir   # hold current direction
                 else:
-                    in_position = False
-                    days_held   = 0
+                    position_dir = 0
+                    days_held    = 0
 
     return result.astype(int)
 
@@ -587,27 +583,29 @@ def apply_trailing_stop_signal(signal: pd.Series,
     Returns:
         Filtered signal Series.  Same index and dtype (int) as input.
     """
-    result      = signal.copy().astype(float)
-    in_pos      = False
-    trail_high  = 0.0
-    entry_price = 0.0
+    result       = signal.copy().astype(float)
+    position_dir = 0   # 0 = flat, +1 = long, -1 = short
+    trail_high   = 0.0
+    trail_low    = 0.0
+    entry_price  = 0.0
 
     for i in range(len(result)):
         price       = float(close.iloc[i])
         current_atr = float(atr.iloc[i]) if not pd.isna(atr.iloc[i]) else None
         val         = int(result.iloc[i])
 
-        if not in_pos:
-            if val == 1:
-                in_pos      = True
-                trail_high  = price
-                entry_price = price
-        else:
+        if position_dir == 0:
+            if val != 0:
+                position_dir = val
+                trail_high   = price
+                trail_low    = price
+                entry_price  = price
+        elif position_dir == 1:
+            # Long: trail the high, stop below it
             if price > trail_high:
                 trail_high = price
 
             if current_atr and current_atr > 0:
-                # Tighten stop if price has run ATR_TIGHTEN_THRESHOLD × ATR above entry
                 if (price - entry_price) > ATR_TIGHTEN_THRESHOLD * current_atr:
                     stop_mult = ATR_TIGHTEN_MULT
                 else:
@@ -617,14 +615,39 @@ def apply_trailing_stop_signal(signal: pd.Series,
                 stop = trail_high * 0.80
 
             if price < stop:
-                result.iloc[i] = 0              # trailing stop fires
-                in_pos         = False
+                result.iloc[i] = 0              # trailing stop fires (long)
+                position_dir   = 0
                 trail_high     = 0.0
                 entry_price    = 0.0
             elif val == 0:
-                in_pos      = False             # normal death-cross exit
-                trail_high  = 0.0
-                entry_price = 0.0
+                position_dir = 0                # normal exit
+                trail_high   = 0.0
+                entry_price  = 0.0
+
+        else:  # position_dir == -1 (short)
+            # Short: trail the low, stop above it
+            if price < trail_low:
+                trail_low = price
+
+            if current_atr and current_atr > 0:
+                # Tighten stop once price has fallen ATR_TIGHTEN_THRESHOLD × ATR below entry
+                if (entry_price - price) > ATR_TIGHTEN_THRESHOLD * current_atr:
+                    stop_mult = ATR_TIGHTEN_MULT
+                else:
+                    stop_mult = ATR_TRAILING_MULT
+                stop = trail_low + stop_mult * current_atr
+            else:
+                stop = trail_low * 1.20
+
+            if price > stop:
+                result.iloc[i] = 0              # trailing stop fires (short)
+                position_dir   = 0
+                trail_low      = 0.0
+                entry_price    = 0.0
+            elif val == 0:
+                position_dir = 0                # normal exit
+                trail_low    = 0.0
+                entry_price  = 0.0
 
     return result.astype(int)
 
