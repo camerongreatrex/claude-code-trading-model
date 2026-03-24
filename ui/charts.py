@@ -131,6 +131,7 @@ def chart_equity(df: pd.DataFrame, height: int = 420,
     fig.update_layout(**_layout(
         height=height,
         dragmode="pan",
+        uirevision="backtest_equity",
         title=dict(text="Portfolio Equity Curves — $100 k starting capital",
                    font=dict(size=13)),
         yaxis=dict(title="Value ($)", fixedrange=False),
@@ -189,6 +190,7 @@ def chart_drawdown(df: pd.DataFrame, height: int = 420,
     fig.update_layout(**_layout(
         height=height,
         dragmode="pan",
+        uirevision="backtest_drawdown",
         title=dict(text="Drawdown (%)", font=dict(size=13)),
         yaxis=dict(title="DD (%)", fixedrange=False),
         xaxis=dict(fixedrange=False),
@@ -288,6 +290,7 @@ def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
     fig.update_layout(**_layout(
         height=height,
         dragmode="pan",
+        uirevision="monte_carlo_fan",
         title=dict(
             text=f"Monte Carlo Bootstrap  ·  {len(eq_curves):,} paths  ·  21-day block resampling",
             font=dict(size=13),
@@ -338,6 +341,7 @@ def chart_mc_histogram(eq_curves: np.ndarray, height: int = 280) -> go.Figure:
     fig.update_layout(**_layout(
         height=height, showlegend=False,
         dragmode="pan",
+        uirevision="mc_histogram",
         title=dict(text="Distribution of Terminal Returns", font=dict(size=13)),
         xaxis=dict(title="Total return (%)", fixedrange=False),
         yaxis=dict(title="Paths", fixedrange=False),
@@ -381,6 +385,7 @@ def chart_walk_forward(wf: pd.DataFrame, height: int = 280) -> go.Figure:
     fig.update_layout(**_layout(
         height=height, showlegend=False,
         dragmode="pan",
+        uirevision="walk_forward_sharpe",
         title=dict(text="Walk-Forward OOS Sharpe  (3 yr train / 1 yr test)",
                    font=dict(size=13)),
         xaxis=dict(title=None, fixedrange=False),
@@ -447,6 +452,7 @@ def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
     fig.update_layout(**_layout(
         height=height, barmode="group",
         dragmode="pan",
+        uirevision="asset_sharpe",
         title=dict(text="Sharpe Ratio  ·  Strategy vs Buy & Hold by Asset",
                    font=dict(size=13)),
         xaxis=dict(title="Sharpe ratio", fixedrange=False),
@@ -538,6 +544,7 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
     fig.update_layout(paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
                       font=dict(color="#c0c0c0", size=11),
                       height=height, showlegend=True, dragmode="pan",
+                      uirevision="macro_overlay",
                       legend=dict(bgcolor="#252525", bordercolor="#333", borderwidth=1),
                       margin=dict(l=56, r=20, t=44, b=36))
     for r in range(1, 4):
@@ -600,6 +607,7 @@ def chart_monthly_heatmap(ret: pd.Series, title: str = "Equal Weight — Monthly
     fig.update_layout(**_layout(
         height=height,
         dragmode="pan",
+        uirevision="monthly_heatmap",
         title=dict(text=title, font=dict(size=13)),
         xaxis=dict(title=None, side="top", fixedrange=False),
         yaxis=dict(title=None, autorange="reversed", fixedrange=False),
@@ -649,6 +657,7 @@ def chart_ma_spread(live_df: pd.DataFrame, height: int = 400) -> go.Figure:
     fig.update_layout(**_layout(
         height=height, showlegend=False,
         dragmode="pan",
+        uirevision="ma_spread",
         title=dict(text="MA Spread — Fast vs Slow MA  (positive = golden cross / LONG)",
                    font=dict(size=13)),
         xaxis=dict(title="Spread (%)", fixedrange=False),
@@ -704,52 +713,56 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
     """
     fig = go.Figure()
 
-    # Exclude today from daily history — intraday trace covers today
-    if not history_df.empty:
-        _today_str = pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d')
-        # Use .dt.strftime to get clean "YYYY-MM-DD" strings for comparison
-        history_df = history_df[history_df["date"].dt.strftime('%Y-%m-%d') < _today_str].copy()
-        # Plot daily points at 4:00 PM ET so they align with intraday candle closes
-        history_df["plot_ts"] = history_df["date"].dt.strftime('%Y-%m-%d') + "T16:00:00"
+    # ── Resample intraday data to the requested timeframe ───────────────────
+    candle_df = pd.DataFrame()
+    if not intraday_df.empty and {"open", "high", "low", "close"}.issubset(intraday_df.columns):
+        candle_df = intraday_df.copy()
 
-    # ── Historical equity curve ───────────────────────────────────────────────
-    if not history_df.empty:
-        fig.add_trace(go.Scatter(
-            x=history_df["plot_ts"],
-            y=history_df["portfolio_value"],
-            name="Portfolio (daily)",
-            mode="lines+markers",
-            line=dict(color="#4a9eff", width=2.2),
-            marker=dict(size=6, color="#4a9eff"),
-            hovertemplate=(
-                "<b>%{x|%b %d, %Y}</b><br>"
-                "End-of-day value: <b>$%{y:,.0f}</b><br>"
-                "<i>Recorded at 4:45 PM ET after the market close.<br>"
-                "Each point = one trading day of holding the portfolio.</i>"
-                "<extra></extra>"
-            ),
-        ))
+    # Dates covered by intraday candles — exclude these from daily history
+    _intra_dates = set()
+    if not candle_df.empty:
+        _intra_dates = set(candle_df.index.strftime('%Y-%m-%d'))
 
-    # ── Today's intraday candlesticks ─────────────────────────────────────────
-    if not intraday_df.empty and {"open","high","low","close"}.issubset(intraday_df.columns):
+    # ── Historical daily candlesticks (for dates NOT covered by intraday) ───
+    if not history_df.empty:
+        history_df = history_df.copy()
+        history_df["_ds"] = history_df["date"].dt.strftime('%Y-%m-%d')
+        history_df = history_df[~history_df["_ds"].isin(_intra_dates)]
+        if not history_df.empty:
+            history_df["plot_ts"] = history_df["_ds"] + "T16:00:00"
+            _closes = history_df["portfolio_value"].values
+            _opens = np.concatenate([[_closes[0]], _closes[:-1]])
+            _highs = np.maximum(_opens, _closes)
+            _lows  = np.minimum(_opens, _closes)
+            fig.add_trace(go.Candlestick(
+                x=history_df["plot_ts"],
+                open=_opens, high=_highs, low=_lows, close=_closes,
+                name="Portfolio (daily)",
+                increasing=dict(line=dict(color="#50fa7b", width=1.2),
+                                fillcolor="rgba(80,250,123,0.7)"),
+                decreasing=dict(line=dict(color="#ff5555", width=1.2),
+                                fillcolor="rgba(255,85,85,0.7)"),
+            ))
+
+    # ── Intraday candlesticks (multi-day 5-min data) ────────────────────────
+    if not candle_df.empty:
         fig.add_trace(go.Candlestick(
-            x=intraday_df.index,
-            open=intraday_df["open"],
-            high=intraday_df["high"],
-            low=intraday_df["low"],
-            close=intraday_df["close"],
-            name="Today (live)",
+            x=candle_df.index,
+            open=candle_df["open"],
+            high=candle_df["high"],
+            low=candle_df["low"],
+            close=candle_df["close"],
+            name="Portfolio (5m)",
             increasing=dict(line=dict(color="#50fa7b", width=1),
                             fillcolor="rgba(80,250,123,0.7)"),
             decreasing=dict(line=dict(color="#ff5555", width=1),
                             fillcolor="rgba(255,85,85,0.7)"),
         ))
-        # After the last real candle, draw a flat dotted line to current time so
-        # the chart never looks "cut off" — market closed = straight horizontal line.
-        if now is not None and now > intraday_df.index[-1]:
-            _lv = float(intraday_df["close"].iloc[-1])
+        # Flat dotted line from last candle to now when market is closed
+        if now is not None and now > candle_df.index[-1]:
+            _lv = float(candle_df["close"].iloc[-1])
             fig.add_trace(go.Scatter(
-                x=[intraday_df.index[-1], now],
+                x=[candle_df.index[-1], now],
                 y=[_lv, _lv],
                 mode="lines",
                 line=dict(color="#4a9eff", width=1.5, dash="dot"),
@@ -893,19 +906,6 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             xanchor="left",
         )
 
-    if x_range is None:
-        _now = now or pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
-        _today = _now.strftime('%Y-%m-%d')
-        _right = max(_now, pd.Timestamp(_today + " 16:05:00"))
-        # Default left edge: 1 day before earliest history entry so the daily
-        # equity curve is in frame; fall back to 7 days ago if history is empty.
-        if not history_df.empty:
-            _first = pd.Timestamp(history_df["date"].min())
-            _left = (_first - pd.Timedelta(days=1)).strftime('%Y-%m-%dT09:00:00')
-        else:
-            _left = (pd.Timestamp(_today) - pd.Timedelta(days=7)).strftime('%Y-%m-%dT09:00:00')
-        x_range = [_left, _right.strftime('%Y-%m-%dT%H:%M:00')]
-
     fig.update_layout(**_layout(
         height=height,
         # uirevision = constant string → Plotly.js preserves zoom/pan across data
@@ -925,7 +925,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             title=None,
             type="date",
             tickformat="%b %d\n%H:%M",
-            range=x_range,
+            autorange=True,
             fixedrange=False,
             rangeslider=dict(visible=False),
             rangeselector=dict(
@@ -974,6 +974,7 @@ def chart_beta_rolling(df_port: pd.DataFrame, spy_col: str = "buy_hold",
     fig.add_hline(y=1, line_color="#555", line_dash="dot",
                   annotation_text="  β=1 (index)", annotation_font_color="#666")
     fig.update_layout(**_layout(height=height, dragmode="pan",
+        uirevision="beta_rolling",
         title=dict(text="Rolling 60-Day Beta to S&P 500", font=dict(size=13)),
         yaxis=dict(title="Beta", fixedrange=False),
         xaxis=dict(fixedrange=False)))
@@ -1008,6 +1009,7 @@ def chart_active_return(df_port: pd.DataFrame, spy_col: str = "buy_hold",
     fig.add_hline(y=1.0, line_color="#555", line_dash="dot",
                   annotation_text="  zero active return", annotation_font_color="#666")
     fig.update_layout(**_layout(height=height, dragmode="pan",
+        uirevision="active_return",
         title=dict(text="Cumulative Active Return (vs SPY Beta)", font=dict(size=13)),
         yaxis=dict(title="Cumulative Active Growth", fixedrange=False),
         xaxis=dict(fixedrange=False)))
@@ -1036,6 +1038,7 @@ def chart_dead_weight(df_dw: pd.DataFrame, height: int = 380) -> go.Figure:
     fig.add_vline(x=50, line_color="#e06c75", line_dash="dash",
                   annotation_text="  Random (50%)", annotation_font_color="#e06c75")
     fig.update_layout(**_layout(height=height, dragmode="pan",
+        uirevision="dead_weight",
         title=dict(text="Dead Weight by Ticker (Long Signal on Down Days)", font=dict(size=13)),
         xaxis=dict(title="Dead Weight %", fixedrange=False),
         yaxis=dict(fixedrange=True),

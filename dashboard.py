@@ -77,6 +77,7 @@ from paper_trader import (
     load_state, load_trades, load_history, catchup,
     get_intraday_curve, end_of_day_update, INITIAL_CAPITAL as PT_INITIAL_CAPITAL,
 )
+from pipeline.data_pipeline import ASSET_CLASS
 from scheduler import check_kill_switch, ORDERS_FILE
 from ui.styles import CSS, _layout, PALETTE, LABELS
 from ui.charts import (
@@ -751,6 +752,15 @@ def main():
             pt_history = load_history()
             pt_trades  = load_trades()
 
+            # ── Fee totals (from trades.csv) ─────────────────────────────
+            total_fees = 0.0
+            buy_fees   = 0.0
+            sell_fees  = 0.0
+            if not pt_trades.empty and "commission" in pt_trades.columns:
+                total_fees = pt_trades["commission"].sum()
+                buy_fees   = pt_trades.loc[pt_trades["action"] == "BUY", "commission"].sum()
+                sell_fees  = pt_trades.loc[pt_trades["action"] == "SELL", "commission"].sum()
+
             if not pt_state:
                 st.info(
                     "Paper trading not yet initialised.  Run this command once to start:\n\n"
@@ -777,17 +787,32 @@ def main():
                     prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
 
                 # ── Open position market values (from fresh per-ticker prices) ─
+                # When the market is closed live_prices will be empty — fall back
+                # to last EOD close stored in state rather than entry prices,
+                # otherwise every position shows 0% change overnight.
                 tot_invested = sum(pos["cost_basis"] for pos in pt_state.get("positions", {}).values())
-                tot_cur_val  = sum(
-                    pos["shares"] * (live_prices.get(t) or pos["entry_price"])
-                    for t, pos in pt_state.get("positions", {}).items()
-                )
+                _eod_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
+                if live_prices:
+                    tot_cur_val = sum(
+                        pos["shares"] * (live_prices.get(t) or pos.get("last_close") or pos["entry_price"])
+                        for t, pos in pt_state.get("positions", {}).items()
+                    )
+                else:
+                    # Market closed — use last EOD close per position, or aggregate EOD value
+                    _has_closes = any(p.get("last_close") for p in pt_state.get("positions", {}).values())
+                    if _has_closes:
+                        tot_cur_val = sum(
+                            pos["shares"] * (pos.get("last_close") or pos["entry_price"])
+                            for pos in pt_state.get("positions", {}).values()
+                        )
+                    else:
+                        tot_cur_val = _eod_pv - cash
                 tot_unreal   = tot_cur_val - tot_invested
                 tot_chg_pct  = (tot_cur_val / tot_invested - 1) * 100 if tot_invested else 0.0
 
                 # pv from live per-ticker prices (consistent with positions table;
                 # avoids the intraday OHLC sum having stale zeros at 5-min boundaries)
-                pv        = (tot_cur_val + cash) if live_prices else prev_pv
+                pv        = (tot_cur_val + cash) if live_prices else _eod_pv
                 daily_ret = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
                 total_ret = (pv / PT_INITIAL_CAPITAL - 1) * 100
                 daily_pnl_usd = pv - prev_pv
@@ -810,45 +835,37 @@ def main():
                 # today_unrealized dollar = change vs prev close position value
                 # today_unrealized_pct uses cost_basis denominator (tot_invested)
                 # so it matches the positions table unrealized % exactly.
-                prev_positions_val   = prev_pv - cash
+                # Use yesterday's cash (not today's) to avoid mixing days when
+                # trades executed today changed the cash balance.
+                prev_cash = float(pt_history["cash"].iloc[-1]) if (
+                    not pt_history.empty and "cash" in pt_history.columns
+                ) else cash
+                prev_positions_val   = prev_pv - prev_cash
                 today_unrealized     = tot_cur_val - prev_positions_val
-                today_unrealized_pct = (tot_cur_val / tot_invested - 1) * 100 if tot_invested else 0.0
+                today_unrealized_pct = (today_unrealized / prev_positions_val * 100
+                                        if prev_positions_val else 0.0)
 
                 # ── GROUP 1: Portfolio Overview ───────────────────────────────
                 st.markdown('<div class="section-head">Portfolio Overview</div>', unsafe_allow_html=True)
-                pm1, pm2, pm3, pm4, pm5 = st.columns(5)
+                pm1, pm2, pm3, pm4, pm5, pm6 = st.columns(6)
                 with pm1:
-                    st.metric(
-                        "Portfolio Value", f"${pv:,.0f}",
-                        delta=f"{daily_ret:+.2f}%",
-                        delta_color="normal",
-                        help="Live value: cash + all open positions marked to last 5-min bar. "
-                             "Arrow shows today's dollar change vs yesterday's close — green = up, red = down.",
-                    )
+                    st.metric("Portfolio Value", f"${pv:,.0f}",
+                              help="Live value: cash + all open positions marked to last 5-min bar.")
                 with pm2:
-                    st.metric(
-                        "Total Return", f"{total_ret:+.2f}%",
-                        delta=f"${pv - PT_INITIAL_CAPITAL:+,.0f}",
-                        delta_color="normal",
-                        help="Overall % return vs $100k starting capital since inception. "
-                             "Arrow shows the dollar equivalent. "
-                             "= Realized P&L + Unrealized P&L (open positions marked to market).",
-                    )
+                    _total_pnl = pv - PT_INITIAL_CAPITAL
+                    st.metric("Total Return", f"{total_ret:+.2f}% (${_total_pnl:+,.0f})",
+                              help="Overall % return vs $100k starting capital since inception.")
                 with pm3:
-                    st.metric(
-                        "Realized P&L", f"${all_realized:+,.0f}",
-                        delta=f"{today_realized:+,.0f} today" if today_realized != 0 else None,
-                        delta_color="normal",
-                        help="Locked-in profit/loss from closed trades only. "
-                             "Does NOT include unrealized gains on open positions. "
-                             f"Unrealized P&L = ${tot_unreal:+,.0f} (open positions vs cost basis).",
-                    )
+                    st.metric("Realized P&L", f"${all_realized:+,.0f}",
+                              help="Locked-in profit/loss from closed trades only.")
                 with pm4:
-                    st.metric(
-                        "Cash", f"${cash:,.0f}",
-                        help="Uninvested cash. The gap vs $100k starting capital reflects commissions (~0.05% per trade).",
-                    )
+                    st.metric("Cash", f"${cash:,.0f}",
+                              help="Uninvested cash after all trades and commissions.")
                 with pm5:
+                    st.metric("Total Fees", f"${total_fees:,.2f}",
+                              help=f"Cumulative commissions (0.05% per trade). "
+                                   f"Entry: ${buy_fees:,.2f} · Exit: ${sell_fees:,.2f}.")
+                with pm6:
                     st.metric("Open Positions", str(n_pos))
 
                 # ── GROUP 2: Daily P&L Breakdown ──────────────────────────────
@@ -868,35 +885,76 @@ def main():
                         help="P&L from positions actually closed today. Zero if no trades were executed today.",
                     )
 
-                # ── Equity chart ──────────────────────────────────────────────
-                # ── x-range management ───────────────────────────────────────
-                # Left edge: 1 day before the earliest history entry so the daily
-                # equity curve is always in frame.  Right edge tracks the current
-                # time (or 16:05 if before close) so the intraday line is visible.
-                # Stored in session_state so uirevision="paper_portfolio" can
-                # preserve user zoom/pan across 5-second fragment refreshes.
-                _today = now.strftime('%Y-%m-%d')
-                _right = max(now, pd.Timestamp(_today + " 16:05:00"))
-                _right_str = _right.strftime('%Y-%m-%dT%H:%M:00')
-                if not pt_history.empty:
-                    _first_ts = pd.Timestamp(pt_history["date"].min())
-                    _left_str = (_first_ts - pd.Timedelta(days=1)).strftime('%Y-%m-%dT09:00:00')
+                # ── GROUP 2b: Capital Flow (where did the money go?) ────────
+                # Splits realised gains, losses, unrealized, and fees so the
+                # user sees exactly where every dollar went.
+                realized_gains  = 0.0
+                realized_losses = 0.0
+                if not pt_trades.empty and "pnl" in pt_trades.columns:
+                    _sells_pnl = pd.to_numeric(
+                        pt_trades.loc[pt_trades["action"] == "SELL", "pnl"],
+                        errors="coerce",
+                    ).fillna(0)
+                    realized_gains  = float(_sells_pnl[_sells_pnl > 0].sum())
+                    realized_losses = float(_sells_pnl[_sells_pnl < 0].sum())
+
+                st.markdown('<div class="section-head">Capital Flow</div>',
+                            unsafe_allow_html=True)
+                wf1, wf2, wf3, wf4, wf5 = st.columns(5)
+                with wf1:
+                    st.metric("Starting Capital", f"${PT_INITIAL_CAPITAL:,.0f}")
+                with wf2:
+                    st.metric("Realized Gains", f"${realized_gains:+,.0f}",
+                              delta_color="normal",
+                              help="Sum of positive P&L from closed trades.")
+                with wf3:
+                    st.metric("Realized Losses", f"${realized_losses:+,.0f}",
+                              delta_color="normal",
+                              help="Sum of negative P&L from closed trades.")
+                with wf4:
+                    st.metric("Unrealized P&L", f"${tot_unreal:+,.0f}",
+                              help="Open position value minus cost basis.")
+                with wf5:
+                    st.metric("Fees Paid", f"-${total_fees:,.0f}",
+                              help=f"Entry: ${buy_fees:,.2f} · Exit: ${sell_fees:,.2f}")
+                # Reconciliation: pnl already includes sell commissions,
+                # so only subtract buy fees to avoid double-counting.
+                _reconciled = PT_INITIAL_CAPITAL + realized_gains + realized_losses + tot_unreal - buy_fees
+                _parts = [f"$100,000 start"]
+                if realized_gains:
+                    _parts.append(f"+ ${realized_gains:,.0f} gains")
+                if realized_losses:
+                    _parts.append(f"− ${abs(realized_losses):,.0f} losses")
+                if tot_unreal >= 0:
+                    _parts.append(f"+ ${tot_unreal:,.0f} unrealized")
                 else:
-                    _left_str = (pd.Timestamp(_today) - pd.Timedelta(days=7)).strftime('%Y-%m-%dT09:00:00')
-                _cached = st.session_state.get("paper_chart_x_range", ["", ""])
-                if _cached[1] < _right_str:
-                    st.session_state["paper_chart_x_range"] = [_left_str, _right_str]
+                    _parts.append(f"− ${abs(tot_unreal):,.0f} unrealized")
+                if buy_fees:
+                    _parts.append(f"− ${buy_fees:,.0f} entry fees")
+                _parts.append(f"= ${_reconciled:,.0f}")
+                st.caption("  ".join(_parts))
+
+                # ── Equity chart ──────────────────────────────────────────────
+                # Timeframe selector — resample 5-min candles to user choice
+                _tf_options = {"5m": "5T", "15m": "15T", "1H": "1h", "4H": "4h"}
+                _tf = st.radio("Timeframe", list(_tf_options.keys()),
+                               index=0, horizontal=True, label_visibility="collapsed")
+                _chart_intra = intraday_df
+                if not intraday_df.empty and _tf != "5m":
+                    _rule = _tf_options[_tf]
+                    _chart_intra = intraday_df.resample(_rule).agg({
+                        "open": "first", "high": "max", "low": "min", "close": "last"
+                    }).dropna()
 
                 st.plotly_chart(
-                    chart_paper_portfolio(pt_history, intraday_df, pt_trades,
+                    chart_paper_portfolio(pt_history, _chart_intra, pt_trades,
                                           now=now, entry_value=prev_pv,
-                                          x_range=st.session_state["paper_chart_x_range"],
                                           spy_curve=spy_curve),
                     theme=None, use_container_width=True,
                     config={
                         "scrollZoom": True,
                         "displayModeBar": True,
-                        "modeBarButtonsToRemove": ["resetScale2d", "autoScale2d"],
+                        "modeBarButtonsToRemove": ["autoScale2d"],
                     },
                     key="paper_portfolio_chart",
                 )
@@ -931,7 +989,9 @@ def main():
 
                     pos_rows = []
                     for ticker, pos in pt_state["positions"].items():
-                        cur = live_prices.get(ticker) or pos["entry_price"]
+                        cur = (live_prices.get(ticker)
+                               or pos.get("last_close")
+                               or pos["entry_price"])
                         cur_val    = pos["shares"] * cur
                         unreal_pnl = cur_val - pos["cost_basis"]
                         unreal_pct = (cur / pos["entry_price"] - 1) * 100
@@ -972,10 +1032,189 @@ def main():
                         if v == "BUY":  return "color:#50fa7b;font-weight:600"
                         if v == "SELL": return "color:#ff5555;font-weight:600"
                         return ""
+                    for _col in ["shares", "price", "value", "commission", "pnl"]:
+                        if _col in recent.columns:
+                            recent[_col] = pd.to_numeric(recent[_col], errors="coerce")
+                    _tfmt = {"shares": "{:.2f}"}
+                    for _col in ["price", "value", "commission", "pnl"]:
+                        if _col in recent.columns:
+                            _tfmt[_col] = "${:,.2f}"
                     st.dataframe(
-                        recent.style.map(_color_action, subset=["action"]),
+                        recent.style
+                        .map(_color_action, subset=["action"])
+                        .format(_tfmt, na_rep="—"),
                         use_container_width=True, hide_index=True,
                     )
+
+                # ── GROUP 5: Trade Analytics ────────────────────────────────
+                if not pt_trades.empty and "pnl" in pt_trades.columns:
+                    sells_only = pt_trades[
+                        (pt_trades["action"] == "SELL") &
+                        pt_trades["pnl"].notna() &
+                        (pt_trades["pnl"].astype(str).str.strip() != "")
+                    ].copy()
+                    if not sells_only.empty:
+                        sells_only["pnl_num"] = pd.to_numeric(sells_only["pnl"], errors="coerce").fillna(0)
+                        wins  = sells_only[sells_only["pnl_num"] > 0]
+                        losses = sells_only[sells_only["pnl_num"] < 0]
+                        win_rate = len(wins) / len(sells_only) * 100 if len(sells_only) else 0
+                        avg_win  = wins["pnl_num"].mean() if len(wins) else 0
+                        avg_loss = losses["pnl_num"].mean() if len(losses) else 0
+                        profit_factor = (wins["pnl_num"].sum() / abs(losses["pnl_num"].sum())
+                                         if len(losses) and losses["pnl_num"].sum() != 0 else float('inf'))
+                        largest_win  = wins["pnl_num"].max() if len(wins) else 0
+                        largest_loss = losses["pnl_num"].min() if len(losses) else 0
+                        avg_hold = None
+                        if "date" in sells_only.columns and not pt_trades.empty:
+                            try:
+                                _buy_dates = pt_trades[pt_trades["action"] == "BUY"].groupby("ticker")["date"].first()
+                                _sell_dates = sells_only.groupby("ticker")["date"].first()
+                                _common = _buy_dates.index.intersection(_sell_dates.index)
+                                if len(_common):
+                                    _holds = (_sell_dates[_common] - _buy_dates[_common]).dt.days
+                                    avg_hold = _holds.mean()
+                            except Exception:
+                                pass
+
+                        st.markdown('<div class="section-head">Trade Analytics</div>',
+                                    unsafe_allow_html=True)
+                        ta1, ta2, ta3, ta4, ta5, ta6 = st.columns(6)
+                        with ta1:
+                            st.metric("Win Rate", f"{win_rate:.0f}%",
+                                      help=f"{len(wins)} wins / {len(sells_only)} closed trades")
+                        with ta2:
+                            st.metric("Avg Win", f"${avg_win:+,.0f}",
+                                      help="Average dollar P&L on winning trades")
+                        with ta3:
+                            st.metric("Avg Loss", f"${avg_loss:+,.0f}",
+                                      help="Average dollar P&L on losing trades")
+                        with ta4:
+                            st.metric("Profit Factor", f"{profit_factor:.2f}" if profit_factor < 100 else "∞",
+                                      help="Gross profit / gross loss. >1.5 is good, >2.0 is exceptional.")
+                        with ta5:
+                            st.metric("Best Trade", f"${largest_win:+,.0f}")
+                        with ta6:
+                            st.metric("Worst Trade", f"${largest_loss:+,.0f}")
+
+                # ── GROUP 6: Drawdown + Rolling Sharpe + Allocation ────────────
+                if not pt_history.empty and len(pt_history) >= 3:
+                    _pv_s = pt_history.set_index("date")["portfolio_value"]
+                    _pv_s.index = pd.to_datetime(_pv_s.index)
+
+                    _chart_cols = st.columns(2)
+
+                    # Drawdown chart
+                    with _chart_cols[0]:
+                        _peak = _pv_s.cummax()
+                        _dd_pct = ((_pv_s - _peak) / _peak * 100)
+                        _fig_dd = go.Figure()
+                        _fig_dd.add_trace(go.Scatter(
+                            x=_dd_pct.index, y=_dd_pct.values,
+                            fill="tozeroy", fillcolor="rgba(255,85,85,0.15)",
+                            line=dict(color="#ff5555", width=1.2),
+                            hovertemplate="<b>%{x|%b %d}</b><br>DD: %{y:.1f}%<extra></extra>",
+                        ))
+                        _fig_dd.add_hline(y=-12, line_color="#ffb86c", line_dash="dash",
+                                          annotation_text="  -12% circuit breaker",
+                                          annotation_font_color="#ffb86c")
+                        _fig_dd.update_layout(
+                            paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
+                            font=dict(color="#c0c0c0", size=11), height=220,
+                            dragmode="pan", uirevision="paper_drawdown",
+                            title=dict(text="Portfolio Drawdown", font=dict(size=12)),
+                            yaxis=dict(title="DD %", gridcolor="#2a2a2a"),
+                            xaxis=dict(gridcolor="#2a2a2a"),
+                            margin=dict(l=50, r=20, t=35, b=30), showlegend=False,
+                        )
+                        st.plotly_chart(_fig_dd, theme=None, use_container_width=True,
+                                        config={"scrollZoom": True, "displayModeBar": False})
+
+                    # Rolling 21-day Sharpe
+                    with _chart_cols[1]:
+                        _daily_ret = _pv_s.pct_change().dropna()
+                        if len(_daily_ret) >= 21:
+                            _roll_mean = _daily_ret.rolling(21).mean()
+                            _roll_std  = _daily_ret.rolling(21).std()
+                            _roll_sharpe = (_roll_mean / _roll_std * np.sqrt(252)).dropna()
+                            _fig_rs = go.Figure()
+                            _fig_rs.add_trace(go.Scatter(
+                                x=_roll_sharpe.index, y=_roll_sharpe.values,
+                                line=dict(color="#4a9eff", width=1.2),
+                                hovertemplate="<b>%{x|%b %d}</b><br>Sharpe: %{y:.2f}<extra></extra>",
+                            ))
+                            _fig_rs.add_hline(y=0, line_color="#555", line_dash="dot")
+                            _fig_rs.add_hline(y=1, line_color="#50fa7b", line_dash="dot",
+                                              line_width=0.8)
+                            _fig_rs.update_layout(
+                                paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
+                                font=dict(color="#c0c0c0", size=11), height=220,
+                                dragmode="pan", uirevision="paper_rolling_sharpe",
+                                title=dict(text="Rolling 21-Day Sharpe", font=dict(size=12)),
+                                yaxis=dict(title="Sharpe", gridcolor="#2a2a2a"),
+                                xaxis=dict(gridcolor="#2a2a2a"),
+                                margin=dict(l=50, r=20, t=35, b=30), showlegend=False,
+                            )
+                            st.plotly_chart(_fig_rs, theme=None, use_container_width=True,
+                                            config={"scrollZoom": True, "displayModeBar": False})
+
+                # ── GROUP 7: Asset Class Allocation ────────────────────────────
+                if pt_state.get("positions"):
+                    st.markdown('<div class="section-head">Allocation by Asset Class</div>',
+                                unsafe_allow_html=True)
+                    _alloc_rows = []
+                    for _t, _p in pt_state["positions"].items():
+                        _cur_price = (live_prices.get(_t)
+                                      or _p.get("last_close")
+                                      or _p["entry_price"])
+                        _mkt_val = _p["shares"] * _cur_price
+                        _ac = ASSET_CLASS.get(_t, "other")
+                        _alloc_rows.append({"asset_class": _ac, "ticker": _t, "value": _mkt_val})
+                    _alloc_df = pd.DataFrame(_alloc_rows)
+                    _ac_totals = _alloc_df.groupby("asset_class")["value"].sum()
+
+                    _alloc_c1, _alloc_c2 = st.columns([1, 2])
+                    with _alloc_c1:
+                        _ac_colors = {
+                            "equity_index": "#4a9eff", "sector_etf": "#50fa7b",
+                            "stock": "#ffb86c", "bond": "#bd93f9",
+                            "commodity": "#ff79c6", "other": "#888",
+                        }
+                        _fig_pie = go.Figure(go.Pie(
+                            labels=_ac_totals.index.tolist(),
+                            values=[round(v, 2) for v in _ac_totals.values.tolist()],
+                            marker=dict(colors=[_ac_colors.get(a, "#888") for a in _ac_totals.index]),
+                            textinfo="label+percent",
+                            textfont=dict(size=11),
+                            hole=0.4,
+                            hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
+                        ))
+                        _fig_pie.update_layout(
+                            paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
+                            font=dict(color="#c0c0c0", size=11), height=250,
+                            margin=dict(l=10, r=10, t=10, b=10), showlegend=False,
+                        )
+                        st.plotly_chart(_fig_pie, theme=None, use_container_width=True)
+                    with _alloc_c2:
+                        _alloc_detail = _alloc_df.copy()
+                        _alloc_detail["pct"] = _alloc_detail["value"] / _alloc_detail["value"].sum() * 100
+                        _alloc_detail = _alloc_detail.sort_values("value", ascending=False)
+                        st.dataframe(
+                            _alloc_detail[["ticker", "asset_class", "value", "pct"]].style.format(
+                                {"value": "${:,.0f}", "pct": "{:.1f}%"}
+                            ),
+                            use_container_width=True, hide_index=True, height=250,
+                        )
+
+                # ── Strategy info + risk state ─────────────────────────────────
+                _strat_name = pt_state.get("strategy", "unknown")
+                _rp_date = pt_state.get("last_rp_date", "—")
+                st.caption(
+                    f"Strategy: **{_strat_name}**  ·  "
+                    f"Init: {pt_state.get('initialized_date','?')}  ·  "
+                    f"Last EOD: {pt_state.get('last_eod_date','?')}  ·  "
+                    f"RP weights: {_rp_date}  ·  "
+                    "Filters: RSI<70  ·  3x ATR stop  ·  5-day hold  ·  15% kill switch"
+                )
 
                 # ── Kill switch + order sheet ─────────────────────────────────
                 kill = check_kill_switch()
@@ -1013,11 +1252,6 @@ def main():
                         "or `python paper_trader.py run` after 4:45 PM ET."
                     )
 
-                st.caption(
-                    f"Init: {pt_state.get('initialized_date','?')}  ·  "
-                    f"Last EOD: {pt_state.get('last_eod_date','?')}  ·  "
-                    "Filters: RSI<70  ·  3x ATR stop  ·  5-day hold  ·  15% kill switch"
-                )
 
             # ── Live Signals ──────────────────────────────────────────────────
             st.divider()
@@ -1114,25 +1348,7 @@ def main():
 
         @st.cache_data(ttl=300, show_spinner=False)
         def _spy_history(start_date: str):
-            """
-            Fetch daily ^GSPC (S&P 500 index) closing prices from portfolio inception to today.
-
-            Uses ^GSPC instead of the SPY ETF so the historical returns match
-            what Yahoo Finance and TradingView display as the S&P 500 (no
-            dividend-adjustment distortion from auto_adjust on an ETF).
-
-            Cached with TTL=300s to avoid repeated yfinance calls on each
-            fragment refresh.  Tries yf.download() first; falls back to
-            yf.Ticker.history() if the multi-index download variant fails.
-
-            Args:
-                start_date: ISO date string (YYYY-MM-DD) for the first day of
-                            the paper portfolio, used as the yfinance start param.
-
-            Returns:
-                pd.Series of ^GSPC daily closes indexed by tz-naive datetime.
-                Returns empty Series if both download attempts fail.
-            """
+            """Fetch daily ^GSPC closing prices from inception to today."""
             import yfinance as yf
             try:
                 raw = yf.download("^GSPC", start=start_date, auto_adjust=True,
@@ -1144,7 +1360,6 @@ def main():
                     return raw["Close"].dropna()
             except Exception:
                 pass
-            # Fallback: Ticker.history()
             try:
                 raw = yf.Ticker("^GSPC").history(start=start_date, auto_adjust=True)
                 raw.index = pd.to_datetime(raw.index).tz_localize(None)
@@ -1190,13 +1405,20 @@ def main():
             intraday_df, live_prices, spy_intraday, spy_pct_from_prev = get_intraday_curve()
 
             cash    = pt_state["cash"]
-            prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
+            # If EOD already ran today, state["portfolio_value"] is today's
+            # close — use second-to-last history row as yesterday's baseline.
+            _today_et_str_sp = now_et.strftime('%Y-%m-%d')
+            if (pt_state.get("last_eod_date") == _today_et_str_sp
+                    and not pt_history.empty and len(pt_history) >= 2):
+                prev_pv = float(pt_history.sort_values("date").iloc[-2]["portfolio_value"])
+            else:
+                prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
             tot_invested = sum(pos["cost_basis"] for pos in pt_state.get("positions", {}).values())
             tot_cur_val = sum(
-                pos["shares"] * (live_prices.get(t) or pos["entry_price"])
+                pos["shares"] * (live_prices.get(t) or pos.get("last_close") or pos["entry_price"])
                 for t, pos in pt_state.get("positions", {}).items()
             )
-            pv = (tot_cur_val + cash) if live_prices else prev_pv
+            pv = (tot_cur_val + cash) if live_prices else pt_state.get("portfolio_value", prev_pv)
 
             # Portfolio today % — measured from yesterday's EOD value (same baseline
             # as SPY's close-to-close metric) so chart and alpha metric agree.
@@ -1236,12 +1458,7 @@ def main():
                 )
                 st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%", help=_spy_help)
             with c3:
-                # Alpha delta_color is dynamic: "normal" when outperforming (positive alpha
-                # → green is correct), "inverse" when underperforming so the word
-                # "Underperforming" still shows in red rather than green.
                 st.metric("Alpha (today)", f"{alpha_today:+.2f}%",
-                          delta="Outperforming" if beating else "Underperforming",
-                          delta_color="normal" if beating else "inverse",
                           help="Portfolio return minus S&P return today. Positive = beating the index.")
             with c4:
                 st.metric("Portfolio Value", f"${pv:,.0f}",
@@ -1251,18 +1468,30 @@ def main():
             if not spy_intraday.empty or not intraday_df.empty:
                 fig_intra = go.Figure()
 
-                if not intraday_df.empty and "close" in intraday_df.columns:
-                    # Extend portfolio line to current time (flat after last bar)
-                    _port_x = list(intraday_df.index)
-                    _port_y = list(intraday_df["close"])
-                    if now_et > pd.Timestamp(_port_x[-1]):
-                        _port_x.append(now_et)
-                        _port_y.append(_port_y[-1])
-                    fig_intra.add_trace(go.Scatter(
-                        x=_port_x, y=_port_y,
-                        name="My Portfolio", line=dict(color="#4a9eff", width=2),
-                        hovertemplate="<b>Portfolio</b><br>%{x|%H:%M}  $%{y:,.0f}<extra></extra>",
+                if not intraday_df.empty and {"open","high","low","close"}.issubset(intraday_df.columns):
+                    fig_intra.add_trace(go.Candlestick(
+                        x=intraday_df.index,
+                        open=intraday_df["open"],
+                        high=intraday_df["high"],
+                        low=intraday_df["low"],
+                        close=intraday_df["close"],
+                        name="My Portfolio",
+                        increasing=dict(line=dict(color="#50fa7b", width=1),
+                                        fillcolor="rgba(80,250,123,0.7)"),
+                        decreasing=dict(line=dict(color="#ff5555", width=1),
+                                        fillcolor="rgba(255,85,85,0.7)"),
                     ))
+                    # Flat dotted line from last candle to now
+                    if now_et > pd.Timestamp(intraday_df.index[-1]):
+                        _lv = float(intraday_df["close"].iloc[-1])
+                        fig_intra.add_trace(go.Scatter(
+                            x=[intraday_df.index[-1], now_et],
+                            y=[_lv, _lv],
+                            mode="lines",
+                            line=dict(color="#4a9eff", width=1.5, dash="dot"),
+                            showlegend=False,
+                            hovertemplate="<b>Portfolio</b> (closed)<br>%{x|%H:%M} $%{y:,.0f}<extra></extra>",
+                        ))
 
                 if not spy_intraday.empty:
                     # spy_intraday is already normalized to the close-to-close baseline
@@ -1320,102 +1549,118 @@ def main():
                 if spy_closes.empty:
                     st.error("Could not fetch ^GSPC data.")
                 else:
-                    # Align history and SPY on the same dates
+                    # Build aligned daily series using ALL SPY trading days
                     hist = pt_history.set_index("date")["portfolio_value"].copy()
                     hist.index = pd.to_datetime(hist.index)
                     hist = hist[~hist.index.duplicated(keep='last')]
-                    spy_aligned = spy_closes.reindex(hist.index).ffill()
 
-                    # Normalize both to $100k at portfolio inception
-                    port_norm = hist / hist.iloc[0] * PT_INITIAL_CAPITAL
-                    spy_norm  = spy_aligned / spy_aligned.iloc[0] * PT_INITIAL_CAPITAL
+                    all_dates = spy_closes.index.intersection(
+                        pd.date_range(hist.index.min(), hist.index.max(), freq="B")
+                    )
+                    hist_full = hist.reindex(all_dates).ffill()
+                    spy_close_aligned = spy_closes.reindex(all_dates).ffill()
+
+                    _valid = hist_full.notna() & spy_close_aligned.notna()
+                    hist_full = hist_full[_valid]
+                    spy_close_aligned = spy_close_aligned[_valid]
+
+                    # Normalize both to $100k at inception
+                    _port_scale = PT_INITIAL_CAPITAL / hist_full.iloc[0] if hist_full.iloc[0] else 1
+                    _spy_scale  = PT_INITIAL_CAPITAL / spy_close_aligned.iloc[0] if spy_close_aligned.iloc[0] else 1
+                    port_norm = hist_full * _port_scale
+                    spy_norm  = spy_close_aligned * _spy_scale
 
                     # Daily returns
-                    port_ret  = hist.pct_change().dropna() * 100
-                    spy_ret   = spy_aligned.pct_change().dropna() * 100
+                    port_ret = hist_full.pct_change().dropna() * 100
+                    spy_ret  = spy_close_aligned.pct_change().dropna() * 100
+                    common   = port_ret.index.intersection(spy_ret.index)
 
-                    # Summary metrics
-                    port_total = (hist.iloc[-1] / hist.iloc[0] - 1) * 100
-                    spy_total  = (spy_aligned.iloc[-1] / spy_aligned.iloc[0] - 1) * 100
+                    # Summary
+                    port_total  = (hist_full.iloc[-1] / hist_full.iloc[0] - 1) * 100
+                    spy_total   = (spy_close_aligned.iloc[-1] / spy_close_aligned.iloc[0] - 1) * 100
                     total_alpha = port_total - spy_total
-                    win_days    = int((port_ret.values > spy_ret.reindex(port_ret.index).values).sum())
-                    total_days  = len(port_ret)
+                    if len(common):
+                        win_days   = int((port_ret.reindex(common).values > spy_ret.reindex(common).values).sum())
+                        total_days = len(common)
+                    else:
+                        win_days, total_days = 0, 0
 
-                    # ── Beta & correlation (require aligned common dates) ─────
-                    # Minimum 3 observations guard avoids divide-by-zero and
-                    # misleading stats from just 1–2 data points.
-                    # Beta = Cov(portfolio, SPY) / Var(SPY) — OLS slope.
-                    # corr is computed but not currently displayed; retained for
-                    # potential future use in the caption or metrics row.
-                    common = port_ret.index.intersection(spy_ret.index)
-                    if len(common) >= 3:
+                    if len(common) >= 5:
                         beta = float(np.cov(port_ret[common], spy_ret[common])[0, 1] /
                                      np.var(spy_ret[common])) if np.var(spy_ret[common]) > 0 else 1.0
-                        corr = float(port_ret[common].corr(spy_ret[common]))
                     else:
-                        # Fallback to neutral defaults when there is insufficient history
-                        beta, corr = 1.0, 1.0
+                        beta = None
 
                     h1, h2, h3, h4, h5 = st.columns(5)
-                    # Portfolio Return and S&P 500 Return: informational, no delta colouring
                     with h1: st.metric("Portfolio Return", f"{port_total:+.2f}%",
                                        help="Total return since portfolio inception.")
                     with h2: st.metric("S&P 500 Return",  f"{spy_total:+.2f}%",
                                        help="^GSPC (S&P 500 index) return over the same period.")
-                    # Total Alpha: delta_color switches dynamically so "Underperforming"
-                    # renders in red (inverse) and "Outperforming" renders in green (normal).
                     with h3: st.metric("Total Alpha",     f"{total_alpha:+.2f}%",
-                                       delta="Outperforming" if total_alpha > 0 else "Underperforming",
-                                       delta_color="normal" if total_alpha > 0 else "inverse",
-                                       help="Portfolio return minus ^GSPC return. Positive = beating the index.")
-                    with h4: st.metric("Beta",            f"{beta:.2f}",
-                                       help="Portfolio sensitivity to S&P moves. 1.0 = moves with the market. "
-                                            "<1 = less volatile than S&P, >1 = more volatile.")
+                                       help="Portfolio return minus ^GSPC return.")
+                    with h4: st.metric("Beta", f"{beta:.2f}" if beta is not None else "N/A",
+                                       help="Requires 5+ trading days of data."
+                                            if beta is None else
+                                            "Portfolio sensitivity to S&P moves. "
+                                            "1.0 = moves with the market.")
                     with h5: st.metric("Days Beating S&P", f"{win_days}/{total_days}",
-                                       help="Number of days the portfolio's daily return exceeded ^GSPC's daily return.")
+                                       help="Trading days where portfolio daily return exceeded ^GSPC.")
 
-                    # Historical chart
+                    # Historical chart — line graph
                     fig_hist = go.Figure()
+
                     fig_hist.add_trace(go.Scatter(
                         x=port_norm.index, y=port_norm.values,
-                        name="My Portfolio", line=dict(color="#4a9eff", width=2.2),
-                        hovertemplate="<b>Portfolio</b><br>%{x|%b %d, %Y}  $%{y:,.0f}<extra></extra>",
+                        name="My Portfolio",
+                        mode="lines+markers",
+                        line=dict(color="#4a9eff", width=2.5),
+                        marker=dict(size=7, color="#4a9eff"),
+                        hovertemplate="<b>Portfolio</b><br>%{x|%b %d}  $%{y:,.0f}<extra></extra>",
                     ))
                     fig_hist.add_trace(go.Scatter(
                         x=spy_norm.index, y=spy_norm.values,
-                        name="S&P 500 (^GSPC)", line=dict(color="#ffb86c", width=2, dash="dot"),
-                        hovertemplate="<b>S&P 500</b><br>%{x|%b %d, %Y}  $%{y:,.0f}<extra></extra>",
+                        name="S&P 500 (^GSPC)",
+                        mode="lines+markers",
+                        line=dict(color="#ffb86c", width=2),
+                        marker=dict(size=6, color="#ffb86c"),
+                        hovertemplate="<b>S&P 500</b><br>%{x|%b %d}  $%{y:,.0f}<extra></extra>",
                     ))
+
                     fig_hist.add_hline(y=PT_INITIAL_CAPITAL, line_color="#444", line_dash="dot",
                                        line_width=1, annotation_text="  $100k start",
                                        annotation_font_color="#555")
                     fig_hist.update_layout(**_layout(
-                        height=320, uirevision="vs_spy_hist",
+                        height=350, uirevision="vs_spy_hist",
                         dragmode="pan",
                         title=dict(text="Portfolio vs S&P 500 — both normalized to $100k at inception",
                                    font=dict(size=12)),
                         yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
-                        xaxis=dict(type="date", tickformat="%b %d", rangeslider=dict(visible=False)),
+                        xaxis=dict(type="date", tickformat="%b %d",
+                                   rangeslider=dict(visible=False)),
                         margin=dict(l=70),
                     ))
                     st.plotly_chart(fig_hist, theme=None, use_container_width=True,
-                                   config={"scrollZoom": True, "displayModeBar": False})
+                                   config={"scrollZoom": True, "displayModeBar": True})
 
-                    # Daily comparison table
+                    # Daily breakdown — every trading day
                     st.markdown('<div class="section-head">Daily Breakdown</div>',
                                 unsafe_allow_html=True)
-                    if len(common) > 0:
-                        tbl_rows = []
-                        for d in reversed(common):
-                            pr = float(port_ret[d]) if d in port_ret.index else 0.0
-                            sr = float(spy_ret[d]) if d in spy_ret.index else 0.0
-                            tbl_rows.append({
-                                "Date"         : d.strftime("%Y-%m-%d"),
-                                "Portfolio %"  : round(pr, 2),
-                                "S&P 500 %"    : round(sr, 2),
-                                "Alpha"        : round(pr - sr, 2),
-                                "Beating S&P"  : "✓" if pr > sr else "✗",
-                            })
+                    # Build table from ALL aligned dates (including inception)
+                    tbl_rows = []
+                    for d in reversed(list(hist_full.index)):
+                        pr = float(port_ret[d]) if d in port_ret.index else 0.0
+                        sr = float(spy_ret[d])  if d in spy_ret.index  else 0.0
+                        pv_d = float(hist_full[d])
+                        sv_d = float(spy_norm[d]) if d in spy_norm.index else 0.0
+                        tbl_rows.append({
+                            "Date"         : d.strftime("%Y-%m-%d"),
+                            "Portfolio $"  : round(pv_d, 0),
+                            "Portfolio %"  : round(pr, 2),
+                            "S&P 500 %"    : round(sr, 2),
+                            "Alpha"        : round(pr - sr, 2),
+                            "Beating S&P"  : "✓" if pr > sr else ("—" if pr == sr == 0 else "✗"),
+                        })
+                    if tbl_rows:
                         tbl = pd.DataFrame(tbl_rows)
 
                         def _color_alpha(v):
@@ -1432,13 +1677,14 @@ def main():
                             tbl.style
                             .map(_color_alpha, subset=["Portfolio %", "S&P 500 %", "Alpha"])
                             .map(_color_beat, subset=["Beating S&P"])
-                            .format({"Portfolio %": "{:+.2f}%", "S&P 500 %": "{:+.2f}%",
+                            .format({"Portfolio $": "${:,.0f}",
+                                     "Portfolio %": "{:+.2f}%", "S&P 500 %": "{:+.2f}%",
                                      "Alpha": "{:+.2f}%"}),
                             use_container_width=True, hide_index=True,
                         )
 
                     st.caption(
-                        "Beta and correlation are meaningful only with 20+ days of data. "
+                        "Beta requires 5+ trading days of data. "
                         "Alpha = portfolio daily return − ^GSPC daily return. "
                         "Both series normalized to $100k at portfolio inception date."
                     )

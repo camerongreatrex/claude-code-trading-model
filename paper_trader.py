@@ -49,11 +49,91 @@ from pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 from pipeline.feature_engineering import engineer
 from pipeline.signal_generation import generate, load_macro
 from pipeline.portfolio import atr_sizes, apply_macro_multiplier, CAPITAL, RISK_PER_TRADE, MAX_POSITION_PCT
+from pipeline.risk_model import estimate_covariance, risk_parity_weights, portfolio_risk
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = float(CAPITAL)          # same as portfolio.py ($100k)
 COMMISSION_PCT  = 0.0005                  # 0.05% per side — matches backtest
 ET_ZONE         = ZoneInfo("America/New_York")
+
+# ── Strategy configuration ────────────────────────────────────────────────────
+# Maps backtest method name → paper trading behaviour.
+#   signal_col : which generate() output column drives entry/exit
+#   sizing     : "atr" (risk-normalised) or "equal" (capital / n_longs)
+#   mom_tilt   : apply ±30% cross-sectional 63-day momentum tilt to sizing
+STRATEGIES = {
+    # ── Regime-signal strategies ──────────────────────────────────────────────
+    "equal_weight":         {"signal_col": "signal_regime", "sizing": "equal",  "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "atr_sized":            {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "atr_pca":              {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": True,  "dd_control": False, "macro": False},
+    "atr_pca_macro":        {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": True,  "dd_control": False, "macro": True},
+    "equal_wt_dd_control":  {"signal_col": "signal_regime", "sizing": "equal",  "mom_tilt": False, "pca_scale": False, "dd_control": True,  "macro": False},
+    "regime_vol_target":    {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "fast_atr":             {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    # ── Multi-signal strategies ───────────────────────────────────────────────
+    "multi_equal_weight":   {"signal_col": "signal_multi",  "sizing": "equal",  "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_atr_pure":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_atr_macro":      {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
+    "multi_mom_tilt":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_fast_atr":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_fast_mom_tilt":  {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    # ── Risk-parity strategies ────────────────────────────────────────────────
+    "risk_parity":          {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "rp_macro":             {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
+    "multi_rp":             {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_rp_mom":         {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    # ── Full-stack composite (all overlays) ───────────────────────────────────
+    "multi_rp_full":        {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": True,  "pca_scale": True,  "dd_control": True,  "macro": True},
+    "multi_atr_full":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": True,  "dd_control": True,  "macro": True},
+}
+
+# Normalize oos_selection method names (spaces/hyphens → underscores) → STRATEGIES key
+_OOS_NAME_MAP = {
+    "equal weight":         "equal_weight",
+    "ATR sized":            "atr_sized",
+    "ATR + PCA":            "atr_pca",
+    "ATR + PCA + macro":    "atr_pca_macro",
+    "equal wt + DD control":"equal_wt_dd_control",
+    "regime + vol target":  "regime_vol_target",
+    "multi equal weight":   "multi_equal_weight",
+    "multi_atr_pure":       "multi_atr_pure",
+    "multi_atr_macro":      "multi_atr_macro",
+    "multi_mom_tilt":       "multi_mom_tilt",
+    "multi_fast_atr":       "multi_fast_atr",
+    "multi_fast_mom_tilt":  "multi_fast_mom_tilt",
+    "fast_atr":             "fast_atr",
+    "risk parity":          "risk_parity",
+    "rp_macro":             "rp_macro",
+}
+
+
+def _best_oos_strategy() -> str:
+    """Read oos_selection.parquet and return the strategy key with highest OOS Sharpe."""
+    try:
+        oos = pd.read_parquet("data/results/oos_selection.parquet")
+        best_method = oos.loc[oos["oos_sharpe"].idxmax(), "method"]
+        key = _OOS_NAME_MAP.get(best_method, best_method.replace(" ", "_").replace("-", "_").lower())
+        if key in STRATEGIES:
+            return key
+    except Exception:
+        pass
+    return "multi_mom_tilt"  # hardcoded fallback
+
+
+def get_active_strategy() -> tuple:
+    """
+    Return (strategy_key, config_dict) for the active paper trading strategy.
+
+    Priority:
+      1. state.json "strategy" field (persisted choice)
+      2. Best OOS Sharpe from oos_selection.parquet
+      3. Fallback: multi_mom_tilt
+    """
+    state = load_state()
+    key = state.get("strategy", "") if state else ""
+    if key not in STRATEGIES:
+        key = _best_oos_strategy()
+    return key, STRATEGIES[key]
 
 
 def _today_et() -> str:
@@ -195,41 +275,27 @@ def _fetch_daily(ticker: str, lookback_days: int = 700,
     return df
 
 
-def fetch_intraday_batch(tickers: list) -> dict:
+def fetch_intraday_batch(tickers: list, period: str = "5d") -> dict:
     """
-    Fetch today's 5-minute OHLCV bars for a batch of tickers.
+    Fetch 5-minute OHLCV bars for a batch of tickers.
 
     Used by the dashboard's intraday equity curve and the VS S&P chart.
-    Returns only bars within today's regular trading session (09:25–16:05 ET).
-
-    Key implementation details:
-      - Uses yf.Ticker().history() rather than yf.download() — the Ticker API
-        returns tz-aware America/New_York timestamps directly, avoiding the
-        UTC-to-ET conversion bug that caused morning bars to be dropped.
-      - period="2d" is used instead of period="1d" because yfinance sometimes
-        returns incomplete early-session data with period="1d" during live hours.
-      - The market-hours filter MUST run after tz_convert() — comparing UTC
-        timestamps against ET thresholds would silently drop all morning bars.
+    Returns only bars within regular trading sessions (09:30–16:00 ET).
 
     Args:
         tickers: List of ticker symbols to fetch (^GSPC always included by caller).
+        period:  yfinance period string — "5d" returns ~5 days of 5-min bars,
+                 "2d" returns today + yesterday.  Max for 5-min is "60d".
 
     Returns:
         Dict[ticker -> DataFrame] where each DataFrame has columns
         [Open, High, Low, Close, Volume] indexed by timezone-naive ET strings.
         Tickers that fail are silently omitted.
     """
-    now_et    = pd.Timestamp.now(tz='America/New_York')
-    today_str = now_et.strftime('%Y-%m-%d')
-    mkt_open  = pd.Timestamp(today_str + " 09:25:00")   # naive ET
-    mkt_close = pd.Timestamp(today_str + " 16:05:00")   # naive ET
-
     results = {}
     for ticker in tickers:
         try:
-            # Ticker.history() returns tz-aware America/New_York timestamps
-            # directly — more complete during live market hours than yf.download()
-            raw = yf.Ticker(ticker).history(period="2d", interval="5m")
+            raw = yf.Ticker(ticker).history(period=period, interval="5m")
             if raw.empty:
                 continue
             if isinstance(raw.columns, pd.MultiIndex):
@@ -237,8 +303,11 @@ def fetch_intraday_batch(tickers: list) -> dict:
             # Convert tz-aware ET → naive ET strings (wall-clock, DST-correct)
             et_idx = raw.index.tz_convert('America/New_York')
             raw.index = pd.DatetimeIndex(et_idx.strftime('%Y-%m-%d %H:%M:%S'))
-            # Filter to today's regular trading hours (comparison is naive ET vs naive ET)
-            raw = raw[(raw.index >= mkt_open) & (raw.index <= mkt_close)]
+            # Filter to regular trading hours only (all days)
+            _h = raw.index.hour
+            _m = raw.index.minute
+            _time_mins = _h * 60 + _m
+            raw = raw[(_time_mins >= 9 * 60 + 30) & (_time_mins <= 16 * 60)]
             if not raw.empty:
                 results[ticker] = raw
         except Exception:
@@ -264,14 +333,21 @@ def compute_live_signals() -> dict:
 
     Returns:
         Dict[ticker -> signal_info_dict] where each dict contains:
-          signal    — 0 or 1 (regime signal after all post-processors)
-          composite — 0 or 1 (score-based signal)
-          close     — latest adjusted close price
-          atr       — latest 14-day ATR
-          rsi       — latest RSI-14
-          date      — string date of the latest available bar
+          signal        — 0 or 1 (trade decision, from the active strategy's signal column)
+          signal_regime — 0 or 1 (basic MA crossover)
+          signal_multi  — 0 or 1 (MA crossover + breakout + dip-buy)
+          composite     — 0 or 1 (score-based signal)
+          close         — latest adjusted close price
+          atr           — latest 14-day ATR
+          rsi           — latest RSI-14
+          ret_63d       — 63-day return (for cross-sectional momentum tilt)
+          date          — string date of the latest available bar
         Tickers that fail (network error, insufficient history) are omitted.
     """
+    strat_key, strat_cfg = get_active_strategy()
+    sig_col = strat_cfg["signal_col"]
+    print(f"  Strategy: {strat_key}  (signal={sig_col})\n")
+
     macro   = load_macro()
     results = {}
 
@@ -286,11 +362,22 @@ def compute_live_signals() -> dict:
                 print("no signal data")
                 continue
 
-            latest_sig  = int(sig["signal_regime"].iloc[-1])
-            latest_comp = int(sig["signal_composite"].iloc[-1])
-            latest_atr  = float(feat["atr_14"].iloc[-1])
-            latest_close= float(feat["Close"].iloc[-1])
-            latest_rsi  = float(feat["rsi_14"].iloc[-1])
+            latest_regime = int(sig["signal_regime"].iloc[-1])
+            latest_multi  = int(sig["signal_multi"].iloc[-1])
+            latest_comp   = int(sig["signal_composite"].iloc[-1])
+            latest_atr    = float(feat["atr_14"].iloc[-1])
+            latest_close  = float(feat["Close"].iloc[-1])
+            latest_rsi    = float(feat["rsi_14"].iloc[-1])
+
+            # Active signal from the chosen strategy
+            latest_active = int(sig[sig_col].iloc[-1]) if sig_col in sig.columns else latest_regime
+
+            # 63-day return for cross-sectional momentum tilt sizing
+            _closes = feat["Close"]
+            if len(_closes) >= 63:
+                latest_ret63 = float(_closes.iloc[-1] / _closes.iloc[-63] - 1)
+            else:
+                latest_ret63 = 0.0
 
             # Donchian breakout detection
             try:
@@ -308,27 +395,31 @@ def compute_live_signals() -> dict:
                 latest_breakout = 0
                 latest_squeeze  = 0
 
-            # For bonds/commodities with signal=-1 (short), log and keep signal=0
-            # for paper trading execution but preserve the raw signal for display.
-            asset_cls   = ASSET_CLASS.get(ticker, "")
-            paper_signal = latest_sig
-            if asset_cls in ("bond", "commodity") and latest_sig == -1:
+            # For bonds/commodities with signal=-1 (short), keep signal=0
+            asset_cls    = ASSET_CLASS.get(ticker, "")
+            paper_signal = latest_active
+            if asset_cls in ("bond", "commodity") and latest_active == -1:
                 print(f"  [{ticker}] short signal on {asset_cls} — keeping flat for paper trading")
                 paper_signal = 0
 
             results[ticker] = {
-                "signal"       : paper_signal,
-                "raw_signal"   : latest_sig,
-                "composite"    : latest_comp,
-                "close"        : latest_close,
-                "atr"          : latest_atr,
-                "rsi"          : latest_rsi,
-                "breakout"     : latest_breakout,
-                "squeeze"      : latest_squeeze,
-                "asset_class"  : asset_cls,
-                "date"         : str(feat.index[-1].date()),
+                "signal"        : paper_signal,
+                "signal_regime" : latest_regime,
+                "signal_multi"  : latest_multi,
+                "raw_signal"    : latest_active,
+                "composite"     : latest_comp,
+                "close"         : latest_close,
+                "atr"           : latest_atr,
+                "rsi"           : latest_rsi,
+                "ret_63d"       : latest_ret63,
+                "breakout"      : latest_breakout,
+                "squeeze"       : latest_squeeze,
+                "asset_class"   : asset_cls,
+                "date"          : str(feat.index[-1].date()),
             }
-            print(f"${latest_close:>8.2f}  {'LONG' if latest_sig else 'FLAT'}")
+            print(f"${latest_close:>8.2f}  {'LONG' if paper_signal else 'FLAT'}"
+                  f"  (regime={'LONG' if latest_regime else 'FLAT'}"
+                  f"  multi={'LONG' if latest_multi else 'FLAT'})")
         except Exception as e:
             print(f"ERROR {e}")
 
@@ -362,6 +453,232 @@ def _atr_size(pv: float, atr: float, price: float) -> float:
     dollar_risk = pv * RISK_PER_TRADE
     dollar_pos  = (dollar_risk / atr) * price
     return min(dollar_pos, pv * MAX_POSITION_PCT)
+
+
+# ── Risk parity sizing (Ledoit-Wolf covariance + ERC weights) ─────────────────
+
+_RP_COV_WINDOW     = 126   # 6 months of daily returns for covariance
+_RP_REBALANCE_DAYS = 21    # recompute weights monthly
+_DD_THRESHOLD      = 0.12  # halve positions when drawdown exceeds 12%
+_DD_SCALE          = 0.5   # scale factor during drawdown
+
+
+def _compute_rp_weights(state: dict, signals: dict) -> dict:
+    """
+    Compute risk-parity weights for all tickers with signal data.
+
+    Uses cached weights from state.json if the last computation was
+    within _RP_REBALANCE_DAYS trading days.  Otherwise fetches 126 days
+    of returns, fits Ledoit-Wolf covariance, and runs ERC fixed-point.
+
+    Returns:
+        Dict[ticker -> weight] (sums to ~1.0 across all tickers).
+        Stored in state["rp_weights"] / state["last_rp_date"] for caching.
+    """
+    today_str = _today_et()
+    cached_date = state.get("last_rp_date", "")
+    cached_weights = state.get("rp_weights", {})
+
+    # Check if cached weights are fresh enough (within 21 trading days)
+    if cached_date and cached_weights:
+        try:
+            days_since = np.busday_count(
+                np.datetime64(cached_date),
+                np.datetime64(today_str),
+            )
+            if days_since < _RP_REBALANCE_DAYS:
+                return cached_weights
+        except Exception:
+            pass
+
+    # Fetch 126 days of returns for all tickers
+    print("  Computing risk-parity weights (Ledoit-Wolf + ERC)...")
+    tickers_with_data = [t for t in TICKER_LIST if t in signals]
+    if len(tickers_with_data) < 3:
+        # Not enough tickers for meaningful covariance
+        equal_w = 1.0 / max(len(tickers_with_data), 1)
+        return {t: equal_w for t in tickers_with_data}
+
+    closes = {}
+    for ticker in tickers_with_data:
+        try:
+            raw = _fetch_daily(ticker, lookback_days=200)
+            if len(raw) >= _RP_COV_WINDOW:
+                closes[ticker] = raw["Close"].iloc[-_RP_COV_WINDOW:]
+        except Exception:
+            pass
+
+    if len(closes) < 3:
+        equal_w = 1.0 / max(len(tickers_with_data), 1)
+        return {t: equal_w for t in tickers_with_data}
+
+    # Build returns DataFrame and estimate covariance
+    close_df = pd.DataFrame(closes).dropna()
+    if len(close_df) < 60:
+        equal_w = 1.0 / len(closes)
+        return {t: equal_w for t in closes}
+
+    log_ret = np.log(close_df / close_df.shift(1)).dropna()
+    try:
+        cov = estimate_covariance(log_ret)
+        weights = risk_parity_weights(cov, max_weight=0.30)
+        rp_dict = {t: float(w) for t, w in zip(log_ret.columns, weights)}
+    except Exception as e:
+        print(f"    RP failed ({e}), using equal weight")
+        rp_dict = {t: 1.0 / len(closes) for t in closes}
+
+    # Cache in state
+    state["rp_weights"]  = rp_dict
+    state["last_rp_date"] = today_str
+    print(f"    {len(rp_dict)} tickers weighted  (top: "
+          f"{sorted(rp_dict.items(), key=lambda x: -x[1])[:3]})")
+    return rp_dict
+
+
+def _pca_scale(state: dict, signals: dict) -> float:
+    """
+    Compute PCA-based correlation scaling factor.
+
+    When portfolio correlations spike (crisis), scale down positions.
+    Uses first principal component variance ratio vs ideal (1/N).
+
+    Returns:
+        Scale factor in [0.3, 1.0].  1.0 = normal correlations, 0.3 = crisis.
+    """
+    tickers_with_data = [t for t in TICKER_LIST if t in signals]
+    if len(tickers_with_data) < 5:
+        return 1.0
+
+    closes = {}
+    for ticker in tickers_with_data[:20]:  # limit fetches
+        try:
+            raw = _fetch_daily(ticker, lookback_days=180)
+            if len(raw) >= 126:
+                closes[ticker] = raw["Close"].iloc[-126:]
+        except Exception:
+            pass
+
+    if len(closes) < 5:
+        return 1.0
+
+    close_df = pd.DataFrame(closes).dropna()
+    if len(close_df) < 60:
+        return 1.0
+
+    log_ret = np.log(close_df / close_df.shift(1)).dropna()
+    try:
+        cov = np.cov(log_ret.values, rowvar=False)
+        eigvals = np.linalg.eigvalsh(cov)
+        pc1_share = eigvals[-1] / eigvals.sum() if eigvals.sum() > 0 else 1.0
+        ideal = 1.0 / len(closes)
+        scale = float(np.clip(ideal / pc1_share, 0.3, 1.0))
+        return scale
+    except Exception:
+        return 1.0
+
+
+def _drawdown_scale(state: dict) -> float:
+    """
+    Soft circuit breaker: return 0.5 if portfolio drawdown > 12%.
+
+    Uses history.csv to compute current drawdown from peak portfolio value.
+    """
+    hist = load_history()
+    if hist.empty or len(hist) < 2:
+        return 1.0
+    pv_series = hist["portfolio_value"].values
+    peak = np.maximum.accumulate(pv_series)
+    dd = (pv_series[-1] - peak[-1]) / peak[-1] if peak[-1] > 0 else 0.0
+    if dd < -_DD_THRESHOLD:
+        return _DD_SCALE
+    return 1.0
+
+
+def _macro_live_multiplier() -> float:
+    """
+    Fetch current VIX and yield curve to compute macro sizing multiplier.
+
+    Returns multiplier in [0.5, 1.25]:
+      VIX > 30  → fear   → 0.5×
+      VIX < 15  → calm   → 1.0-1.25×
+      Yield curve inverted → 0.8×
+    """
+    try:
+        vix_raw = yf.download("^VIX", period="5d", progress=False,
+                              multi_level_index=False)
+        if vix_raw.empty:
+            return 1.0
+        vix = float(vix_raw["Close"].iloc[-1])
+
+        # VIX-based multiplier
+        if vix > 30:
+            mult = 0.50
+        elif vix > 25:
+            mult = 0.70
+        elif vix > 20:
+            mult = 0.85
+        elif vix < 15:
+            mult = 1.15
+        else:
+            mult = 1.0
+
+        # Yield curve adjustment (10Y - 2Y)
+        try:
+            tnx = yf.download("^TNX", period="5d", progress=False,
+                              multi_level_index=False)
+            twoy = yf.download("2YY=F", period="5d", progress=False,
+                               multi_level_index=False)
+            if not tnx.empty and not twoy.empty:
+                spread = float(tnx["Close"].iloc[-1]) - float(twoy["Close"].iloc[-1])
+                if spread < 0:
+                    mult *= 0.80  # inverted curve
+        except Exception:
+            pass
+
+        return float(np.clip(mult, 0.5, 1.25))
+    except Exception:
+        return 1.0
+
+
+def _compute_position_size(
+    pv: float, ticker: str, sig: dict, strat_cfg: dict,
+    rp_weights: dict, mom_rank: dict,
+    pca_scale: float, dd_scale: float, macro_mult: float,
+) -> float:
+    """
+    Unified position sizing: combines ATR/equal/RP base with overlays.
+
+    Layers (applied multiplicatively):
+      1. Base size: ATR, equal-weight, or risk-parity
+      2. Momentum tilt: ±30% based on 63-day return rank
+      3. PCA scale: shrink during correlation spikes
+      4. Drawdown control: halve positions at >12% DD
+      5. Macro multiplier: VIX + yield curve
+      6. Cap at MAX_POSITION_PCT × pv
+    """
+    # Base sizing
+    sizing = strat_cfg.get("sizing", "atr")
+    if sizing == "rp" and ticker in rp_weights:
+        base = pv * rp_weights[ticker]
+    elif sizing == "atr":
+        base = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1))
+    else:
+        base = pv / max(len(TICKER_LIST), 1)
+
+    # Momentum tilt
+    if strat_cfg.get("mom_tilt", False):
+        tilt = 0.70 + 0.60 * mom_rank.get(ticker, 0.5)
+        base *= tilt
+
+    # Overlays
+    if strat_cfg.get("pca_scale", False):
+        base *= pca_scale
+    if strat_cfg.get("dd_control", False):
+        base *= dd_scale
+    if strat_cfg.get("macro", False):
+        base *= macro_mult
+
+    return min(base, pv * MAX_POSITION_PCT)
 
 
 # ── Trade execution ───────────────────────────────────────────────────────────
@@ -514,8 +831,11 @@ def init_positions():
         print(f"Already initialised.  Delete {STATE_FILE} to reset.")
         return
 
+    strat_key, strat_cfg = get_active_strategy()
     today_str = str(date.today())
-    print(f"Initialising paper portfolio  ({today_str})\n")
+    print(f"Initialising paper portfolio  ({today_str})")
+    print(f"Strategy: {strat_key}  (signal={strat_cfg['signal_col']}, "
+          f"sizing={strat_cfg['sizing']}, mom_tilt={strat_cfg['mom_tilt']})\n")
     print("Running strategy pipeline on live data...\n")
 
     signals = compute_live_signals()
@@ -528,21 +848,41 @@ def init_positions():
         "initialized_date": today_str,
         "last_eod_date"   : today_str,
         "portfolio_value" : INITIAL_CAPITAL,
+        "strategy"        : strat_key,
     }
 
     longs = [t for t, s in signals.items() if s["signal"] == 1]
-    print(f"\n{len(longs)}/{len(signals)} tickers: LONG signal — entering positions...\n")
+    print(f"\n{len(longs)}/{len(signals)} tickers: LONG — entering positions...\n")
 
-    # Distribute capital across ALL active signals.
-    # ATR sizing can exceed 100% of capital when many tickers are LONG simultaneously,
-    # so we cap each position at capital / n_longs to ensure all signals are represented.
     per_position_cap = (INITIAL_CAPITAL * 0.97) / max(len(longs), 1)
+
+    # Compute all sizing overlays
+    rp_weights = _compute_rp_weights(state, signals) if strat_cfg.get("sizing") == "rp" else {}
+    mom_rank = {}
+    if strat_cfg.get("mom_tilt") and longs:
+        _r63_init = {t: signals[t].get("ret_63d", 0.0) for t in longs}
+        _sorted_init = sorted(_r63_init.items(), key=lambda x: x[1])
+        _n_init = len(_sorted_init)
+        mom_rank = {t: i / max(_n_init - 1, 1)
+                    for i, (t, _) in enumerate(_sorted_init)}
+    pca_s  = _pca_scale(state, signals) if strat_cfg.get("pca_scale") else 1.0
+    dd_s   = 1.0   # no drawdown on init (starting fresh)
+    macro_m = _macro_live_multiplier() if strat_cfg.get("macro") else 1.0
+
+    if pca_s < 1.0:
+        print(f"  PCA scale: {pca_s:.2f}  (correlation elevated)")
+    if macro_m != 1.0:
+        print(f"  Macro multiplier: {macro_m:.2f}")
 
     for ticker in longs:
         sig  = signals[ticker]
-        size = min(_atr_size(INITIAL_CAPITAL, sig["atr"], sig["close"]), per_position_cap)
+        size = _compute_position_size(
+            INITIAL_CAPITAL, ticker, sig, strat_cfg,
+            rp_weights, mom_rank, pca_s, dd_s, macro_m,
+        )
+        size = min(size, per_position_cap)
         state = _buy(state, ticker, sig["close"], size,
-                     reason="init_golden_cross", trade_date=today_str)
+                     reason=f"init_{strat_key}", trade_date=today_str)
 
     pv = _portfolio_value(state, prices)
     # Store INITIAL_CAPITAL as the baseline so "Portfolio Today" on day 1
@@ -550,9 +890,9 @@ def init_positions():
     state["portfolio_value"] = INITIAL_CAPITAL
 
     _append_csv(HISTORY_FILE, {
-        "date": today_str, "portfolio_value": round(pv, 2),
+        "date": today_str, "portfolio_value": INITIAL_CAPITAL,
         "cash": round(state["cash"], 2),
-        "invested": round(pv - state["cash"], 2),
+        "invested": round(INITIAL_CAPITAL - state["cash"], 2),
         "n_positions": len(state["positions"]), "daily_return": 0.0,
     })
     save_state(state)
@@ -577,26 +917,25 @@ def end_of_day_update():
     the dashboard's "Run EOD Update" button and directly from the CLI.
 
     Execution order:
-      1. Load current state (positions, cash, previous portfolio value)
+      1. Load current state + active strategy from state.json
       2. Fetch live signals via compute_live_signals()
-      3. EXITS first: sell any open position where signal_regime == 0
-         (death cross fired, trailing stop hit, or RSI filter — the strategy
-         layer already decided; this function just executes)
-      4. ENTRIES: buy any ticker where signal_regime == 1 and not yet long,
-         sized by ATR, if sufficient cash is available
+      3. EXITS first: sell any position where the active signal == 0
+      4. ENTRIES: buy any ticker where active signal == 1 and not already long,
+         sized per the strategy's sizing config (equal/ATR ± momentum tilt)
       5. Snapshot: compute new portfolio value, daily return, total return;
          append to history.csv; save updated state.json
-
-    Note:
-      The signal used here is ``signal_regime`` (the primary MA-crossover
-      signal with all post-processors), NOT ``signal_composite``.  The
-      composite score is shown on the dashboard for informational purposes
-      but the regime signal is what actually drives trades.
     """
     state = load_state()
     if not state:
         print("No portfolio found.  Run 'python paper_trader.py init' first.")
         return
+
+    strat_key = state.get("strategy", "")
+    strat_cfg = STRATEGIES.get(strat_key)
+    if not strat_cfg:
+        strat_key = _best_oos_strategy()
+        strat_cfg = STRATEGIES[strat_key]
+        state["strategy"] = strat_key
 
     today_str  = _today_et()
 
@@ -618,34 +957,61 @@ def end_of_day_update():
     signals = compute_live_signals()
     prices  = {t: s["close"] for t, s in signals.items()}
 
-    # ── Exits: sell anything where signal_regime flipped to 0 ────────────────
+    # ── Exits: sell anything where active signal flipped to 0 ────────────────
     for ticker in list(state["positions"]):
         if ticker not in signals:
             continue
         if signals[ticker]["signal"] == 0:
-            # Signal is 0 — could be death cross, trailing stop, or any filter.
-            # The strategy layer already decided; execution just acts on it.
             state = _sell(state, ticker, prices[ticker],
                           reason="signal_exit", trade_date=today_str)
 
-    # ── Entries: buy anything where signal_regime is 1 and not already long ──
+    # ── Entries: buy anything where active signal is 1 and not already long ──
     current_longs = set(state["positions"])
     pv = _portfolio_value(state, prices)
 
-    for ticker in TICKER_LIST:
-        if ticker in current_longs or ticker not in signals:
-            continue
-        if signals[ticker]["signal"] == 1:
-            sig  = signals[ticker]
-            size = _atr_size(pv, sig["atr"], sig["close"])
-            if state["cash"] >= size * 1.01:
-                state = _buy(state, ticker, sig["close"], size,
-                             reason="signal_entry", trade_date=today_str)
+    entry_candidates = [t for t in TICKER_LIST
+                        if t not in current_longs and t in signals
+                        and signals[t]["signal"] == 1]
+
+    # Compute overlays once for all entries
+    rp_weights = _compute_rp_weights(state, signals) if strat_cfg.get("sizing") == "rp" else {}
+    mom_rank = {}
+    if strat_cfg.get("mom_tilt") and entry_candidates:
+        ret63_vals = {t: signals[t].get("ret_63d", 0.0) for t in entry_candidates}
+        sorted_by_ret = sorted(ret63_vals.items(), key=lambda x: x[1])
+        n = len(sorted_by_ret)
+        mom_rank = {t: i / max(n - 1, 1) for i, (t, _) in enumerate(sorted_by_ret)}
+    pca_s   = _pca_scale(state, signals)  if strat_cfg.get("pca_scale") else 1.0
+    dd_s    = _drawdown_scale(state)       if strat_cfg.get("dd_control") else 1.0
+    macro_m = _macro_live_multiplier()     if strat_cfg.get("macro")      else 1.0
+
+    if pca_s < 1.0:
+        print(f"  PCA scale: {pca_s:.2f}")
+    if dd_s < 1.0:
+        print(f"  Drawdown control: {dd_s:.1f}x (DD > {_DD_THRESHOLD*100:.0f}%)")
+    if macro_m != 1.0:
+        print(f"  Macro multiplier: {macro_m:.2f}")
+
+    for ticker in entry_candidates:
+        sig = signals[ticker]
+        size = _compute_position_size(
+            pv, ticker, sig, strat_cfg,
+            rp_weights, mom_rank, pca_s, dd_s, macro_m,
+        )
+        if state["cash"] >= size * 1.01:
+            state = _buy(state, ticker, sig["close"], size,
+                         reason="signal_entry", trade_date=today_str)
 
     # ── Snapshot ──────────────────────────────────────────────────────────────
     pv        = _portfolio_value(state, prices)
     daily_ret = (pv / prev_value - 1) if prev_value > 0 else 0.0
     total_ret = (pv / INITIAL_CAPITAL - 1) * 100
+
+    # Store last EOD close per position so the dashboard shows correct
+    # unrealised P&L when the market is closed and live_prices is empty.
+    for _t, _p in state["positions"].items():
+        if _t in prices:
+            _p["last_close"] = prices[_t]
 
     state["portfolio_value"] = pv
     state["last_eod_date"]   = today_str
@@ -711,6 +1077,15 @@ def _compute_signals_as_of(as_of: date) -> dict:
     Returns:
         Dict[ticker -> signal_info_dict], same schema as compute_live_signals().
     """
+    # Use the strategy persisted in state.json
+    _state = load_state()
+    _skey = _state.get("strategy", "") if _state else ""
+    _scfg = STRATEGIES.get(_skey)
+    if not _scfg:
+        _skey = _best_oos_strategy()
+        _scfg = STRATEGIES[_skey]
+    _sig_col = _scfg["signal_col"]
+
     macro   = load_macro()
     results = {}
 
@@ -728,13 +1103,24 @@ def _compute_signals_as_of(as_of: date) -> dict:
             if sig.empty:
                 continue
 
+            _closes = feat["Close"]
+            _ret63 = float(_closes.iloc[-1] / _closes.iloc[-63] - 1) if len(_closes) >= 63 else 0.0
+            _active = int(sig[_sig_col].iloc[-1]) if _sig_col in sig.columns else int(sig["signal_regime"].iloc[-1])
+            _regime = int(sig["signal_regime"].iloc[-1])
+            _ac = ASSET_CLASS.get(ticker, "")
+            _paper = _active
+            if _ac in ("bond", "commodity") and _active == -1:
+                _paper = 0
             results[ticker] = {
-                "signal"   : int(sig["signal_regime"].iloc[-1]),
-                "composite": int(sig["signal_composite"].iloc[-1]),
-                "close"    : float(feat["Close"].iloc[-1]),
-                "atr"      : float(feat["atr_14"].iloc[-1]),
-                "rsi"      : float(feat["rsi_14"].iloc[-1]),
-                "date"     : str(as_of),
+                "signal"        : _paper,
+                "signal_regime" : _regime,
+                "raw_signal"    : _active,
+                "composite"     : int(sig["signal_composite"].iloc[-1]),
+                "close"         : float(_closes.iloc[-1]),
+                "atr"           : float(feat["atr_14"].iloc[-1]),
+                "rsi"           : float(feat["rsi_14"].iloc[-1]),
+                "ret_63d"       : _ret63,
+                "date"          : str(as_of),
             }
         except Exception as e:
             print(f"  {ticker}: {e}")
@@ -786,21 +1172,47 @@ def _end_of_day_update_for_date(as_of: date) -> None:
             state = _sell(state, ticker, prices[ticker],
                           reason="catchup_signal_exit", trade_date=as_of_str)
 
-    # Entries
+    # Entries (strategy-aware sizing)
+    _skey = state.get("strategy", "")
+    _scfg = STRATEGIES.get(_skey)
+    if not _scfg:
+        _skey = _best_oos_strategy()
+        _scfg = STRATEGIES[_skey]
+
     current_longs = set(state["positions"])
     pv = _portfolio_value(state, prices)
-    for ticker in TICKER_LIST:
-        if ticker in current_longs or ticker not in signals:
-            continue
-        if signals[ticker]["signal"] == 1:
-            size = _atr_size(pv, signals[ticker]["atr"], signals[ticker]["close"])
-            if state["cash"] >= size * 1.01:
-                state = _buy(state, ticker, signals[ticker]["close"], size,
-                             reason="catchup_signal_entry", trade_date=as_of_str)
+    entry_cands = [t for t in TICKER_LIST
+                   if t not in current_longs and t in signals
+                   and signals[t]["signal"] == 1]
+
+    # Compute overlays (lightweight for catchup — skip PCA/macro to avoid extra fetches)
+    _rp_w = _compute_rp_weights(state, signals) if _scfg.get("sizing") == "rp" else {}
+    _mrank = {}
+    if _scfg.get("mom_tilt") and entry_cands:
+        _r63 = {t: signals[t].get("ret_63d", 0.0) for t in entry_cands}
+        _sorted = sorted(_r63.items(), key=lambda x: x[1])
+        _n = len(_sorted)
+        _mrank = {t: i / max(_n - 1, 1) for i, (t, _) in enumerate(_sorted)}
+    _dd_s = _drawdown_scale(state) if _scfg.get("dd_control") else 1.0
+
+    for ticker in entry_cands:
+        size = _compute_position_size(
+            pv, ticker, signals[ticker], _scfg,
+            _rp_w, _mrank, 1.0, _dd_s, 1.0,  # skip PCA/macro in catchup
+        )
+        if state["cash"] >= size * 1.01:
+            state = _buy(state, ticker, signals[ticker]["close"], size,
+                         reason="catchup_signal_entry", trade_date=as_of_str)
 
     # Snapshot
     pv        = _portfolio_value(state, prices)
     daily_ret = (pv / prev_value - 1) if prev_value > 0 else 0.0
+
+    # Store last close per position for dashboard after-hours display
+    for _t, _p in state["positions"].items():
+        if _t in prices:
+            _p["last_close"] = prices[_t]
+
     state["portfolio_value"] = pv
     state["last_eod_date"]   = as_of_str
     save_state(state)
@@ -1032,8 +1444,14 @@ def print_status():
         return
     pv        = state.get("portfolio_value", INITIAL_CAPITAL)
     total_ret = (pv / INITIAL_CAPITAL - 1) * 100
+    strat_key = state.get("strategy", "unknown")
+    strat_cfg = STRATEGIES.get(strat_key, {})
     print(f"\nPaper Portfolio  ({state.get('last_eod_date','?')})")
     print(f"{'='*52}")
+    print(f"  Strategy        : {strat_key}")
+    if strat_cfg:
+        print(f"                    signal={strat_cfg['signal_col']}, "
+              f"sizing={strat_cfg['sizing']}, mom_tilt={strat_cfg['mom_tilt']}")
     print(f"  Portfolio value : ${pv:>10,.2f}")
     print(f"  Cash            : ${state['cash']:>10,.2f}")
     print(f"  Total return    : {total_ret:>+8.2f}%")
@@ -1063,12 +1481,53 @@ def print_status():
         print(f"  (could not fetch live signals: {e})")
 
 
+def set_strategy():
+    """
+    Change the active paper trading strategy.
+
+    Usage:
+      python paper_trader.py strategy <name>
+      python paper_trader.py strategy           (lists available strategies)
+    """
+    state = load_state()
+    if not state:
+        print("No portfolio found.  Run 'python paper_trader.py init' first.")
+        return
+
+    if len(sys.argv) < 3:
+        best = _best_oos_strategy()
+        current = state.get("strategy", "unknown")
+        print(f"\nCurrent strategy: {current}")
+        print(f"Best OOS strategy: {best}\n")
+        print("Available strategies:")
+        print(f"  {'Name':<25} {'Signal':<18} {'Sizing':<8} {'Mom Tilt'}")
+        print(f"  {'-'*65}")
+        for k, v in STRATEGIES.items():
+            marker = " <-- active" if k == current else (" <-- best OOS" if k == best else "")
+            print(f"  {k:<25} {v['signal_col']:<18} {v['sizing']:<8} {v['mom_tilt']}{marker}")
+        return
+
+    new_key = sys.argv[2]
+    if new_key not in STRATEGIES:
+        print(f"Unknown strategy: {new_key}")
+        print(f"Available: {', '.join(STRATEGIES.keys())}")
+        return
+
+    state["strategy"] = new_key
+    save_state(state)
+    cfg = STRATEGIES[new_key]
+    print(f"Strategy changed to: {new_key}")
+    print(f"  signal={cfg['signal_col']}, sizing={cfg['sizing']}, mom_tilt={cfg['mom_tilt']}")
+    print("Takes effect on next EOD update.")
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     {
-        "init":   init_positions,
-        "run":    end_of_day_update,
-        "status": print_status,
-    }.get(cmd, lambda: print(f"Unknown: {cmd}\nUsage: python paper_trader.py [init|run|status]"))()
+        "init":     init_positions,
+        "run":      end_of_day_update,
+        "status":   print_status,
+        "strategy": set_strategy,
+    }.get(cmd, lambda: print(f"Unknown: {cmd}\nUsage: python paper_trader.py [init|run|status|strategy]"))()
