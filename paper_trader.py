@@ -60,6 +60,13 @@ def _today_et() -> str:
     """Today's date string in US Eastern time (handles DST correctly)."""
     return str(datetime.now(ET_ZONE).date())
 
+
+def _is_trading_day(d: date = None) -> bool:
+    """Return True if d (default: today ET) is a weekday (Mon–Fri)."""
+    if d is None:
+        d = datetime.now(ET_ZONE).date()
+    return d.weekday() < 5  # 5=Sat, 6=Sun
+
 PT_DIR       = Path("data/paper_trading")
 STATE_FILE   = PT_DIR / "state.json"
 TRADES_FILE  = PT_DIR / "trades.csv"
@@ -285,13 +292,41 @@ def compute_live_signals() -> dict:
             latest_close= float(feat["Close"].iloc[-1])
             latest_rsi  = float(feat["rsi_14"].iloc[-1])
 
+            # Donchian breakout detection
+            try:
+                _close_s   = feat["Close"]
+                _don_high  = feat["High"].rolling(20).max() if "High" in feat.columns else _close_s.rolling(20).max()
+                _don_low   = feat["Low"].rolling(20).min()  if "Low"  in feat.columns else _close_s.rolling(20).min()
+                _don_w     = (_don_high - _don_low) / _close_s.replace(0, np.nan)
+                _w_rank    = _don_w.rolling(252, min_periods=63).rank(pct=True)
+                _squeeze   = (_w_rank < 0.20)
+                _breakout  = (_close_s >= _don_high)
+                _recent_sq = _squeeze.rolling(5, min_periods=1).max().astype(bool)
+                latest_breakout = int(bool(_breakout.iloc[-1]))
+                latest_squeeze  = int(bool(_recent_sq.iloc[-1]))
+            except Exception:
+                latest_breakout = 0
+                latest_squeeze  = 0
+
+            # For bonds/commodities with signal=-1 (short), log and keep signal=0
+            # for paper trading execution but preserve the raw signal for display.
+            asset_cls   = ASSET_CLASS.get(ticker, "")
+            paper_signal = latest_sig
+            if asset_cls in ("bond", "commodity") and latest_sig == -1:
+                print(f"  [{ticker}] short signal on {asset_cls} — keeping flat for paper trading")
+                paper_signal = 0
+
             results[ticker] = {
-                "signal"     : latest_sig,
-                "composite"  : latest_comp,
-                "close"      : latest_close,
-                "atr"        : latest_atr,
-                "rsi"        : latest_rsi,
-                "date"       : str(feat.index[-1].date()),
+                "signal"       : paper_signal,
+                "raw_signal"   : latest_sig,
+                "composite"    : latest_comp,
+                "close"        : latest_close,
+                "atr"          : latest_atr,
+                "rsi"          : latest_rsi,
+                "breakout"     : latest_breakout,
+                "squeeze"      : latest_squeeze,
+                "asset_class"  : asset_cls,
+                "date"         : str(feat.index[-1].date()),
             }
             print(f"${latest_close:>8.2f}  {'LONG' if latest_sig else 'FLAT'}")
         except Exception as e:
@@ -565,6 +600,11 @@ def end_of_day_update():
 
     today_str  = _today_et()
 
+    # Markets are closed on weekends — skip silently
+    if not _is_trading_day():
+        print(f"Today is {datetime.now(ET_ZONE).strftime('%A')} — markets are closed, skipping EOD.")
+        return
+
     # Skip if already ran today (prevents duplicates from scheduler + manual + GH Actions)
     if state.get("last_eod_date") == today_str:
         print(f"EOD already ran for {today_str} — skipping.")
@@ -719,6 +759,10 @@ def _end_of_day_update_for_date(as_of: date) -> None:
         return
 
     as_of_str  = str(as_of)
+
+    # Skip weekends — no market data, no trades
+    if not _is_trading_day(as_of):
+        return
 
     # Skip if this date was already processed (prevents duplicates from
     # concurrent dashboard + scheduler catch-up or interrupted previous runs)
@@ -977,6 +1021,10 @@ def print_status():
 
     Shows portfolio value, cash, total return, and a list of all open
     positions with shares, entry price, and entry date.
+
+    Also runs compute_live_signals() to display the "Paper Action" column
+    showing what the paper trader would do vs what the raw signal says,
+    coloured orange when they differ (bond/commodity short signals kept flat).
     """
     state = load_state()
     if not state:
@@ -993,6 +1041,26 @@ def print_status():
     for ticker, pos in state["positions"].items():
         print(f"    {ticker:<6}  {pos['shares']:.3f} sh  "
               f"@ ${pos['entry_price']:.2f}  since {pos['entry_date']}")
+
+    # Live signal + paper action table
+    print(f"\n  Live signal state (paper action vs raw signal):")
+    print(f"  {'Ticker':<8} {'Signal':>8} {'Paper Action':>14} {'Note'}")
+    print(f"  {'-'*50}")
+    try:
+        live_sigs = compute_live_signals()
+        for t, s in live_sigs.items():
+            raw_s  = s.get("raw_signal", s["signal"])
+            paper_s = s["signal"]
+            raw_lbl   = "LONG" if raw_s == 1 else ("SHORT" if raw_s == -1 else "FLAT")
+            paper_lbl = "LONG" if paper_s == 1 else "FLAT"
+            note = "(short→flat)" if raw_s == -1 and paper_s == 0 else ""
+            differ = raw_s != paper_s
+            # Use ANSI orange for differing signals in terminal
+            prefix = "\033[33m" if differ else ""
+            suffix = "\033[0m"  if differ else ""
+            print(f"  {prefix}{t:<8} {raw_lbl:>8} {paper_lbl:>14}   {note}{suffix}")
+    except Exception as e:
+        print(f"  (could not fetch live signals: {e})")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

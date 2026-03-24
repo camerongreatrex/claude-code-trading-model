@@ -68,7 +68,7 @@ from .backtester import (
     compute_strategy_returns, sharpe_ratio, max_drawdown,
     calmar_ratio, win_rate, profit_factor, summarise, equity_curve
 )
-from .data_pipeline import TICKER_LIST, ASSET_CLASS
+from .data_pipeline import TICKER_LIST, ASSET_CLASS, HEDGE_MAP
 
 SIGNAL_DIR  = Path("data/signals")
 FEATURE_DIR = Path("data/features")
@@ -299,6 +299,52 @@ def vol_target_sizes(sizes: pd.DataFrame, returns: pd.DataFrame,
     realized_vol = port_ret.rolling(window, min_periods=21).std() * np.sqrt(252)
     realized_vol = realized_vol.replace(0, np.nan).fillna(target_vol)
     scale = (target_vol / realized_vol).clip(0.5, 1.5)
+    return sizes.multiply(scale, axis=0)
+
+
+def simple_vol_scale(
+    sizes: pd.DataFrame,
+    returns: pd.DataFrame,
+    target_vol: float = 0.10,
+    window: int = 21,
+) -> pd.DataFrame:
+    """
+    Scale all position sizes so portfolio realized volatility targets target_vol.
+
+    Uses trailing 21-day portfolio vol (1 trading month) — fast enough to
+    de-lever before a drawdown deepens, without over-reacting to single-day
+    spikes.
+
+    scale = (target_vol / realized_vol).clip(0.5, 1.5).shift(1)
+
+    Clip range:
+      0.5 floor — never cut below half exposure (still want rebound participation)
+      1.5 ceiling — never lever above 1.5× (prevents runaway in 2017-style calm)
+
+    shift(1) ensures today's scale is based on yesterday's trailing vol.
+    No look-ahead bias.
+
+    Why this is more robust than the macro multiplier:
+      ONE input  : portfolio's own trailing realized vol
+      ONE target : 10% annualized (industry standard)
+      ZERO fitted thresholds, regime classifications, or cross-asset relationships
+      Vol clusters and mean-reverts (Mandelbrot 1963, Engle GARCH 1982) —
+      21-day realized vol is a structural property, not a data-mined signal.
+
+    Args:
+        sizes:      Dollar position size DataFrame.
+        returns:    Daily returns DataFrame (aligned to sizes).
+        target_vol: Target annualised portfolio volatility (default 10%).
+        window:     Realized vol window in trading days (default 21 = 1 month).
+
+    Returns:
+        Scaled position size DataFrame.
+    """
+    weights  = sizes.shift(1) / CAPITAL
+    port_ret = (weights * returns.reindex(columns=sizes.columns)).sum(axis=1)
+    realized = port_ret.rolling(window, min_periods=10).std() * np.sqrt(252)
+    realized = realized.replace(0, np.nan).fillna(target_vol)
+    scale    = (target_vol / realized).clip(0.5, 1.5).shift(1).fillna(1.0)
     return sizes.multiply(scale, axis=0)
 
 
@@ -533,6 +579,83 @@ def risk_parity_sizes(
     return apply_macro_multiplier(adjusted)
 
 
+def beta_hedged_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    beta_window: int = 126,
+) -> pd.DataFrame:
+    """
+    ATR-sized long positions in stocks paired with short sector-ETF hedge legs.
+
+    For stocks in HEDGE_MAP where the signal is long (signal == 1):
+      long_size   = ATR-based dollar position (same as atr_sizes)
+      rolling_beta = Cov(stock_ret, hedge_ret) / Var(hedge_ret)  [126-day window]
+      hedge_short  = -rolling_beta × long_size  added to the hedge ETF's column
+
+    The hedge short is ADDED to whatever position the hedge ETF already holds
+    from its own signal (it may independently have a long position).  This
+    allows the portfolio to be simultaneously long XLF (sector signal) and
+    short XLF (hedge for JPM/GS pair trades) — the net position is the sum.
+
+    For tickers not in HEDGE_MAP (ETFs, bonds, commodities): standard ATR sizing.
+
+    Rolling beta uses the same 126-day window used for PCA scaling and
+    risk-parity estimation — no new parameter.  Lagged by 1 day (shift(1))
+    inside portfolio_returns so no look-ahead.
+
+    Args:
+        signals:     Signal DataFrame (pair_signals or multi_pair_signals).
+        features:    Dict[ticker -> feature DataFrame] with atr_14 and Close.
+        returns:     Daily returns DataFrame — must contain hedge tickers.
+        capital:     Starting capital in dollars.
+        beta_window: Rolling OLS window for beta estimation (default 126).
+
+    Returns:
+        Dollar position size DataFrame.  Positive = long, negative = short.
+    """
+    # Step 1: ATR base sizes for all tickers using their signals.
+    sizes = atr_sizes(signals, features, capital)
+
+    # Step 2: Precompute rolling betas for all HEDGE_MAP pairs.
+    # beta = Cov(stock, hedge) / Var(hedge) — rolling over beta_window days.
+    rolling_betas: dict = {}
+    for stock, hedge in HEDGE_MAP.items():
+        if stock not in returns.columns or hedge not in returns.columns:
+            continue
+        s = returns[stock].fillna(0)
+        h = returns[hedge].fillna(0)
+        cov_sh = s.rolling(beta_window).cov(h)
+        var_h  = h.rolling(beta_window).var().replace(0, np.nan)
+        rolling_betas[(stock, hedge)] = (cov_sh / var_h).fillna(1.0)
+
+    # Step 3: Add short hedge legs where stock is long and spread signal is on.
+    for stock, hedge in HEDGE_MAP.items():
+        key = (stock, hedge)
+        if key not in rolling_betas:
+            continue
+        if stock not in sizes.columns or hedge not in sizes.columns:
+            continue
+
+        beta_s = rolling_betas[key].reindex(sizes.index).fillna(1.0)
+        stock_long = sizes[stock].clip(lower=0)  # only the long component
+
+        # Short position in hedge ETF: -beta × long_size.
+        # Negative because we are shorting the ETF to hedge the long stock.
+        hedge_short = -beta_s * stock_long
+
+        # Add to the hedge ETF column (may already have its own long signal).
+        sizes[hedge] = (sizes[hedge] + hedge_short).clip(
+            -capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT
+        )
+
+    # Step 4: Portfolio-level gross cap (same as atr_sizes).
+    gross = sizes.abs().sum(axis=1).replace(0, np.nan)
+    scale = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return sizes.multiply(scale, axis=0)
+
+
 def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
     """
     Compute daily portfolio P&L from dollar position sizes and asset returns.
@@ -553,6 +676,122 @@ def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
     """
     weights = sizes.shift(1) / CAPITAL
     return (weights * returns.reindex(columns=sizes.columns)).sum(axis=1)
+
+
+def momentum_tilt_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    capital: float,
+    tilt_min: float = 0.7,
+    tilt_range: float = 0.6,
+    mom_window: int = 63,
+) -> pd.DataFrame:
+    """
+    ATR base sizing with a cross-sectional momentum tilt.
+
+    For each day, tickers with active signals are ranked by their trailing
+    63-day (3-month) return.  Position sizes are scaled by a tilt factor:
+
+        tilt = tilt_min + tilt_range × rank     [rank ∈ [0, 1]]
+             = 0.70 at rank 0.0  (worst 3-month performer  → 30% underweight)
+             = 1.00 at rank 0.5  (median performer         → neutral weight)
+             = 1.30 at rank 1.0  (best 3-month performer   → 30% overweight)
+
+    The rank is computed cross-sectionally across ONLY the tickers that
+    have an active signal on that date (signal ≠ 0).  Flat tickers are
+    excluded — their rank would be meaningless and would dilute the signal.
+
+    The ±30% tilt (tilt_min=0.7, tilt_range=0.6) is deliberately conservative.
+    Most quant equity funds use ±50–100% momentum tilts; ±30% preserves
+    diversification while capturing cross-sectional momentum alpha.
+
+    Window choice (63 days):
+        Jegadeesh and Titman (1993) showed that 3–12-month momentum
+        is strongest and most persistent.  63 trading days (≈3 months)
+        is the published sweet spot: shorter captures mean-reversion,
+        longer captures reversal.  This window is not fitted to this data.
+
+    Args:
+        signals:    Signal DataFrame (T × N), any signal type.
+        features:   Dict[ticker → feature DataFrame] with Close prices.
+        capital:    Starting capital in dollars.
+        tilt_min:   Minimum tilt factor (default 0.7 = worst-performer weight).
+        tilt_range: Tilt range (default 0.6 → tilt spans [0.7, 1.3]).
+        mom_window: Trailing return window for cross-sectional ranking (default 63).
+
+    Returns:
+        Dollar position size DataFrame.  Clipped to ±MAX_POSITION_PCT × capital.
+    """
+    # Step 1: ATR base sizes — normalise for per-asset volatility.
+    base = atr_sizes(signals, features, capital)
+
+    # Step 2: Build trailing close-price matrix for momentum ranking.
+    # Only include tickers that have feature data and appear in signals.
+    close_cols = {t: features[t]["Close"].reindex(base.index).ffill()
+                  for t in signals.columns if t in features}
+    if not close_cols:
+        return base
+    closes = pd.DataFrame(close_cols)
+
+    # Step 3: 63-day trailing return for each ticker, computed daily.
+    mom = closes.pct_change(mom_window)   # (T × N), backward-looking only
+
+    # Step 4: On each day, rank ONLY active tickers (signal ≠ 0) by momentum.
+    # Tickers with no active signal get a neutral tilt of 1.0 (base size).
+    tilt = pd.DataFrame(1.0, index=base.index, columns=base.columns)
+
+    for date in base.index:
+        active_mask = signals.loc[date].abs() > 0
+        active_cols = [c for c in active_mask.index if active_mask[c] and c in mom.columns]
+        if len(active_cols) < 2:
+            continue   # need ≥ 2 active tickers to form a meaningful rank
+
+        mom_row = mom.loc[date, active_cols].dropna()
+        if len(mom_row) < 2:
+            continue
+
+        # Percentile rank within the active set for this date.
+        ranks = mom_row.rank(pct=True)   # 0 = worst, 1 = best
+        for col, rank_val in ranks.items():
+            tilt.loc[date, col] = tilt_min + tilt_range * rank_val
+
+    # Step 5: Apply tilt and re-apply gross exposure cap.
+    tilted = base * tilt
+    gross  = tilted.abs().sum(axis=1).replace(0, np.nan)
+    scale  = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return tilted.multiply(scale, axis=0)
+
+
+def active_sharpe_ratio(port_ret: pd.Series, returns: pd.DataFrame) -> float:
+    """
+    Sharpe of the active return after stripping rolling SPY beta.
+
+    active_return = portfolio_return - beta * SPY_return
+    beta          = Cov(port, SPY) / Var(SPY)
+
+    This is the 'true alpha Sharpe': return attributable to the strategy's
+    own signal rather than passive market exposure.  A method with high Total
+    Sharpe but high beta is mostly leveraged index exposure; a method with
+    high Active Sharpe generates return that is genuinely independent of SPY.
+
+    Args:
+        port_ret: Daily portfolio return Series.
+        returns:  Full returns DataFrame — must contain a 'SPY' column.
+
+    Returns:
+        Active Sharpe ratio, or nan if SPY is unavailable.
+    """
+    if "SPY" not in returns.columns:
+        return float("nan")
+    spy = returns["SPY"].reindex(port_ret.index).fillna(0)
+    p   = port_ret.fillna(0).values
+    s   = spy.values
+    spy_var = float(np.var(s))
+    if spy_var <= 0:
+        return float("nan")
+    beta   = float(np.cov(p, s)[0, 1]) / spy_var
+    active = pd.Series(p - beta * s, index=port_ret.index)
+    return sharpe_ratio(active)
 
 
 def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
@@ -621,12 +860,16 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
 
         y0 = signals.index[start].year
         y1 = signals.index[start + test_days - 1].year
+        # Active Sharpe: strip SPY beta from the period's return series.
+        # Uses the OOS slice of returns for SPY, aligned to period_ret.
+        act_sh = round(active_sharpe_ratio(period_ret, all_ret.iloc[-test_days:]), 3)
         results.append({
-            "period"     : f"{y0}-{y1}",
-            "sharpe"     : round(sharpe_ratio(period_ret), 3),
-            "ann_return" : round(((1 + period_ret).prod() ** (252 / len(period_ret)) - 1) * 100, 2),
-            "max_dd"     : round(max_drawdown((1 + period_ret).cumprod()) * 100, 2),
-            "n_days"     : len(period_ret),
+            "period"        : f"{y0}-{y1}",
+            "sharpe"        : round(sharpe_ratio(period_ret), 3),
+            "active_sharpe" : act_sh,
+            "ann_return"    : round(((1 + period_ret).prod() ** (252 / len(period_ret)) - 1) * 100, 2),
+            "max_dd"        : round(max_drawdown((1 + period_ret).cumprod()) * 100, 2),
+            "n_days"        : len(period_ret),
         })
         start += test_days
 
@@ -647,6 +890,43 @@ def main():
     else:
         print("  NOTE: ensemble_signals.parquet not found — run signal_generation.py first\n")
 
+    multi_path  = SIGNAL_DIR / "multi_signals.parquet"
+    has_multi   = multi_path.exists()
+    if has_multi:
+        multi_signals = pd.read_parquet(multi_path)
+    else:
+        print("  NOTE: multi_signals.parquet not found — run signal_generation.py first\n")
+
+    fast_path  = SIGNAL_DIR / "fast_overlay_signals.parquet"
+    has_fast   = fast_path.exists()
+    if has_fast:
+        fast_overlay_signals = pd.read_parquet(fast_path)
+        mfast_path           = SIGNAL_DIR / "multi_fast_signals.parquet"
+        multi_fast_signals   = (pd.read_parquet(mfast_path)
+                                if mfast_path.exists() else fast_overlay_signals)
+    else:
+        print("  NOTE: fast_overlay_signals.parquet not found — run signal_generation.py first\n")
+
+    pair_path  = SIGNAL_DIR / "pair_signals.parquet"
+    has_pair   = pair_path.exists()
+    if has_pair:
+        pair_signals      = pd.read_parquet(pair_path)
+        multi_pair_path   = SIGNAL_DIR / "multi_pair_signals.parquet"
+        multi_pair_signals = (pd.read_parquet(multi_pair_path)
+                              if multi_pair_path.exists() else pair_signals)
+    else:
+        print("  NOTE: pair_signals.parquet not found — run signal_generation.py first\n")
+
+    earn_multi_path  = SIGNAL_DIR / "earn_multi_signals.parquet"
+    has_earn         = earn_multi_path.exists()
+    if has_earn:
+        earn_multi_signals      = pd.read_parquet(earn_multi_path)
+        earn_mfast_path         = SIGNAL_DIR / "earn_multi_fast_signals.parquet"
+        earn_multi_fast_signals = (pd.read_parquet(earn_mfast_path)
+                                   if earn_mfast_path.exists() else earn_multi_signals)
+    else:
+        print("  NOTE: earn_multi_signals.parquet not found — run signal_generation.py first\n")
+
     # ── Load features and returns ──────────────────────────────────────────────
     features, returns = {}, pd.DataFrame()
     for ticker in TICKER_LIST:
@@ -661,6 +941,17 @@ def main():
     returns           = returns.dropna()
     signals_regime    = regime_signals.reindex(returns.index).fillna(0)
     signals_composite = composite_signals.reindex(returns.index).fillna(0)
+    if has_multi:
+        signals_multi = multi_signals.reindex(returns.index).fillna(0)
+    if has_fast:
+        signals_fast_overlay = fast_overlay_signals.reindex(returns.index).fillna(0)
+        signals_multi_fast   = multi_fast_signals.reindex(returns.index).fillna(0)
+    if has_pair:
+        signals_pair       = pair_signals.reindex(returns.index).fillna(0)
+        signals_multi_pair = multi_pair_signals.reindex(returns.index).fillna(0)
+    if has_earn:
+        signals_earn_multi      = earn_multi_signals.reindex(returns.index).fillna(0)
+        signals_earn_multi_fast = earn_multi_fast_signals.reindex(returns.index).fillna(0)
 
     print("Correlation matrix of returns (should be lower with diversified universe):")
     print(returns.corr().round(2))
@@ -683,6 +974,13 @@ def main():
     print("  Computing risk-parity sizes (Ledoit-Wolf, monthly rebalance)...")
     sizes_rp = risk_parity_sizes(signals_regime, features, returns, CAPITAL)
 
+    # rp_macro: risk-parity base sizing (already includes one macro pass inside
+    # risk_parity_sizes) with a second macro multiplier applied on top.
+    # This gives a more aggressive regime overlay — deeper size reduction in fear
+    # (0.5 × 0.5 = 0.25×) and a modest boost in calm (1.25 × 1.25 ≈ 1.56×).
+    print("  Computing rp_macro sizes (risk parity + double macro overlay)...")
+    sizes_rp_macro = apply_macro_multiplier(sizes_rp)
+
     ret_eq       = portfolio_returns(sizes_eq,       returns)
     ret_atr      = portfolio_returns(sizes_atr,      returns)
     ret_kelly    = portfolio_returns(sizes_kelly,     returns)
@@ -692,6 +990,49 @@ def main():
     ret_dd       = portfolio_returns(sizes_dd,        returns)
     ret_comp_vol = portfolio_returns(sizes_comp_vol,  returns)
     ret_rp       = portfolio_returns(sizes_rp,        returns)
+    ret_rp_macro = portfolio_returns(sizes_rp_macro,  returns)
+
+    if has_multi:
+        sizes_multi_eq    = equal_weight_sizes(signals_multi, CAPITAL)
+        sizes_multi_atr   = atr_sizes(signals_multi, features, CAPITAL)
+        sizes_multi_macro = apply_macro_multiplier(sizes_multi_atr)
+        ret_multi_eq      = portfolio_returns(sizes_multi_eq,    returns)
+        ret_multi_atr     = portfolio_returns(sizes_multi_atr,   returns)
+        ret_multi_macro   = portfolio_returns(sizes_multi_macro, returns)
+
+    if has_fast:
+        sizes_fast_atr       = atr_sizes(signals_fast_overlay, features, CAPITAL)
+        sizes_multi_fast_atr = atr_sizes(signals_multi_fast,   features, CAPITAL)
+        ret_fast_atr         = portfolio_returns(sizes_fast_atr,       returns)
+        ret_multi_fast_atr   = portfolio_returns(sizes_multi_fast_atr, returns)
+
+    # Cross-sectional momentum tilt — computed over multi and multi_fast signals.
+    # The per-date ranking loop is O(T × N) and runs ~2s for 2500 days × 37 tickers.
+    print("  Computing momentum tilt sizes (cross-sectional 63-day rank)...")
+    if has_multi:
+        sizes_multi_mom       = momentum_tilt_sizes(signals_multi, features, CAPITAL)
+        ret_multi_mom         = portfolio_returns(sizes_multi_mom, returns)
+    if has_fast:
+        sizes_multi_fast_mom  = momentum_tilt_sizes(signals_multi_fast, features, CAPITAL)
+        ret_multi_fast_mom    = portfolio_returns(sizes_multi_fast_mom, returns)
+
+    # ── Vol-scaled sizing (21-day realized-vol targeting) ─────────────────────
+    # simple_vol_scale: ONE input (own trailing vol), ONE target (10%), ZERO fitted
+    # thresholds. Scales down when portfolio vol spikes, scales up when calm.
+    # More robust than macro multiplier (no cross-asset relationships to overfit).
+    if has_fast:
+        sizes_multi_fast_atr_vol = simple_vol_scale(sizes_multi_fast_atr, returns)
+        ret_multi_fast_atr_vol   = portfolio_returns(sizes_multi_fast_atr_vol, returns)
+        sizes_multi_fast_mom_vol = simple_vol_scale(sizes_multi_fast_mom, returns)
+        ret_multi_fast_mom_vol   = portfolio_returns(sizes_multi_fast_mom_vol, returns)
+
+    if has_pair:
+        print("  Computing beta-hedged pair sizes (ATR long + rolling-beta short hedge)...")
+        sizes_pair       = beta_hedged_sizes(signals_pair,       features, returns, CAPITAL)
+        sizes_multi_pair = beta_hedged_sizes(signals_multi_pair, features, returns, CAPITAL)
+        ret_pair         = portfolio_returns(sizes_pair,       returns)
+        ret_multi_pair   = portfolio_returns(sizes_multi_pair, returns)
+
     ret_bnh      = returns.mean(axis=1)
 
     if has_ensemble:
@@ -754,6 +1095,12 @@ def main():
             ret_rp, signals_regime,
             lambda sig, ret: risk_parity_sizes(sig, features, ret, CAPITAL),
         ),
+        (
+            "rp_macro",
+            ret_rp_macro, signals_regime,
+            lambda sig, ret: apply_macro_multiplier(
+                risk_parity_sizes(sig, features, ret, CAPITAL)),
+        ),
     ]
     if has_ensemble:
         all_methods.append((
@@ -761,6 +1108,98 @@ def main():
             ret_ens, signals_ensemble,
             lambda sig, ret: ensemble_sizes(sig, features, ret, CAPITAL),
         ))
+    if has_multi:
+        all_methods.extend([
+            (
+                "multi equal weight",
+                ret_multi_eq, signals_multi,
+                lambda sig, ret: equal_weight_sizes(sig, CAPITAL),
+            ),
+            (
+                # Pure ATR — no PCA (cross-asset estimation noise), no macro scalar.
+                # One number per ticker (its own 14-day ATR). Zero cross-asset
+                # estimation. IS-OOS gap should be smaller than risk parity or PCA
+                # overlays because there's nothing to overfit.
+                "multi_atr_pure",
+                ret_multi_atr, signals_multi,
+                lambda sig, ret: atr_sizes(sig, features, CAPITAL),
+            ),
+            (
+                # ATR + macro multiplier only. Macro (VIX/yield-curve) uses published
+                # thresholds, not fitted parameters — the one overlay worth testing.
+                "multi_atr_macro",
+                ret_multi_macro, signals_multi,
+                lambda sig, ret: apply_macro_multiplier(atr_sizes(sig, features, CAPITAL)),
+            ),
+        ])
+    if has_fast:
+        all_methods.extend([
+            (
+                # Fast MA20/50 overlay blended with slow MA50/200 for 5 liquid ETFs.
+                # Continuous signal in [0,1] or [-1,1] — atr_sizes handles this.
+                "fast_atr",
+                ret_fast_atr, signals_fast_overlay,
+                lambda sig, ret: atr_sizes(sig, features, CAPITAL),
+            ),
+            (
+                # Same but starting from multi-signal (breakout + bounce) entries.
+                "multi_fast_atr",
+                ret_multi_fast_atr, signals_multi_fast,
+                lambda sig, ret: atr_sizes(sig, features, CAPITAL),
+            ),
+        ])
+    if has_multi:
+        all_methods.append((
+            # Cross-sectional momentum tilt on multi-signal entries.
+            # Tilts ATR sizes ±30% toward 63-day cross-sectional winners.
+            "multi_mom_tilt",
+            ret_multi_mom, signals_multi,
+            lambda sig, ret: momentum_tilt_sizes(sig, features, CAPITAL),
+        ))
+    if has_fast:
+        all_methods.extend([
+            (
+                # Same tilt applied to the multi_fast signal (MA20/50 overlay + breakout/bounce).
+                "multi_fast_mom_tilt",
+                ret_multi_fast_mom, signals_multi_fast,
+                lambda sig, ret: momentum_tilt_sizes(sig, features, CAPITAL),
+            ),
+            (
+                # Vol-scaled multi_fast_atr: 21-day realized-vol targeting at 10%.
+                # scale = (0.10 / realized_vol).clip(0.5, 1.5).shift(1)
+                # ONE parameter (target_vol), structural bounds, zero cross-asset estimation.
+                "multi_fast_atr_vol",
+                ret_multi_fast_atr_vol, signals_multi_fast,
+                lambda sig, ret: simple_vol_scale(
+                    atr_sizes(sig, features, CAPITAL), ret),
+            ),
+            (
+                # Vol-scaled momentum-tilt: combines cross-sectional rank tilt with
+                # portfolio-level vol targeting. Should improve Calmar via lower DD.
+                "multi_fast_mom_vol",
+                ret_multi_fast_mom_vol, signals_multi_fast,
+                lambda sig, ret: simple_vol_scale(
+                    momentum_tilt_sizes(sig, features, CAPITAL), ret),
+            ),
+        ])
+    if has_pair:
+        all_methods.extend([
+            (
+                # Beta-hedged pair trade: long stock + short sector ETF.
+                # Uses regime signal filtered by spread outperformance.
+                # Should reduce SPY correlation and improve bull_calm alpha.
+                "pair_atr",
+                ret_pair, signals_pair,
+                lambda sig, ret: beta_hedged_sizes(sig, features, ret, CAPITAL),
+            ),
+            (
+                # Same but using multi-signal entries (breakout + bounce) filtered
+                # by spread outperformance — best-case combination.
+                "multi_pair_atr",
+                ret_multi_pair, signals_multi_pair,
+                lambda sig, ret: beta_hedged_sizes(sig, features, ret, CAPITAL),
+            ),
+        ])
 
     # ── Portfolio comparison table ─────────────────────────────────────────────
     print(f"{'='*84}")
@@ -784,41 +1223,75 @@ def main():
     print("  WALK-FORWARD VALIDATION  (3yr train / 1yr test) — ALL METHODS")
     print(f"{'='*84}")
 
-    wf_store    = {}
-    is_sharpes  = {}
-    oos_sharpes = {}
+    wf_store         = {}
+    is_sharpes       = {}
+    oos_sharpes      = {}
+    is_act_sharpes   = {}
+    oos_act_sharpes  = {}
 
     for label, ret, sig_matrix, sizing_fn in all_methods:
         wf = walk_forward(sig_matrix, returns, sizing_fn=sizing_fn)
-        wf_store[label]    = wf
-        is_sharpes[label]  = round(summarise(ret, label)["sharpe"], 3)
-        oos_sharpes[label] = round(wf["sharpe"].mean(), 3)
+        wf_store[label]        = wf
+        is_sharpes[label]      = round(summarise(ret, label)["sharpe"], 3)
+        oos_sharpes[label]     = round(wf["sharpe"].mean(), 3)
+        is_act_sharpes[label]  = round(active_sharpe_ratio(ret, returns), 3)
+        oos_act_sharpes[label] = round(wf["active_sharpe"].mean(), 3)
 
         print(f"\n  -- {label}")
-        print(f"     IS Sharpe {is_sharpes[label]:.3f}  |  "
-              f"Mean OOS {oos_sharpes[label]:.3f}  |  "
+        print(f"     IS Sharpe {is_sharpes[label]:.3f}  |  IS Active {is_act_sharpes[label]:.3f}  |  "
+              f"Mean OOS {oos_sharpes[label]:.3f}  |  Mean OOS Active {oos_act_sharpes[label]:.3f}  |  "
               f"Std OOS {wf['sharpe'].std():.3f}  |  "
               f"IS-OOS gap {is_sharpes[label] - oos_sharpes[label]:+.3f}")
-        print(wf.to_string(index=False))
+        print(wf[["period", "sharpe", "active_sharpe", "ann_return", "max_dd", "n_days"]].to_string(index=False))
 
     # ── IS vs OOS comparison — all methods ────────────────────────────────────
-    print(f"\n{'='*84}")
-    print("  IS vs OOS SHARPE — all methods ranked by OOS Sharpe")
-    print(f"{'='*84}")
-    print(f"  {'Method':<32} {'IS Sharpe':>10} {'OOS Sharpe':>10} {'IS-OOS gap':>12}  note")
-    print("  " + "-" * 76)
+    print(f"\n{'='*104}")
+    print("  IS vs OOS SHARPE — all methods ranked by OOS Active Sharpe")
+    print(f"{'='*104}")
+    print(f"  {'Method':<32} {'IS Sharpe':>10} {'IS ActSh':>10} {'OOS Sharpe':>10} "
+          f"{'OOS ActSh':>10} {'IS-OOS gap':>12}  note")
+    print("  " + "-" * 96)
 
-    ranked = sorted(all_methods, key=lambda m: oos_sharpes[m[0]], reverse=True)
+    ranked       = sorted(all_methods, key=lambda m: oos_act_sharpes[m[0]], reverse=True)
+    ranked_total = sorted(all_methods, key=lambda m: oos_sharpes[m[0]], reverse=True)
+    # Smallest IS-OOS gap among methods with OOS Sharpe > 0.8 — most robust.
+    # This is the production selection criterion: we want the method that
+    # generalises best, not the one that looked best on a specific OOS window.
+    qualified = [(lbl, is_sharpes[lbl] - oos_sharpes[lbl])
+                 for lbl, _, _, _ in all_methods if oos_sharpes[lbl] > 0.8]
+    best_gap_label = min(qualified, key=lambda x: x[1])[0] if qualified else ranked_total[0][0]
+
+    best_act_label   = ranked[0][0]
+    best_total_label = ranked_total[0][0]
+
     for label, _, _, _ in ranked:
         gap  = is_sharpes[label] - oos_sharpes[label]
-        note = "<-- best OOS" if label == ranked[0][0] else (
-               "overfit" if gap > 0.5 else "")
-        print(f"  {label:<32} {is_sharpes[label]:>10.3f} {oos_sharpes[label]:>10.3f} "
-              f"{gap:>+12.3f}  {note}")
+        tags = []
+        if label == best_act_label:   tags.append("<-- best OOS Active")
+        if label == best_total_label: tags.append("<-- best OOS Total")
+        if label == best_gap_label:   tags.append("<-- most robust (min IS-OOS gap)")
+        if gap > 0.5:                 tags.append("overfit")
+        print(f"  {label:<32} {is_sharpes[label]:>10.3f} {is_act_sharpes[label]:>10.3f} "
+              f"{oos_sharpes[label]:>10.3f} {oos_act_sharpes[label]:>10.3f} "
+              f"{gap:>+12.3f}  {'  '.join(tags)}")
 
-    best_label = ranked[0][0]
+    # Production method: smallest IS-OOS gap with OOS Sharpe > 0.8.
+    # Rationale: a method with OOS 0.95 / gap 0.20 is more trustworthy than
+    # OOS 1.02 / gap 0.40 — the lower-gap method will likely degrade less
+    # when the market regime shifts.
+    best_label = best_gap_label
     best_ret   = dict((m[0], m[1]) for m in all_methods)[best_label]
-    print(f"\n  Winner (highest OOS Sharpe): {best_label}")
+    prod_gap   = is_sharpes[best_label] - oos_sharpes[best_label]
+
+    print(f"\n  Highest OOS Total  Sharpe: {best_total_label} ({oos_sharpes[best_total_label]:.3f})")
+    print(f"  Highest OOS Active Sharpe: {best_act_label}  ({oos_act_sharpes[best_act_label]:.3f})")
+    print(f"  Most robust (min gap):     {best_gap_label}  (OOS gap {prod_gap:+.3f})")
+    print(f"\n  Production method: {best_label}"
+          f"  (OOS Sharpe {oos_sharpes[best_label]:.3f}, IS-OOS gap {prod_gap:+.3f})")
+    if best_label != best_total_label:
+        print(f"  If prioritizing raw OOS performance: {best_total_label}"
+              f"  (OOS Sharpe {oos_sharpes[best_total_label]:.3f},"
+              f" IS-OOS gap {is_sharpes[best_total_label] - oos_sharpes[best_total_label]:+.3f})")
     print()
     print("  IS-OOS gap interpretation:")
     print("    < 0.3  -> robust, generalises well")
@@ -827,16 +1300,33 @@ def main():
 
     # ── Persist results ────────────────────────────────────────────────────────
     comparison_curves = {
-        "equal_weight"  : equity_curve(ret_eq,    CAPITAL),
-        "atr_sized"     : equity_curve(ret_atr,   CAPITAL),
-        "atr_pca_macro" : equity_curve(ret_final, CAPITAL),
-        "eq_dd_control" : equity_curve(ret_dd,    CAPITAL),
-        "vol_target"    : equity_curve(ret_vol,   CAPITAL),
-        "risk_parity"   : equity_curve(ret_rp,    CAPITAL),
-        "buy_hold"      : equity_curve(ret_bnh,   CAPITAL),
+        "equal_weight"  : equity_curve(ret_eq,       CAPITAL),
+        "atr_sized"     : equity_curve(ret_atr,       CAPITAL),
+        "atr_pca_macro" : equity_curve(ret_final,     CAPITAL),
+        "eq_dd_control" : equity_curve(ret_dd,        CAPITAL),
+        "vol_target"    : equity_curve(ret_vol,       CAPITAL),
+        "risk_parity"   : equity_curve(ret_rp,        CAPITAL),
+        "rp_macro"      : equity_curve(ret_rp_macro,  CAPITAL),
+        "buy_hold"      : equity_curve(ret_bnh,       CAPITAL),
     }
     if has_ensemble:
         comparison_curves["ensemble_atr_pca_macro"] = equity_curve(ret_ens, CAPITAL)
+    if has_multi:
+        comparison_curves["multi_equal_weight"] = equity_curve(ret_multi_eq,    CAPITAL)
+        comparison_curves["multi_atr_pure"]     = equity_curve(ret_multi_atr,   CAPITAL)
+        comparison_curves["multi_atr_macro"]    = equity_curve(ret_multi_macro, CAPITAL)
+    if has_fast:
+        comparison_curves["fast_atr"]       = equity_curve(ret_fast_atr,       CAPITAL)
+        comparison_curves["multi_fast_atr"] = equity_curve(ret_multi_fast_atr, CAPITAL)
+    if has_pair:
+        comparison_curves["pair_atr"]       = equity_curve(ret_pair,       CAPITAL)
+        comparison_curves["multi_pair_atr"] = equity_curve(ret_multi_pair, CAPITAL)
+    if has_multi:
+        comparison_curves["multi_mom_tilt"]      = equity_curve(ret_multi_mom,      CAPITAL)
+    if has_fast:
+        comparison_curves["multi_fast_mom_tilt"] = equity_curve(ret_multi_fast_mom, CAPITAL)
+        comparison_curves["multi_fast_atr_vol"]  = equity_curve(ret_multi_fast_atr_vol, CAPITAL)
+        comparison_curves["multi_fast_mom_vol"]  = equity_curve(ret_multi_fast_mom_vol, CAPITAL)
 
     pd.DataFrame(comparison_curves).to_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
 
@@ -847,7 +1337,13 @@ def main():
         RESULTS_DIR / "walk_forward_atr_pca.parquet", index=False)
 
     oos_df = pd.DataFrame([
-        {"method": lbl, "is_sharpe": is_sharpes[lbl], "oos_sharpe": oos_sharpes[lbl]}
+        {
+            "method"         : lbl,
+            "is_sharpe"      : is_sharpes[lbl],
+            "oos_sharpe"     : oos_sharpes[lbl],
+            "is_act_sharpe"  : is_act_sharpes[lbl],
+            "oos_act_sharpe" : oos_act_sharpes[lbl],
+        }
         for lbl in is_sharpes
     ])
     oos_df.to_parquet(RESULTS_DIR / "oos_selection.parquet", index=False)

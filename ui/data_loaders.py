@@ -84,6 +84,30 @@ def load_walk_forward_atr() -> pd.DataFrame:
     return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
 @st.cache_data
+def load_correlation_diagnostic() -> pd.DataFrame:
+    path = Path("data/research/correlation_diagnostic.parquet")
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(path)
+
+
+@st.cache_data
+def load_regime_correlation() -> pd.DataFrame:
+    path = Path("data/research/correlation_diagnostic_regime_corr.parquet")
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(path)
+
+
+@st.cache_data
+def load_dead_weight() -> pd.DataFrame:
+    path = Path("data/research/correlation_diagnostic_dead_weight.parquet")
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(path)
+
+
+@st.cache_data
 def load_oos_selection() -> pd.DataFrame:
     """
     Load the IS vs OOS Sharpe comparison table used to select the best
