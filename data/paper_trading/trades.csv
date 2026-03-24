@@ -20,3 +20,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-03-20,GE,BUY,15.839813,291.61,4619.05,2.31,,init_golden_cross
 2026-03-20,INTC,BUY,100.022685,46.18,4619.05,2.31,,init_golden_cross
 2026-03-20,VZ,BUY,93.351812,49.48,4619.05,2.31,,init_golden_cross
+2026-03-22,EFA,SELL,47.855862,93.59,4478.83,2.24,-142.46,signal_exit
+2026-03-22,XLU,SELL,99.24898,44.65,4431.47,2.22,-189.8,signal_exit
+2026-03-22,VNQ,SELL,50.431792,88.75,4475.82,2.24,-145.46,signal_exit

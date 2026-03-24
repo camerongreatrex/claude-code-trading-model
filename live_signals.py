@@ -187,6 +187,35 @@ def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
     lo_52w = float(close.tail(252).min())
     dist_from_high = (latest_close / hi_52w - 1) * 100
 
+    # Donchian breakout + squeeze detection
+    donchian_high  = df["High"].rolling(20).max()
+    donchian_low   = df["Low"].rolling(20).min()
+    donchian_width = (donchian_high - donchian_low) / close.replace(0, np.nan)
+    width_rank     = donchian_width.rolling(252, min_periods=63).rank(pct=True)
+    squeeze        = (width_rank < 0.20)
+    breakout       = (close >= donchian_high)
+    recent_sq      = squeeze.rolling(5, min_periods=1).max().astype(bool)
+
+    # Volume z-score (if volume available)
+    try:
+        _vol = df["Volume"].replace(0, np.nan)
+        vol_zscore   = ((_vol - _vol.rolling(20).mean()) /
+                        _vol.rolling(20).std().replace(0, np.nan)).fillna(0)
+        vol_confirm  = bool(vol_zscore.iloc[-1] > 0.5)
+    except Exception:
+        vol_confirm = False
+
+    # Fast MA20/50 for liquid ETFs
+    FAST_TICKERS = {"SPY", "IWM", "TLT", "GLD", "EEM"}
+    ma20 = close.rolling(20).mean()
+    ma50 = close.rolling(50).mean()
+    if ticker in FAST_TICKERS:
+        fast_sig   = int(ma20.iloc[-1] > ma50.iloc[-1]) if not (pd.isna(ma20.iloc[-1]) or pd.isna(ma50.iloc[-1])) else None
+        fast_label = "FAST LONG" if fast_sig == 1 else "FAST FLAT"
+    else:
+        fast_sig   = None
+        fast_label = "—"
+
     return {
         "ticker"        : ticker,
         "asset_class"   : asset_class.replace("_", " ").title(),
@@ -209,6 +238,10 @@ def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
         "last_date"     : df.index[-1].date(),
         "volume"        : float(df["Volume"].iloc[-1]),
         "avg_vol_20d"   : float(df["Volume"].tail(20).mean()),
+        "breakout"      : int(bool(breakout.iloc[-1])),
+        "squeeze"       : int(bool(recent_sq.iloc[-1])),
+        "fast_signal"   : fast_sig,
+        "fast_label"    : fast_label,
     }
 
 
@@ -242,6 +275,12 @@ def get_live_signals() -> tuple[pd.DataFrame, str]:
 
     df = pd.DataFrame(rows)
 
+    # Momentum rank: rank all tickers by 63-day return (pct rank 0–100)
+    if "ret_60d_pct" in df.columns:
+        mom_rank_pct = df["ret_60d_pct"].rank(pct=True) * 100
+    else:
+        mom_rank_pct = pd.Series(["—"] * len(df))
+
     display = pd.DataFrame({
         "Ticker"          : df["ticker"],
         "Asset Class"     : df["asset_class"],
@@ -252,6 +291,10 @@ def get_live_signals() -> tuple[pd.DataFrame, str]:
         "RSI"             : df["rsi"].round(1),
         "20d Ret %"       : df["ret_20d_pct"].round(1),
         "60d Ret %"       : df["ret_60d_pct"].round(1),
+        "Mom Rank"        : mom_rank_pct.round(0).astype(int).astype(str) + "%" if "ret_60d_pct" in df.columns else "—",
+        "Breakout"        : df["breakout"].map(lambda v: "✓" if v else ""),
+        "Squeeze"         : df["squeeze"].map(lambda v: "✓" if v else ""),
+        "Fast"            : df["fast_label"],
         "Dist High %"     : df["dist_from_high"].round(1),
         "Last Date"       : df["last_date"].astype(str),
     })

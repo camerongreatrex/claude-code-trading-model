@@ -84,11 +84,14 @@ from ui.charts import (
     chart_equity, chart_drawdown, chart_monte_carlo, chart_mc_histogram,
     chart_walk_forward, chart_asset_sharpe, chart_macro_overlay,
     chart_monthly_heatmap, chart_ma_spread, chart_paper_portfolio,
+    chart_beta_rolling, chart_active_return, chart_dead_weight,
 )
 from ui.data_loaders import (
     load_portfolio_curves, load_ticker_curves, load_walk_forward,
     load_walk_forward_atr, load_oos_selection, load_macro, run_monte_carlo,
+    load_correlation_diagnostic, load_regime_correlation, load_dead_weight,
 )
+from ui.styles import get_color, get_label
 
 # ── Page configuration ────────────────────────────────────────────────────────
 st.set_page_config(
@@ -153,8 +156,9 @@ def main():
         st.markdown(
             f"<span style='color:#666;font-size:.82rem'>"
             f"Multi-asset systematic strategy · 2015–2025 · {n_assets} assets "
-            f"(incl. survivorship-bias anchors GE/INTC/WBA/VZ) · "
-            f"0.1% round-trip transaction costs · MA50/200 golden-cross signals"
+            f"(incl. survivorship anchors GE/INTC/VZ) · "
+            f"Multi-signal: MA crossover + momentum breakout + dip-buy · "
+            f"Two-sided bonds &amp; commodities · Cross-sectional momentum tilt"
             f"</span>",
             unsafe_allow_html=True,
         )
@@ -164,11 +168,22 @@ def main():
         return
 
     # ── Top metrics ──────────────────────────────────────────────────────────
-    st.markdown('<div class="section-head">Equal-weight strategy vs buy & hold</div>',
+    # Select production method: best OOS Sharpe from oos_selection, or equal_weight fallback
+    _prod_method = "equal_weight"
+    if not oos_sel.empty and "oos_sharpe" in oos_sel.columns and "method" in oos_sel.columns:
+        _best_idx = oos_sel["oos_sharpe"].idxmax()
+        _best_m   = oos_sel.loc[_best_idx, "method"]
+        # Map oos_selection method name → df_port column name (spaces → underscores)
+        _best_col = _best_m.replace(" ", "_").replace("-", "_")
+        if _best_col in df_port.columns:
+            _prod_method = _best_col
+    _prod_label = get_label(_prod_method)
+
+    st.markdown(f'<div class="section-head">{_prod_label} vs buy &amp; hold</div>',
                 unsafe_allow_html=True)
 
-    eq_ret  = df_port["equal_weight"].pct_change().dropna() if "equal_weight" in df_port.columns else pd.Series(dtype=float)
-    bnh_ret = df_port["buy_hold"].pct_change().dropna()     if "buy_hold"     in df_port.columns else pd.Series(dtype=float)
+    eq_ret  = df_port[_prod_method].pct_change().dropna() if _prod_method in df_port.columns else pd.Series(dtype=float)
+    bnh_ret = df_port["buy_hold"].pct_change().dropna()   if "buy_hold"   in df_port.columns else pd.Series(dtype=float)
     m_eq    = metrics(eq_ret)
     m_bnh   = metrics(bnh_ret)
 
@@ -229,8 +244,9 @@ def main():
                              "if winning days are larger than losing days (see Profit Factor).")
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "  📊  Equity Curves",
+        "  🔍  Alpha Decomposition",
         "  🎲  Monte Carlo",
         "  🔁  Walk-Forward",
         "  🌍  Macro Overlay",
@@ -240,8 +256,23 @@ def main():
 
     # ── Tab 1: Equity curves + drawdown + summary table ──────────────────────
     with tab1:
-        st.plotly_chart(chart_equity(df_port), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
-        st.plotly_chart(chart_drawdown(df_port), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
+        # Compute top 5 methods by final equity value
+        _non_bh  = [c for c in df_port.columns if c != "buy_hold"]
+        _top5    = sorted(_non_bh, key=lambda c: df_port[c].iloc[-1] if not df_port[c].empty else 0,
+                          reverse=True)[:5]
+        _default = _top5 + (["buy_hold"] if "buy_hold" in df_port.columns else [])
+        _options = list(df_port.columns)
+        _option_labels = {c: get_label(c) for c in _options}
+        _selected_cols = st.multiselect(
+            "Methods to display",
+            options=_options,
+            default=_default,
+            format_func=lambda c: _option_labels.get(c, c),
+        )
+        if not _selected_cols:
+            _selected_cols = _default
+        st.plotly_chart(chart_equity(df_port, columns=_selected_cols), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
+        st.plotly_chart(chart_drawdown(df_port, columns=_selected_cols), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
         st.markdown('<div class="section-head">All portfolio methods — summary</div>',
                     unsafe_allow_html=True)
@@ -261,8 +292,173 @@ def main():
         if not eq_ret.empty:
             st.plotly_chart(chart_monthly_heatmap(eq_ret), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
-    # ── Tab 2: Monte Carlo ───────────────────────────────────────────────────
+    # ── Tab 2: Alpha Decomposition ───────────────────────────────────────────
     with tab2:
+        st.markdown("### Alpha Decomposition")
+        _corr_diag   = load_correlation_diagnostic()
+        _regime_corr = load_regime_correlation()
+        _df_dw       = load_dead_weight()
+        _oos_alpha   = load_oos_selection()
+
+        if _corr_diag.empty and _regime_corr.empty and _df_dw.empty and _oos_alpha.empty:
+            st.info("Run `python -m pipeline.correlation_diagnostic` to generate alpha decomposition data.")
+        else:
+            # ── Section A: 4-column metric row ──────────────────────────────
+            _best_oos_act_sharpe = None
+            _best_ols_beta       = None
+            _alpha_total_ratio   = None
+            _avg_dw_pct          = None
+
+            if not _oos_alpha.empty:
+                if "oos_act_sharpe" in _oos_alpha.columns:
+                    _best_oos_act_sharpe = float(_oos_alpha["oos_act_sharpe"].max())
+                if "oos_sharpe" in _oos_alpha.columns:
+                    _best_oos_idx  = _oos_alpha["oos_sharpe"].idxmax()
+                    _best_oos_meth = _oos_alpha.loc[_best_oos_idx, "method"] if "method" in _oos_alpha.columns else ""
+                    if "is_sharpe" in _oos_alpha.columns and "oos_sharpe" in _oos_alpha.columns:
+                        _is_v  = float(_oos_alpha.loc[_best_oos_idx, "is_sharpe"])
+                        _oos_v = float(_oos_alpha.loc[_best_oos_idx, "oos_sharpe"])
+                        if _is_v != 0:
+                            _alpha_total_ratio = _oos_v / _is_v
+
+            if not _corr_diag.empty:
+                _beta_col = next((c for c in _corr_diag.columns if "beta" in c.lower()), None)
+                if _beta_col:
+                    _best_ols_beta = float(_corr_diag[_beta_col].mean())
+
+            if not _df_dw.empty:
+                _dw_col = "dead_weight_pct" if "dead_weight_pct" in _df_dw.columns else \
+                          next((c for c in _df_dw.columns if "dead" in c.lower()), None)
+                if _dw_col:
+                    _avg_dw_pct = float(_df_dw[_dw_col].mean())
+
+            _ma1, _ma2, _ma3, _ma4 = st.columns(4)
+            with _ma1:
+                st.metric("Best OOS Active Sharpe",
+                          f"{_best_oos_act_sharpe:.3f}" if _best_oos_act_sharpe is not None else "—",
+                          help="Highest OOS active Sharpe (alpha / active risk) across all methods.")
+            with _ma2:
+                st.metric("Avg OLS Beta",
+                          f"{_best_ols_beta:.3f}" if _best_ols_beta is not None else "—",
+                          help="Average OLS beta to SPY across methods in the correlation diagnostic.")
+            with _ma3:
+                st.metric("OOS / IS Sharpe Ratio",
+                          f"{_alpha_total_ratio:.2f}" if _alpha_total_ratio is not None else "—",
+                          help="OOS Sharpe divided by IS Sharpe for the best OOS method. "
+                               "1.0 = perfect transfer. <0.5 = likely overfitting.")
+            with _ma4:
+                st.metric("Avg Dead Weight %",
+                          f"{_avg_dw_pct*100:.1f}%" if _avg_dw_pct is not None else "—",
+                          help="Average dead-weight % across universe tickers. "
+                               "<50% = signal better than random on down days.")
+
+            # ── Section B: Beta rolling + Active return charts ──────────────
+            _bcol, _acol = st.columns(2)
+            _top3_methods = None
+            if not df_port.empty:
+                _non_bh_cols = [c for c in df_port.columns if c != "buy_hold"]
+                _top3_methods = sorted(_non_bh_cols,
+                                       key=lambda c: df_port[c].iloc[-1] if not df_port[c].empty else 0,
+                                       reverse=True)[:3]
+            with _bcol:
+                _fig_beta = chart_beta_rolling(df_port, methods=_top3_methods) if not df_port.empty else None
+                if _fig_beta:
+                    st.plotly_chart(_fig_beta, theme=None, use_container_width=True,
+                                    config={"scrollZoom": True, "displayModeBar": True})
+                else:
+                    st.info("Insufficient data for rolling beta chart (need ≥60 days).")
+            with _acol:
+                _fig_act = chart_active_return(df_port, methods=_top3_methods) if not df_port.empty else None
+                if _fig_act:
+                    st.plotly_chart(_fig_act, theme=None, use_container_width=True,
+                                    config={"scrollZoom": True, "displayModeBar": True})
+                else:
+                    st.info("Insufficient data for active return chart (need ≥60 days).")
+
+            # ── Section C: IS vs OOS table from oos_selection ───────────────
+            if not _oos_alpha.empty:
+                st.markdown("")
+                st.markdown('<div class="section-head">IS vs OOS method comparison</div>',
+                            unsafe_allow_html=True)
+
+                _disp_cols = {
+                    "method"        : "Method",
+                    "is_sharpe"     : "IS Sharpe",
+                    "oos_sharpe"    : "OOS Sharpe",
+                    "is_act_sharpe" : "IS Active Sharpe",
+                    "oos_act_sharpe": "OOS Active Sharpe",
+                }
+                _disp_oos = _oos_alpha.rename(columns={k: v for k, v in _disp_cols.items()
+                                                        if k in _oos_alpha.columns})
+                _fmt_cols  = {v: "{:.3f}" for k, v in _disp_cols.items()
+                              if k != "method" and v in _disp_oos.columns}
+
+                if "OOS Sharpe" in _disp_oos.columns:
+                    _best_oos_sharpe_method = _disp_oos.loc[_disp_oos["OOS Sharpe"].idxmax(), "Method"] \
+                        if "Method" in _disp_oos.columns else ""
+                    _best_act_sharpe_method = ""
+                    if "OOS Active Sharpe" in _disp_oos.columns:
+                        _best_act_sharpe_method = _disp_oos.loc[
+                            _disp_oos["OOS Active Sharpe"].idxmax(), "Method"
+                        ] if "Method" in _disp_oos.columns else ""
+                    # Identify min IS-OOS gap for OOS > 0.8
+                    _yellow_method = ""
+                    if "IS Sharpe" in _disp_oos.columns and "OOS Sharpe" in _disp_oos.columns \
+                            and "Method" in _disp_oos.columns:
+                        _oos_gt08 = _disp_oos[_disp_oos["OOS Sharpe"] > 0.8].copy()
+                        if not _oos_gt08.empty:
+                            _oos_gt08 = _oos_gt08.copy()
+                            _oos_gt08["_gap"] = (_oos_gt08["IS Sharpe"] - _oos_gt08["OOS Sharpe"]).abs()
+                            _yellow_method = _oos_gt08.loc[_oos_gt08["_gap"].idxmin(), "Method"]
+
+                    def _style_oos_table(row):
+                        styles = [""] * len(row)
+                        if "Method" in row.index:
+                            m = row["Method"]
+                            if m == _best_oos_sharpe_method:
+                                styles = ["background-color:#0d2b0d"] * len(row)
+                            elif m == _best_act_sharpe_method:
+                                styles = ["background-color:#0a1a2e"] * len(row)
+                            elif m == _yellow_method:
+                                styles = ["background-color:#2b2200"] * len(row)
+                        return styles
+
+                    st.dataframe(
+                        _disp_oos.style.apply(_style_oos_table, axis=1).format(_fmt_cols),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.caption(
+                        "Green = best OOS Sharpe · Blue = best OOS Active Sharpe · "
+                        "Yellow = smallest IS-OOS gap (OOS > 0.8)"
+                    )
+                else:
+                    st.dataframe(_disp_oos, use_container_width=True, hide_index=True)
+
+            # ── Section D: Dead weight chart ─────────────────────────────────
+            if not _df_dw.empty:
+                st.markdown("")
+                _fig_dw = chart_dead_weight(_df_dw)
+                if _fig_dw:
+                    st.plotly_chart(_fig_dw, theme=None, use_container_width=True,
+                                    config={"scrollZoom": True, "displayModeBar": True})
+                    st.caption(
+                        "Dead weight = fraction of LONG signal days where the asset fell. "
+                        "<50% = signal has directional edge. Red = above 45% (weak)."
+                    )
+
+            # ── Section E: Regime correlation table ──────────────────────────
+            if not _regime_corr.empty:
+                st.markdown("")
+                st.markdown('<div class="section-head">Regime correlation table</div>',
+                            unsafe_allow_html=True)
+                st.dataframe(_regime_corr, use_container_width=True)
+                st.caption(
+                    "Pairwise return correlation across market regimes. "
+                    "Low/negative correlation = better diversification in the regime."
+                )
+
+    # ── Tab 3: Monte Carlo ───────────────────────────────────────────────────
+    with tab3:
         st.markdown(
             "<span style='color:#888;font-size:.82rem'>"
             "Block-bootstrap resampling of historical daily returns — preserves the "
@@ -328,8 +524,8 @@ def main():
                                       "A measure of upside potential under block-bootstrap "
                                       "resampling of the observed return stream.")
 
-    # ── Tab 3: Walk-forward + per-asset ──────────────────────────────────────
-    with tab3:
+    # ── Tab 4: Walk-forward + per-asset ──────────────────────────────────────
+    with tab4:
         st.markdown(
             "<span style='color:#888;font-size:.82rem'>"
             "<b>Walk-forward validation</b>: train on 3 years, test on the next 1 year (rolling). "
@@ -392,31 +588,59 @@ def main():
                 "</span>",
                 unsafe_allow_html=True,
             )
-            display_oos = oos_sel.rename(columns={
-                "method"    : "Method",
-                "is_sharpe" : "IS Sharpe (full period)",
-                "oos_sharpe": "OOS Sharpe (walk-fwd mean)",
-            })
-            # Highlight the selected (best OOS) row
-            best_oos_method = oos_sel.loc[oos_sel["oos_sharpe"].idxmax(), "method"]
+            _wf_col_map = {
+                "method"        : "Method",
+                "is_sharpe"     : "IS Sharpe",
+                "oos_sharpe"    : "OOS Sharpe",
+                "is_act_sharpe" : "IS Active Sharpe",
+                "oos_act_sharpe": "OOS Active Sharpe",
+            }
+            display_oos = oos_sel.rename(columns={k: v for k, v in _wf_col_map.items()
+                                                   if k in oos_sel.columns})
+            _wf_fmt = {v: "{:.3f}" for k, v in _wf_col_map.items()
+                       if k != "method" and v in display_oos.columns}
+            # Determine highlight methods
+            _wf_best_oos = oos_sel.loc[oos_sel["oos_sharpe"].idxmax(), "method"] \
+                if "oos_sharpe" in oos_sel.columns else ""
+            _wf_best_act = ""
+            if "oos_act_sharpe" in oos_sel.columns and "method" in oos_sel.columns:
+                _wf_best_act = oos_sel.loc[oos_sel["oos_act_sharpe"].idxmax(), "method"]
+            _wf_yellow = ""
+            if "is_sharpe" in oos_sel.columns and "oos_sharpe" in oos_sel.columns \
+                    and "method" in oos_sel.columns:
+                _wf_gt08 = oos_sel[oos_sel["oos_sharpe"] > 0.8].copy()
+                if not _wf_gt08.empty:
+                    _wf_gt08["_gap"] = (_wf_gt08["is_sharpe"] - _wf_gt08["oos_sharpe"]).abs()
+                    _wf_yellow = _wf_gt08.loc[_wf_gt08["_gap"].idxmin(), "method"]
+
             def _highlight_best(row):
-                return ["background-color:#1a3a1a" if row["Method"] == best_oos_method
-                        else "" for _ in row]
+                if "Method" not in row.index:
+                    return [""] * len(row)
+                m = row["Method"]
+                if m == _wf_best_oos:
+                    return ["background-color:#1a3a1a"] * len(row)
+                if m == _wf_best_act:
+                    return ["background-color:#0a1a2e"] * len(row)
+                if m == _wf_yellow:
+                    return ["background-color:#2b2200"] * len(row)
+                return [""] * len(row)
+
             st.dataframe(
-                display_oos.style.apply(_highlight_best, axis=1).format({
-                    "IS Sharpe (full period)"   : "{:.3f}",
-                    "OOS Sharpe (walk-fwd mean)": "{:.3f}",
-                }),
+                display_oos.style.apply(_highlight_best, axis=1).format(_wf_fmt),
                 use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                "Green = best OOS Sharpe · Blue = best OOS Active Sharpe · "
+                "Yellow = smallest IS-OOS gap (OOS > 0.8)"
             )
             st.markdown(
                 f"<span style='color:#50fa7b;font-size:.82rem'>"
-                f"✓ Selected method: <b>{best_oos_method}</b></span>",
+                f"✓ Selected method: <b>{_wf_best_oos}</b></span>",
                 unsafe_allow_html=True,
             )
 
-    # ── Tab 4: Macro overlay ─────────────────────────────────────────────────
-    with tab4:
+    # ── Tab 5: Macro overlay ─────────────────────────────────────────────────
+    with tab5:
         if macro.empty:
             st.warning("Macro data not found. Run `python macro_features.py`.")
         else:
@@ -450,8 +674,8 @@ def main():
                                       "associated with early-cycle expansion. Macro multiplier "
                                       "slightly increases sizing in steep environments.")
 
-    # ── Tab 5: Paper Trading & Live Signals ──────────────────────────────────
-    with tab5:
+    # ── Tab 6: Paper Trading & Live Signals ──────────────────────────────────
+    with tab6:
 
         @st.fragment(run_every=5)
         def _live_section():
@@ -541,7 +765,16 @@ def main():
                 # TradingView-style equity chart (intraday live)
                 intraday_df, live_prices, spy_curve, _spy_pct = get_intraday_curve()
 
-                prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
+                # prev_pv = previous trading day's close (entry baseline for intraday
+                # daily-return calculation and the "Entry" reference line on the chart).
+                # If EOD already ran today, state["portfolio_value"] is today's close —
+                # we need the second-to-last history row instead.
+                _today_et_str = now.strftime('%Y-%m-%d')
+                if (pt_state.get("last_eod_date") == _today_et_str
+                        and not pt_history.empty and len(pt_history) >= 2):
+                    prev_pv = float(pt_history.sort_values("date").iloc[-2]["portfolio_value"])
+                else:
+                    prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
 
                 # ── Open position market values (from fresh per-ticker prices) ─
                 tot_invested = sum(pos["cost_basis"] for pos in pt_state.get("positions", {}).values())
@@ -595,16 +828,20 @@ def main():
                 with pm2:
                     st.metric(
                         "Total Return", f"{total_ret:+.2f}%",
+                        delta=f"${pv - PT_INITIAL_CAPITAL:+,.0f}",
+                        delta_color="normal",
                         help="Overall % return vs $100k starting capital since inception. "
-                             "Includes both unrealized gains (open positions) and realized gains (closed trades).",
+                             "Arrow shows the dollar equivalent. "
+                             "= Realized P&L + Unrealized P&L (open positions marked to market).",
                     )
                 with pm3:
                     st.metric(
                         "Realized P&L", f"${all_realized:+,.0f}",
                         delta=f"{today_realized:+,.0f} today" if today_realized != 0 else None,
                         delta_color="normal",
-                        help="Total locked-in profit/loss from all closed trades since inception. "
-                             "Only increases/decreases when a position is sold. Arrow shows today's closed trades.",
+                        help="Locked-in profit/loss from closed trades only. "
+                             "Does NOT include unrealized gains on open positions. "
+                             f"Unrealized P&L = ${tot_unreal:+,.0f} (open positions vs cost basis).",
                     )
                 with pm4:
                     st.metric(
@@ -633,23 +870,22 @@ def main():
 
                 # ── Equity chart ──────────────────────────────────────────────
                 # ── x-range management ───────────────────────────────────────
-                # The x_range is stored in session_state and only updated when the
-                # date rolls over OR the right edge needs to advance.  Passing a
-                # constant range to chart_paper_portfolio() (combined with
-                # uirevision="paper_portfolio") means Plotly.js treats each 5-second
-                # refresh as a data update rather than a full re-render, so user
-                # zoom/pan is preserved across refreshes.
+                # Left edge: 1 day before the earliest history entry so the daily
+                # equity curve is always in frame.  Right edge tracks the current
+                # time (or 16:05 if before close) so the intraday line is visible.
+                # Stored in session_state so uirevision="paper_portfolio" can
+                # preserve user zoom/pan across 5-second fragment refreshes.
                 _today = now.strftime('%Y-%m-%d')
-                # Right edge tracks current time (or 16:05 if before close),
-                # so the flat post-close line is always visible.
                 _right = max(now, pd.Timestamp(_today + " 16:05:00"))
                 _right_str = _right.strftime('%Y-%m-%dT%H:%M:00')
+                if not pt_history.empty:
+                    _first_ts = pd.Timestamp(pt_history["date"].min())
+                    _left_str = (_first_ts - pd.Timedelta(days=1)).strftime('%Y-%m-%dT09:00:00')
+                else:
+                    _left_str = (pd.Timestamp(_today) - pd.Timedelta(days=7)).strftime('%Y-%m-%dT09:00:00')
                 _cached = st.session_state.get("paper_chart_x_range", ["", ""])
-                if not _cached[0].startswith(_today) or _cached[1] < _right_str:
-                    st.session_state["paper_chart_x_range"] = [
-                        f"{_today}T09:25:00",
-                        _right_str,
-                    ]
+                if _cached[1] < _right_str:
+                    st.session_state["paper_chart_x_range"] = [_left_str, _right_str]
 
                 st.plotly_chart(
                     chart_paper_portfolio(pt_history, intraday_df, pt_trades,
@@ -837,29 +1073,44 @@ def main():
                             if row["Signal"] == "LONG" else [""] * len(row))
 
                 def _color_cell(v):
-                    if isinstance(v, str) and v == "LONG":  return "color:#50fa7b;font-weight:600"
-                    if isinstance(v, str) and v == "FLAT":  return "color:#666"
+                    if isinstance(v, str) and v == "LONG":       return "color:#50fa7b;font-weight:600"
+                    if isinstance(v, str) and v == "FLAT":       return "color:#666"
+                    if isinstance(v, str) and v == "FAST LONG":  return "color:#61afef;font-weight:600"
+                    if isinstance(v, str) and v == "FAST FLAT":  return "color:#555"
+                    if isinstance(v, str) and v == "✓":          return "color:#50fa7b;font-weight:600"
                     if isinstance(v, (int, float)):
                         if v > 0: return "color:#50fa7b"
                         if v < 0: return "color:#ff5555"
                     return ""
 
+                _live_numeric_cols = ["Day Chg %", "MA Spread %", "20d Ret %", "60d Ret %", "Dist High %"]
+                _live_color_cols   = ["Signal"] + _live_numeric_cols
+                # Add extra columns if they exist
+                for _ec in ["Breakout", "Squeeze", "Fast", "Mom Rank"]:
+                    if _ec in live_df.columns:
+                        _live_color_cols.append(_ec)
+                _live_fmt = {
+                    "Price":      "${:.2f}",
+                    "Day Chg %":  "{:+.2f}%",
+                    "MA Spread %":"{:+.2f}%",
+                    "RSI":        "{:.1f}",
+                    "20d Ret %":  "{:+.1f}%",
+                    "60d Ret %":  "{:+.1f}%",
+                    "Dist High %":"{:+.1f}%",
+                }
+
                 st.dataframe(
                     live_df.style
                     .apply(_style_live, axis=1)
-                    .map(_color_cell, subset=["Signal", "Day Chg %", "MA Spread %",
-                                                   "20d Ret %", "60d Ret %", "Dist High %"])
-                    .format({"Price": "${:.2f}", "Day Chg %": "{:+.2f}%",
-                             "MA Spread %": "{:+.2f}%", "RSI": "{:.1f}",
-                             "20d Ret %": "{:+.1f}%", "60d Ret %": "{:+.1f}%",
-                             "Dist High %": "{:+.1f}%"}),
+                    .map(_color_cell, subset=[c for c in _live_color_cols if c in live_df.columns])
+                    .format({k: v for k, v in _live_fmt.items() if k in live_df.columns}),
                     use_container_width=True, hide_index=True,
                 )
 
         _live_section()
 
-    # ── Tab 6: vs S&P 500 ────────────────────────────────────────────────────
-    with tab6:
+    # ── Tab 7: vs S&P 500 ────────────────────────────────────────────────────
+    with tab7:
 
         @st.cache_data(ttl=300, show_spinner=False)
         def _spy_history(start_date: str):

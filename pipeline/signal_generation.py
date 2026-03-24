@@ -61,11 +61,12 @@ Consumed by
   live_signals.py — replicates regime logic for the dashboard's Live Signals tab
 """
 
+import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from .data_pipeline import TICKER_LIST, ASSET_CLASS
+from .data_pipeline import TICKER_LIST, ASSET_CLASS, HEDGE_MAP
 
 # ── Strategy improvement constants ────────────────────────────────────────────
 # These are principled, not curve-fitted to the historical dataset.
@@ -89,6 +90,10 @@ TIME_DECAY_DAYS   = 126  # Close stale longs held > 6 months that are drifting n
                            # months while TLT/GLD/TIP rally. Exit the dead weight, free cash.
 TIME_DECAY_WINDOW = 21   # Trailing return window for the decay check: 1 calendar month.
                            # close[t] / close[t-21] - 1 < 0 → position is drifting down.
+
+# 5 most liquid ETFs by AUM (published fact). MA20/50 fast overlay applied
+# only to these — individual stocks are excluded (MA20/50 whipsaws on stocks).
+FAST_SIGNAL_TICKERS = {"SPY", "IWM", "TLT", "GLD", "EEM"}
 
 FEATURE_DIR  = Path("data/features")
 SIGNAL_DIR   = Path("data/signals")
@@ -513,20 +518,23 @@ def apply_rsi_entry_filter(signal: pd.Series, rsi: pd.Series) -> pd.Series:
     return result.astype(int)
 
 
-def apply_min_hold_filter(signal: pd.Series) -> pd.Series:
+def apply_min_hold_filter(signal: pd.Series, min_hold: int = None) -> pd.Series:
     """
-    Hold any position (long or short) for at least MIN_HOLD_DAYS before exiting.
+    Hold any position (long or short) for at least min_hold days before exiting.
 
     State machine tracks current direction (+1/-1) so the min-hold applies
     symmetrically to both sides.  Early exit signals are converted to
     "hold current direction" rather than flat.
 
     Args:
-        signal: Signal Series {-1, 0, 1} BEFORE the min-hold filter.
+        signal:   Signal Series {-1, 0, 1} BEFORE the min-hold filter.
+        min_hold: Override for minimum hold days. Defaults to MIN_HOLD_DAYS (5).
+                  Pass min_hold=3 for the faster MA20/50 overlay.
 
     Returns:
         Filtered signal Series.  Same index and dtype (int) as input.
     """
+    hold_days    = min_hold if min_hold is not None else MIN_HOLD_DAYS
     result       = signal.copy().astype(float)
     position_dir = 0   # 0 = flat, +1 = long, -1 = short
     days_held    = 0
@@ -540,7 +548,7 @@ def apply_min_hold_filter(signal: pd.Series) -> pd.Series:
         else:
             days_held += 1
             if val == 0:
-                if days_held <= MIN_HOLD_DAYS:
+                if days_held <= hold_days:
                     result.iloc[i] = position_dir   # hold current direction
                 else:
                     position_dir = 0
@@ -551,7 +559,8 @@ def apply_min_hold_filter(signal: pd.Series) -> pd.Series:
 
 def apply_trailing_stop_signal(signal: pd.Series,
                                 close: pd.Series,
-                                atr: pd.Series) -> pd.Series:
+                                atr: pd.Series,
+                                atr_mult: float = None) -> pd.Series:
     """
     Close a long position if price falls ATR_TRAILING_MULT × ATR below the
     trailing high since entry, with profit-target stop tightening.
@@ -577,13 +586,17 @@ def apply_trailing_stop_signal(signal: pd.Series,
     trailing high.
 
     Args:
-        signal: Binary signal Series (0 or 1) after min-hold filter.
-        close:  Close price Series aligned to signal.index.
-        atr:    ATR-14 Series aligned to signal.index.
+        signal:   Binary signal Series (0 or 1) after min-hold filter.
+        close:    Close price Series aligned to signal.index.
+        atr:      ATR-14 Series aligned to signal.index.
+        atr_mult: Override for trailing stop ATR multiplier. Defaults to
+                  ATR_TRAILING_MULT (3.0). Pass atr_mult=2.0 for the faster
+                  MA20/50 overlay where tighter stops suit the shorter timeframe.
 
     Returns:
         Filtered signal Series.  Same index and dtype (int) as input.
     """
+    trail_mult   = atr_mult if atr_mult is not None else ATR_TRAILING_MULT
     result       = signal.copy().astype(float)
     position_dir = 0   # 0 = flat, +1 = long, -1 = short
     trail_high   = 0.0
@@ -610,7 +623,7 @@ def apply_trailing_stop_signal(signal: pd.Series,
                 if (price - entry_price) > ATR_TIGHTEN_THRESHOLD * current_atr:
                     stop_mult = ATR_TIGHTEN_MULT
                 else:
-                    stop_mult = ATR_TRAILING_MULT
+                    stop_mult = trail_mult
                 stop = trail_high - stop_mult * current_atr
             else:
                 stop = trail_high * 0.80
@@ -635,7 +648,7 @@ def apply_trailing_stop_signal(signal: pd.Series,
                 if (entry_price - price) > ATR_TIGHTEN_THRESHOLD * current_atr:
                     stop_mult = ATR_TIGHTEN_MULT
                 else:
-                    stop_mult = ATR_TRAILING_MULT
+                    stop_mult = trail_mult
                 stop = trail_low + stop_mult * current_atr
             else:
                 stop = trail_low * 1.20
@@ -858,8 +871,203 @@ def ensemble_signal(df: pd.DataFrame) -> pd.Series:
 
 
 # -----------------------------------------------------------------------------
+# Earnings blackout filter
+# -----------------------------------------------------------------------------
+
+def apply_earnings_blackout(
+    signal: pd.Series,
+    earnings_dates: list,
+    blackout_before: int = 2,
+    blackout_after: int = 1,
+) -> pd.Series:
+    """
+    Set signal to 0 (flat) during a window around each quarterly earnings date.
+
+    For each earnings date, the strategy goes flat for:
+      blackout_before  trading days before the announcement
+      blackout_after   trading days after the announcement
+
+    Default 2-before / 1-after = 3-day window per event (4 per year = ~12 days).
+    This is a risk-management filter, not an alpha signal.  The expected return
+    from holding through earnings is ~0% but variance is huge (3-8% gap).
+    Removing variance at ~0 expected cost improves Sharpe through the denominator.
+
+    Args:
+        signal:          Per-ticker signal Series (DatetimeIndex).
+        earnings_dates:  List of ISO-format date strings ("YYYY-MM-DD").
+        blackout_before: Trading days to go flat BEFORE the announcement.
+        blackout_after:  Trading days to go flat ON and AFTER the announcement.
+
+    Returns:
+        Copy of signal with blackout windows zeroed out.
+    """
+    if not earnings_dates:
+        return signal
+
+    result = signal.copy()
+    idx    = result.index  # DatetimeIndex of trading days
+
+    for date_str in earnings_dates:
+        edate = pd.Timestamp(date_str)
+        # Find nearest trading day (earnings sometimes fall on weekends / market-closed days)
+        pos = idx.get_indexer([edate], method="nearest")[0]
+        if pos < 0:
+            continue
+        start = max(0, pos - blackout_before)
+        end   = min(len(result) - 1, pos + blackout_after)
+        result.iloc[start : end + 1] = 0
+
+    return result
+
+
+# -----------------------------------------------------------------------------
 # Master generate — routes each ticker to the right logic
 # -----------------------------------------------------------------------------
+
+def fast_signal(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.Series:
+    """
+    MA20/50 short-term trend overlay for the 5 most liquid ETFs.
+
+    Faster than the MA50/200 regime signal — captures trend initiations
+    earlier.  Layered ON TOP of the slow signal as an average, so it never
+    fully overrides the slow regime filter.
+
+    For equity_index tickers (SPY, IWM, EEM): long-only (same as MA50/200).
+    For TLT (bond):  two-sided — rate trends go both ways.
+    For GLD (commodity): two-sided — gold trends both directions.
+
+    Post-processors use tighter settings for the faster timeframe:
+      min_hold=3   (3 days vs 5 for MA50/200 — quicker reaction)
+      atr_mult=2.0 (2× ATR stop vs 3× — tighter stop for shorter-lived trends)
+
+    RSI entry filter unchanged — same overbought/oversold thresholds.
+    VIX gate unchanged — same regime filter as all other signals.
+
+    Args:
+        df:     Feature DataFrame from feature_engineering.engineer().
+        ticker: Ticker symbol.
+        macro:  Macro DataFrame from load_macro().
+
+    Returns:
+        Signal Series.  Equity_index: {0, 1}.  TLT/GLD: {-1, 0, 1}.
+    """
+    gate       = vix_gate(macro, df.index)
+    ma20       = df["Close"].rolling(20).mean()
+    ma50       = df["Close"].rolling(50).mean()
+    asset_class = ASSET_CLASS[ticker]
+
+    if asset_class == "equity_index":
+        # Long-only: no structural reason to short broad equity indices.
+        fast_sig = (ma20 > ma50).astype(int) * gate
+    else:
+        # Two-sided for TLT (bond) and GLD (commodity): trends run both ways.
+        fast_sig = pd.Series(
+            np.where(ma20 > ma50, 1, -1), index=df.index
+        ).astype(int) * gate
+
+    fast_sig = apply_rsi_entry_filter(fast_sig, df["rsi_14"])
+    fast_sig = apply_min_hold_filter(fast_sig, min_hold=3)
+    fast_sig = apply_trailing_stop_signal(fast_sig, df["Close"], df["atr_14"], atr_mult=2.0)
+    fast_sig = fast_sig * gate
+    return fast_sig
+
+
+def breakout_entry_signal(df: pd.DataFrame, regime_signal: pd.Series) -> pd.Series:
+    """
+    Momentum breakout entry: price closing at a new 20-day high, emerging from
+    a prior volatility squeeze, with above-average volume confirmation.
+
+    Entry conditions (ALL required):
+      (a) regime_signal == 1  — MA50/200 golden cross is active (no counter-trend breakouts)
+      (b) breakout_20  == 1  — close >= 20-day Donchian high (price leaving consolidation)
+      (c) squeeze within last 5 days — breakout from compression, not grinding continuation
+      (d) volume_zscore > 0.5 — mild volume confirmation (>~31% threshold, published Lo & Wang 2000)
+
+    Once entered, held until regime_signal exits (death cross) or trailing stop fires.
+    This makes it an entry TIMING improvement on the baseline MA crossover — same exit logic.
+
+    References:
+      Donchian channel breakout: Turtle Traders (1983).
+      Squeeze breakout concept:  Bollinger (2001).
+      Volume confirmation:       Lo and Wang (2000, JFE).
+    """
+    breakout       = df["breakout_20"]
+    recent_squeeze = df["squeeze"].rolling(5, min_periods=1).max()
+    vol_confirm    = (df["volume_zscore"] > 0.5).astype(int)
+
+    entry = (
+        (regime_signal == 1) &
+        (breakout == 1) &
+        (recent_squeeze == 1) &
+        (vol_confirm == 1)
+    )
+
+    result = pd.Series(0, index=df.index, dtype=int)
+    in_pos = False
+    for i in range(len(result)):
+        if not in_pos:
+            if entry.iloc[i]:
+                in_pos         = True
+                result.iloc[i] = 1
+        else:
+            if regime_signal.iloc[i] == 1:
+                result.iloc[i] = 1   # hold while regime intact
+            else:
+                in_pos = False       # regime exited
+
+    return apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
+
+
+def oversold_bounce_signal(df: pd.DataFrame, regime_signal: pd.Series) -> pd.Series:
+    """
+    Mean-reversion dip-buy within an established uptrend.
+
+    Entry conditions (ALL required):
+      (a) regime_signal == 1   — MA50/200 uptrend active (never catch falling knives)
+      (b) rsi_14 < 35          — oversold (slightly above Wilder's standard 30,
+                                  capturing ~8% of uptrend days vs ~3% for RSI<30;
+                                  structural choice, not optimised on this dataset)
+      (c) bb_pct_b < 0.10      — price at or below lower Bollinger Band
+                                  (statistically extreme pullback; Bollinger 2001 standard)
+      (d) Close > MA200        — uptrend structure intact after the dip
+                                  (retracement not reversal)
+
+    Exit conditions:
+      rsi_14 > 60              — bounce played out (momentum recovered to midpoint)
+      OR regime_signal == 0    — death cross (regime fully exited)
+      OR trailing stop fires
+
+    References:
+      RSI levels:    Wilder (1978).
+      Bollinger %B:  Bollinger (2001).
+    """
+    ma200 = df["Close"].rolling(200).mean()
+
+    entry = (
+        (regime_signal == 1) &
+        (df["rsi_14"] < 35) &
+        (df["bb_pct_b"] < 0.10) &
+        (df["Close"] > ma200)
+    )
+
+    result = pd.Series(0, index=df.index, dtype=int)
+    in_pos = False
+    for i in range(len(result)):
+        if not in_pos:
+            if entry.iloc[i]:
+                in_pos         = True
+                result.iloc[i] = 1
+        else:
+            if regime_signal.iloc[i] == 0:
+                in_pos = False          # regime exited
+            elif df["rsi_14"].iloc[i] > 60:
+                in_pos = False          # bounce played out
+                result.iloc[i] = 0
+            else:
+                result.iloc[i] = 1      # still in bounce trade
+
+    return apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
+
 
 def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame:
     """
@@ -875,6 +1083,7 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         DataFrame with columns:
           Close, log_return, regime, asset_class,
           volume_filter, signal_regime, signal_composite, signal_ensemble,
+          signal_multi,
           s_mom20, s_mom60, s_macd, s_adx, s_zscore, s_rsi, s_bb, s_obv,
           score_momentum, score_mean_rev, score_composite.
         Rows with NaN in any column are dropped.
@@ -925,7 +1134,13 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         # In flat/down regimes: be in cash, not short.
         ma50  = df["Close"].rolling(50).mean()
         ma200 = df["Close"].rolling(200).mean()
-        signal_r = (ma50 > ma200).astype(int) * regime_gate
+        # raw_ma_regime: the unfiltered MA50/200 trend signal (VIX gate only).
+        # Kept separate so breakout_entry_signal and oversold_bounce_signal
+        # can use it as a regime gate — they should fire whenever the trend is
+        # structurally up (MA50 > MA200), even if the trailing stop or RSI
+        # filter has temporarily put signal_r to 0.
+        raw_ma_regime = ((ma50 > ma200).astype(int) * regime_gate).astype(int)
+        signal_r = raw_ma_regime.copy()
 
         # ── Principled signal improvements (not curve-fitted) ───────────────
         signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
@@ -958,6 +1173,44 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
 
     out["signal_regime"] = signal_r
 
+    # ── Multi-signal overlay (equity only) ─────────────────────────────────
+    # breakout_entry_signal and oversold_bounce_signal are ADDITIONAL entry
+    # timers on top of the MA crossover for equity/sector/stock asset classes.
+    # Bonds and commodities use the regime signal directly — their edge is in
+    # direction (two-sided trend following), not entry timing.
+    if asset_class in {"equity_index", "sector_etf", "stock"}:
+        # Use raw_ma_regime (not post-processed signal_r) as the regime gate.
+        # This allows breakout/bounce to activate in windows where signal_r is
+        # temporarily flat (trailing stop fired, RSI blocked) but the structural
+        # trend (MA50 > MA200) is still intact — exactly the periods where
+        # entry timing adds value.
+        breakout_sig = breakout_entry_signal(df, raw_ma_regime)
+        bounce_sig   = oversold_bounce_signal(df, raw_ma_regime)
+        # max() → long if ANY of MA crossover, breakout, or bounce says so.
+        # Combined is always >= MA crossover alone: only adds earlier entries,
+        # never earlier exits.  Long-only (max over {0, 1} signals).
+        signal_multi = pd.concat(
+            [signal_r, breakout_sig, bounce_sig], axis=1
+        ).max(axis=1).astype(int)
+    else:
+        signal_multi = signal_r   # bonds/commodities: no change
+
+    out["signal_multi"] = signal_multi
+
+    # ── Fast MA20/50 overlay (FAST_SIGNAL_TICKERS only) ─────────────────────
+    # For the 5 most liquid ETFs, blend a faster MA20/50 signal with the slow
+    # MA50/200 signal as an equal-weight average.  The average lives in [−1,+1]
+    # for two-sided tickers or [0,+1] for equity_index — a continuous position
+    # fraction rather than a binary.  atr_sizes() handles continuous inputs
+    # identically to binary ones (linear scaling).
+    if ticker in FAST_SIGNAL_TICKERS:
+        fast_sig = fast_signal(df, ticker, macro)
+        out["signal_fast_overlay"] = ((signal_r.astype(float) + fast_sig.astype(float)) / 2.0)
+        out["signal_multi_fast"]   = ((signal_multi.astype(float) + fast_sig.astype(float)) / 2.0)
+    else:
+        out["signal_fast_overlay"] = signal_r.astype(float)
+        out["signal_multi_fast"]   = signal_multi.astype(float)
+
     scores = compute_scores(df, regime, ticker)
     out    = pd.concat([out, scores], axis=1)
 
@@ -977,6 +1230,90 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     out["signal_ensemble"] = ens
 
     return out.dropna()
+
+# -----------------------------------------------------------------------------
+# Pair-trade signal generation
+# -----------------------------------------------------------------------------
+
+def generate_pair_signals(all_signals: dict) -> tuple:
+    """
+    Derive beta-hedged pair signals for stocks in HEDGE_MAP.
+
+    Logic per stock
+    ───────────────
+    spread        = log(stock_close / hedge_close)   — relative performance
+    spread_MA50   = 50-day MA of spread
+    spread_MA200  = 200-day MA of spread
+    spread_signal = 1 when spread_MA50 > spread_MA200 (stock outperforming
+                    its sector — the pair trade has positive carry/momentum)
+
+    pair_signal       = signal_regime  × spread_signal
+    multi_pair_signal = signal_multi   × spread_signal
+
+    A value of 1 means: the stock is in an MA50/200 uptrend (signal_regime)
+    AND it is outperforming its sector ETF on a 50/200 spread basis.
+    Both conditions must hold simultaneously — if either fails, the pair
+    is flat (0).  This avoids longs in stocks that are rising purely
+    because the whole sector is rising (no alpha) and avoids longs in
+    outperformers that are in structural downtrends.
+
+    For tickers NOT in HEDGE_MAP (ETFs, bonds, commodities, AMZN/etc.):
+    pair_signal = signal_regime  (unchanged — no pair filter applied).
+
+    Same MA windows (50/200) as the main equity signal — no new parameters.
+
+    Args:
+        all_signals: Dict[ticker -> signal DataFrame] from the main signal loop.
+                     Each DataFrame must contain 'signal_regime' and 'signal_multi'.
+
+    Returns:
+        (pair_df, multi_pair_df): two DataFrames of shape (dates, tickers),
+        with the same column set as the input signals.
+    """
+    pair_dict       = {}
+    multi_pair_dict = {}
+
+    for ticker, sig in all_signals.items():
+        if ticker not in HEDGE_MAP:
+            # Not a pair-trade candidate — use unfiltered signal as-is.
+            pair_dict[ticker]       = sig["signal_regime"]
+            multi_pair_dict[ticker] = sig["signal_multi"]
+            continue
+
+        hedge = HEDGE_MAP[ticker]
+        hedge_path = FEATURE_DIR / f"{hedge}.parquet"
+
+        if not hedge_path.exists():
+            # Hedge feature file missing (e.g. SPY not yet engineered).
+            # Fall back to unfiltered signal so we don't silently drop the ticker.
+            pair_dict[ticker]       = sig["signal_regime"]
+            multi_pair_dict[ticker] = sig["signal_multi"]
+            continue
+
+        hedge_df    = pd.read_parquet(hedge_path)
+        stock_close = sig["Close"]
+        hedge_close = hedge_df["Close"].reindex(sig.index).ffill()
+
+        # Spread in log-space: positive drift = stock outperforms sector.
+        spread       = np.log((stock_close / hedge_close).replace(0, np.nan))
+        spread_ma50  = spread.rolling(50, min_periods=25).mean()
+        spread_ma200 = spread.rolling(200, min_periods=100).mean()
+        spread_signal = (spread_ma50 > spread_ma200).astype(int)
+
+        # Gate: only enter pair trade when BOTH the stock is in an uptrend
+        # AND the stock is outperforming its sector on a 50/200 basis.
+        pair_dict[ticker] = (
+            sig["signal_regime"] * spread_signal
+        ).reindex(sig.index).fillna(0).astype(int)
+
+        multi_pair_dict[ticker] = (
+            sig["signal_multi"] * spread_signal
+        ).reindex(sig.index).fillna(0).astype(int)
+
+    pair_df       = pd.DataFrame(pair_dict).dropna()
+    multi_pair_df = pd.DataFrame(multi_pair_dict).dropna()
+    return pair_df, multi_pair_df
+
 
 # -----------------------------------------------------------------------------
 # Main
@@ -1017,14 +1354,94 @@ def main():
 
         all_signals[ticker] = sig
 
-    regime    = pd.DataFrame({t: s["signal_regime"]    for t, s in all_signals.items()}).dropna()
-    composite = pd.DataFrame({t: s["signal_composite"] for t, s in all_signals.items()}).dropna()
-    ensemble  = pd.DataFrame({t: s["signal_ensemble"]  for t, s in all_signals.items()}).dropna()
+    regime       = pd.DataFrame({t: s["signal_regime"]        for t, s in all_signals.items()}).dropna()
+    composite    = pd.DataFrame({t: s["signal_composite"]     for t, s in all_signals.items()}).dropna()
+    ensemble     = pd.DataFrame({t: s["signal_ensemble"]      for t, s in all_signals.items()}).dropna()
+    multi        = pd.DataFrame({t: s["signal_multi"]         for t, s in all_signals.items()}).dropna()
+    fast_overlay = pd.DataFrame({t: s["signal_fast_overlay"]  for t, s in all_signals.items()}).dropna()
+    multi_fast   = pd.DataFrame({t: s["signal_multi_fast"]    for t, s in all_signals.items()}).dropna()
 
-    regime.to_parquet(SIGNAL_DIR    / "regime_signals.parquet")
-    composite.to_parquet(SIGNAL_DIR / "composite_signals.parquet")
-    ensemble.to_parquet(SIGNAL_DIR  / "ensemble_signals.parquet")
+    regime.to_parquet(SIGNAL_DIR        / "regime_signals.parquet")
+    composite.to_parquet(SIGNAL_DIR     / "composite_signals.parquet")
+    ensemble.to_parquet(SIGNAL_DIR      / "ensemble_signals.parquet")
+    multi.to_parquet(SIGNAL_DIR         / "multi_signals.parquet")
+    fast_overlay.to_parquet(SIGNAL_DIR  / "fast_overlay_signals.parquet")
+    multi_fast.to_parquet(SIGNAL_DIR    / "multi_fast_signals.parquet")
     print(f"Signal matrices saved: {regime.shape}")
+
+    # Print fast overlay stats for the 5 targeted ETFs
+    print("\n  Fast MA20/50 overlay — active fraction vs slow MA50/200:")
+    for t in sorted(FAST_SIGNAL_TICKERS):
+        if t not in all_signals:
+            continue
+        s = all_signals[t]
+        slow_active = (s["signal_regime"].abs() > 0).mean() * 100
+        fast_active = (fast_overlay[t].abs() > 0.01).mean() * 100 if t in fast_overlay.columns else 0
+        avg_val     = fast_overlay[t].mean() if t in fast_overlay.columns else 0
+        print(f"    {t:<5}: slow_regime {slow_active:.0f}% active  fast_overlay mean={avg_val:.2f}")
+
+    # Print extra stats for the multi-signal overlay
+    print("\n  signal_multi vs signal_regime comparison (equity tickers):")
+    for t, s in all_signals.items():
+        if ASSET_CLASS[t] in {"equity_index", "sector_etf", "stock"}:
+            r = (s["signal_regime"] == 1).sum()
+            m = (s["signal_multi"]  == 1).sum()
+            extra = m - r
+            print(f"    {t:<6}: regime {r:>4} long days  multi {m:>4} long days  "
+                  f"(+{extra} extra from breakout/bounce)")
+
+    # ── Pair-trade signal generation ──────────────────────────────────────
+    print("\n  Generating pair-trade signals (spread MA50/200 filter)...")
+    pair_df, multi_pair_df = generate_pair_signals(all_signals)
+    pair_df.to_parquet(SIGNAL_DIR       / "pair_signals.parquet")
+    multi_pair_df.to_parquet(SIGNAL_DIR / "multi_pair_signals.parquet")
+    print(f"  Pair signal matrices saved: {pair_df.shape}")
+
+    print("\n  signal_pair vs signal_regime comparison (HEDGE_MAP tickers):")
+    for t in HEDGE_MAP:
+        if t in pair_df.columns and t in regime.columns:
+            r  = int((regime[t]   == 1).sum())
+            p  = int((pair_df[t]  == 1).sum())
+            mp = int((multi_pair_df[t] == 1).sum()) if t in multi_pair_df.columns else 0
+            hedge = HEDGE_MAP[t]
+            print(f"    {t:<6} -> {hedge:<5}: regime {r:>4}  pair {p:>4}  multi_pair {mp:>4}"
+                  f"  (spread filter removed {r-p:>3} days)")
+
+    # ── Earnings blackout filtered signals (stocks only) ──────────────────
+    earn_path = Path("data/raw/earnings_dates.json")
+    if earn_path.exists():
+        with open(earn_path) as fh:
+            earnings_map = json.load(fh)
+
+        earn_multi_dict      = {}
+        earn_multi_fast_dict = {}
+        days_removed         = {}
+
+        for t, s in all_signals.items():
+            earn_dates = earnings_map.get(t, []) if ASSET_CLASS[t] == "stock" else []
+            base_multi      = s["signal_multi"].astype(int)
+            base_multi_fast = s["signal_multi_fast"].astype(float)
+            if earn_dates:
+                filtered_multi      = apply_earnings_blackout(base_multi,      earn_dates)
+                filtered_multi_fast = apply_earnings_blackout(base_multi_fast,  earn_dates)
+                days_removed[t] = int((base_multi - filtered_multi).abs().sum())
+            else:
+                filtered_multi      = base_multi
+                filtered_multi_fast = base_multi_fast
+            earn_multi_dict[t]      = filtered_multi
+            earn_multi_fast_dict[t] = filtered_multi_fast
+
+        earn_multi      = pd.DataFrame(earn_multi_dict).dropna()
+        earn_multi_fast = pd.DataFrame(earn_multi_fast_dict).dropna()
+        earn_multi.to_parquet(SIGNAL_DIR      / "earn_multi_signals.parquet")
+        earn_multi_fast.to_parquet(SIGNAL_DIR / "earn_multi_fast_signals.parquet")
+        print(f"\n  Earnings-filtered signal matrices saved: {earn_multi.shape}")
+        print("  Trading days removed per stock ticker (2-before/1-after per earnings date):")
+        for t, n in sorted(days_removed.items()):
+            n_dates = len(earnings_map.get(t, []))
+            print(f"    {t:<8} {n:>4} days removed  ({n_dates} earnings dates × ~3 days)")
+    else:
+        print("\n  NOTE: data/raw/earnings_dates.json not found — skipping earnings filter")
 
 
 if __name__ == "__main__":

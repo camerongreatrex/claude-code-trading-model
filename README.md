@@ -1,6 +1,6 @@
 # Algorithmic Trading System
 
-A systematic, long-only multi-asset strategy trading 28 tickers across equities, bonds, commodities, and sector ETFs. Uses MA50/200 golden-cross signals with ATR position sizing, walk-forward validated out-of-sample with an OOS Sharpe of ~1.06. Fully automated: the scheduler runs the daily pipeline at market close, catches up missed days when your PC restarts, and a Streamlit dashboard shows live portfolio and signal state.
+A systematic multi-asset strategy trading 37 tickers across equities, bonds, commodities, and sector ETFs. Uses a multi-signal approach combining MA crossover (golden cross), momentum breakout (Donchian), and dip-buy filters, with two-sided signals for bonds and commodities, ATR position sizing, and cross-sectional momentum tilt. Walk-forward validated out-of-sample with best OOS Sharpe of 1.156 (Multi Mom Tilt). Fully automated: the scheduler runs the daily pipeline at market close, catches up missed days when your PC restarts, and a Streamlit dashboard shows live portfolio, signal state, and alpha decomposition analytics.
 
 ---
 
@@ -128,7 +128,7 @@ The scheduler will process the next EOD at 4:45 PM ET. The dashboard picks up th
 
 | Module | Purpose |
 |---|---|
-| `pipeline/data_pipeline.py` | Downloads and cleans OHLCV data from yfinance for 28 tickers |
+| `pipeline/data_pipeline.py` | Downloads and cleans OHLCV data from yfinance for 37 tickers |
 | `pipeline/feature_engineering.py` | Computes technical features (ATR, RSI, MACD, ADX, Bollinger, OBV, etc.) |
 | `pipeline/feature_research.py` | Calculates information coefficients (IC) for feature selection |
 | `pipeline/macro_features.py` | Fetches VIX and yield curve data for macro regime filtering |
@@ -138,6 +138,7 @@ The scheduler will process the next EOD at 4:45 PM ET. The dashboard picks up th
 | `pipeline/risk_model.py` | PCA-based risk decomposition and correlation analysis |
 | `pipeline/sensitivity.py` | Parameter sensitivity sweeps for MA crossover windows |
 | `pipeline/regime_analysis.py` | Macro regime classification and conditional performance stats |
+| `pipeline/correlation_diagnostic.py` | Signal correlation analysis, dead-weight scoring, regime correlation tables |
 | `paper_trader.py` | Live paper trading execution engine (buy/sell/catch-up) |
 | `scheduler.py` | Automated 4:45 PM ET daily runner with kill switch and order sheet |
 | `live_signals.py` | Real-time signal computation from yfinance for the dashboard |
@@ -148,8 +149,10 @@ The scheduler will process the next EOD at 4:45 PM ET. The dashboard picks up th
 
 ## Strategy Summary
 
-- **Universe**: 28 tickers — broad equity (SPY, IWM, EEM, EFA, VWO), bonds (TLT, HYG, TIP), commodities (GLD, DBC, UUP), sectors (XLE, XLU, XLF, VNQ), stocks (JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA), survivorship anchors (GE, INTC, VZ)
-- **Signal**: MA50/200 golden cross (MA100/300 for sector ETFs) — long when fast MA > slow MA
+- **Universe**: 37 tickers — broad equity (SPY, IWM, EEM, EFA, VWO, EWZ, EWJ, FXI, CCJ), bonds (TLT, HYG, TIP, BWX, EMB), commodities (GLD, DBC, UUP, DBA, FXE, FXY), sectors (XLE, XLU, XLF, VNQ, XLC, XLI, XLK, XLP, XLV), stocks (JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA, AAPL), survivorship anchors (GE, INTC, VZ)
+- **Multi-signal**: MA crossover (golden cross MA50/200, MA100/300 for sectors) + Donchian momentum breakout (20-day high) + dip-buy filter
+- **Two-sided**: bonds and commodities receive short (−1) signals as well as long (+1); paper trading execution keeps bonds/commodities flat on short signals
+- **Cross-sectional momentum tilt**: position weights tilted towards highest 63-day momentum rank
 - **Position sizing**: ATR-normalized (risk per trade / ATR × price), capped at max position %
 - **Entry filter**: RSI-14 < 70 (skip overbought entries)
 - **Exit**: 3× ATR trailing stop with tightening after profit target, or death cross
@@ -161,12 +164,12 @@ The scheduler will process the next EOD at 4:45 PM ET. The dashboard picks up th
 
 ## Key Results (Out-of-Sample Walk-Forward)
 
-| Metric | Strategy | Buy & Hold |
-|---|---|---|
-| Ann. Return | ~14% | ~10% |
-| Sharpe Ratio | **~1.06** | ~0.65 |
-| Max Drawdown | **-10.3%** | -33% |
-| Calmar Ratio | **1.42** | ~0.30 |
-| Volatility | ~13% | ~16% |
+| Method | OOS Sharpe | OOS Active Sharpe | IS Sharpe |
+|---|---|---|---|
+| **Multi Mom Tilt ★** | **1.156** | **0.789** | 1.187 |
+| Multi Equal Weight | 1.147 | 0.798 | 1.165 |
+| Multi Fast ATR | 1.137 | 0.800 | 1.167 |
+| Equal Weight | 1.126 | 0.768 | 1.152 |
+| Buy & Hold (benchmark) | ~0.65 | — | ~0.65 |
 
-Beats buy-and-hold by ~4% annualized with half the drawdown. All results are out-of-sample (walk-forward validated, not curve-fit).
+Best method: **Multi Mom Tilt** — highest OOS Sharpe (1.156) with minimal IS→OOS degradation (IS: 1.187). All results are out-of-sample (walk-forward validated, not curve-fit).

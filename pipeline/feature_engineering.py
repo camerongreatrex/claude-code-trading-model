@@ -40,6 +40,7 @@ Features produced (per ticker)
 
   Cross-sectional features (requires closes_matrix — see engineer()):
   xsec_mom_20      — percentile rank of 20-day return vs full universe (0–1)
+  xsec_mom_63      — percentile rank of 63-day (3-month) return vs universe (0–1)
   xsec_vol_rank    — percentile rank of 20-day realised vol vs full universe (0–1)
   relative_strength — 60-day return minus equal-weighted universe 60-day return
 
@@ -458,8 +459,8 @@ def add_cross_sectional(
                         data_pipeline.main().
 
     Returns:
-        Copy of df with three additional columns: xsec_mom_20,
-        xsec_vol_rank, relative_strength.
+        Copy of df with four additional columns: xsec_mom_20,
+        xsec_vol_rank, relative_strength, xsec_mom_63.
 
     Note:
         If ticker is not a column of closes_matrix, all three features
@@ -473,6 +474,7 @@ def add_cross_sectional(
         df["xsec_mom_20"]      = np.nan
         df["xsec_vol_rank"]    = np.nan
         df["relative_strength"] = np.nan
+        df["xsec_mom_63"]      = np.nan
         return df
 
     # Align closes_matrix to the dates in this ticker's DataFrame.
@@ -496,6 +498,42 @@ def add_cross_sectional(
     universe_avg60  = mom60.mean(axis=1)               # equal-weight avg at each date
     df["relative_strength"] = mom60[ticker] - universe_avg60
 
+    # ── xsec_mom_63: 63-day (3-month) return percentile rank ───────────────────
+    # Jegadeesh-Titman (1993) momentum sweet spot: 63 trading days captures
+    # the strongest and most-replicated momentum window.  Shorter windows
+    # (< 20d) capture mean-reversion; longer (> 252d) capture reversal.
+    # rank(pct=True) → [0, 1] percentile rank. 0 = worst, 1 = best.
+    # Uses only trailing data (pct_change looks back) — no look-ahead. ✓
+    mom63      = closes.pct_change(63)
+    xsec_mom63 = mom63.rank(axis=1, pct=True, na_option="keep")[ticker]
+    df["xsec_mom_63"] = xsec_mom63
+
+    return df
+
+
+def add_breakout_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Donchian channel breakout and squeeze detection features.
+
+    donchian_high_20  — rolling 20-day high (resistance level)
+    donchian_low_20   — rolling 20-day low  (support level)
+    breakout_20       — 1 when close >= 20-day high (new high breakout)
+    donchian_width_pct — channel width as fraction of close price
+    squeeze           — 1 when width is in the bottom 20th percentile of its
+                        own 252-day history (volatility compression before explosive move)
+
+    All lookbacks are strictly backward — no look-ahead.
+
+    References:
+      Donchian channel: Richard Dennis / Turtle Traders (1983 — published).
+      Squeeze percentile: Bollinger, "Bollinger on Bollinger Bands" (2001).
+    """
+    df["donchian_high_20"]   = df["High"].rolling(20).max()
+    df["donchian_low_20"]    = df["Low"].rolling(20).min()
+    df["breakout_20"]        = (df["Close"] >= df["donchian_high_20"]).astype(int)
+    df["donchian_width_pct"] = (df["donchian_high_20"] - df["donchian_low_20"]) / df["Close"]
+    width_rank = df["donchian_width_pct"].rolling(252, min_periods=63).rank(pct=True)
+    df["squeeze"] = (width_rank < 0.20).astype(int)
     return df
 
 
@@ -541,6 +579,7 @@ def engineer(
     df = add_adx(df)
     df = add_zscore(df)
     df = add_bollinger_bands(df)
+    df = add_breakout_features(df)
     df = add_volume_signals(df)
     df = add_volatility_regime(df)
 

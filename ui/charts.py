@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
 from paper_trader import INITIAL_CAPITAL as PT_INITIAL_CAPITAL
-from ui.styles import _layout, PALETTE, LABELS
+from ui.styles import _layout, PALETTE, LABELS, get_color, get_label
 
 
 def metrics(ret: pd.Series) -> dict:
@@ -68,14 +68,13 @@ def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
         Max DD, Calmar, Win Rate].  One row per sizing method present in df_port.
     """
     rows = []
-    for col in ["equal_weight", "atr_sized", "atr_pca_macro", "eq_dd_control",
-                "vol_target", "buy_hold"]:
-        if col not in df_port.columns:
-            continue
+    for col in df_port.columns:
         ret = df_port[col].pct_change().dropna()
         m   = metrics(ret)
+        if not m:
+            continue
         rows.append({
-            "Method"      : LABELS[col],
+            "Method"      : get_label(col),
             "Ann. Return" : f"{m['ann_r']*100:+.1f}%",
             "Volatility"  : f"{m['vol']*100:.1f}%",
             "Sharpe"      : f"{m['sharpe']:.2f}",
@@ -87,33 +86,42 @@ def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Chart builders ────────────────────────────────────────────────────────────
-def chart_equity(df: pd.DataFrame, height: int = 420) -> go.Figure:
+def chart_equity(df: pd.DataFrame, height: int = 420,
+                 columns: list = None) -> go.Figure:
     """
-    Build a multi-line equity curve chart for all portfolio sizing methods.
+    Build a multi-line equity curve chart for portfolio sizing methods.
 
     Adds one go.Scatter trace per method present in df.  Buy & Hold is
     rendered as a dotted line to visually distinguish the benchmark from
     the strategy variants.
 
     Args:
-        df:     DataFrame indexed by date with one column per sizing method
-                (keys defined in PALETTE/LABELS).
-        height: Chart height in pixels.
+        df:      DataFrame indexed by date with one column per sizing method.
+        height:  Chart height in pixels.
+        columns: Optional list of column names to plot. If None, plots the
+                 top 5 columns by final value plus buy_hold.
 
     Returns:
         go.Figure with dragmode="pan" and scrollZoom enabled via config at
         the call site.
     """
+    if columns is None:
+        non_bh = [c for c in df.columns if c != "buy_hold"]
+        top5   = sorted(non_bh, key=lambda c: df[c].iloc[-1] if not df[c].empty else 0,
+                        reverse=True)[:5]
+        columns = top5 + (["buy_hold"] if "buy_hold" in df.columns else [])
     fig = go.Figure()
-    for col in ["equal_weight", "atr_sized", "atr_pca_macro", "eq_dd_control", "vol_target", "buy_hold"]:
+    for col in columns:
         if col not in df.columns:
             continue
-        dash = "dot" if col == "buy_hold" else "solid"
+        dash  = "dot" if col == "buy_hold" else "solid"
+        color = get_color(col)
+        label = get_label(col)
         fig.add_trace(go.Scatter(
-            x=df.index, y=df[col], name=LABELS[col],
-            line=dict(color=PALETTE[col], width=1.8, dash=dash),
+            x=df.index, y=df[col], name=label,
+            line=dict(color=color, width=1.8, dash=dash),
             hovertemplate=(
-                f"<b>{LABELS[col]}</b><br>"
+                f"<b>{label}</b><br>"
                 "$%{y:,.0f}<br>"
                 "<i>Total portfolio value on this date (started at $100k).<br>"
                 "A rising line means the strategy is making money.</i>"
@@ -131,38 +139,46 @@ def chart_equity(df: pd.DataFrame, height: int = 420) -> go.Figure:
     return fig
 
 
-def chart_drawdown(df: pd.DataFrame, height: int = 420) -> go.Figure:
+def chart_drawdown(df: pd.DataFrame, height: int = 420,
+                   columns: list = None) -> go.Figure:
     """
-    Build a drawdown chart comparing the equal-weight strategy to Buy & Hold.
+    Build a drawdown chart for selected portfolio sizing methods.
 
     Computes percentage drawdown as (price − rolling_peak) / rolling_peak × 100
     and renders each as a filled area trace so shallow drawdowns are immediately
     visible against the dark background.
 
-    Only the equal_weight and buy_hold columns are plotted (the others would
-    create a cluttered chart; this pair provides the most useful comparison).
-
     Args:
-        df:     DataFrame indexed by date with at least columns
-                [equal_weight, buy_hold].
-        height: Chart height in pixels.
+        df:      DataFrame indexed by date with one column per sizing method.
+        height:  Chart height in pixels.
+        columns: Optional list of column names to plot. If None, plots the
+                 top 3 columns by final value plus buy_hold.
 
     Returns:
         go.Figure with fill="tozeroy" traces and dragmode="pan".
     """
+    if columns is None:
+        non_bh = [c for c in df.columns if c != "buy_hold"]
+        top3   = sorted(non_bh, key=lambda c: df[c].iloc[-1] if not df[c].empty else 0,
+                        reverse=True)[:3]
+        columns = top3 + (["buy_hold"] if "buy_hold" in df.columns else [])
+    alphas = [0.18, 0.14, 0.10, 0.08, 0.06]
     fig = go.Figure()
-    for col, alpha in [("equal_weight", 0.18), ("buy_hold", 0.10)]:
+    for idx, col in enumerate(columns):
         if col not in df.columns:
             continue
+        alpha = alphas[min(idx, len(alphas) - 1)]
+        color = get_color(col)
+        label = get_label(col)
         p  = df[col]
         dd = (p - p.cummax()) / p.cummax() * 100
-        r, g, b = (int(PALETTE[col].lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+        r, g, b = (int(color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
         fig.add_trace(go.Scatter(
-            x=df.index, y=dd, name=LABELS[col],
-            line=dict(color=PALETTE[col], width=1.4),
+            x=df.index, y=dd, name=label,
+            line=dict(color=color, width=1.4),
             fill="tozeroy", fillcolor=f"rgba({r},{g},{b},{alpha})",
             hovertemplate=(
-                f"<b>{LABELS[col]}</b><br>"
+                f"<b>{label}</b><br>"
                 "%{y:.1f}% from peak<br>"
                 "<i>How far the portfolio has fallen from its all-time high.<br>"
                 "-15% means it lost 15% from the top before recovering.<br>"
@@ -691,15 +707,20 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
     # Exclude today from daily history — intraday trace covers today
     if not history_df.empty:
         _today_str = pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d')
-        history_df = history_df[history_df["date"].astype(str) < _today_str]
+        # Use .dt.strftime to get clean "YYYY-MM-DD" strings for comparison
+        history_df = history_df[history_df["date"].dt.strftime('%Y-%m-%d') < _today_str].copy()
+        # Plot daily points at 4:00 PM ET so they align with intraday candle closes
+        history_df["plot_ts"] = history_df["date"].dt.strftime('%Y-%m-%d') + "T16:00:00"
 
     # ── Historical equity curve ───────────────────────────────────────────────
     if not history_df.empty:
         fig.add_trace(go.Scatter(
-            x=history_df["date"],
+            x=history_df["plot_ts"],
             y=history_df["portfolio_value"],
             name="Portfolio (daily)",
+            mode="lines+markers",
             line=dict(color="#4a9eff", width=2.2),
+            marker=dict(size=6, color="#4a9eff"),
             hovertemplate=(
                 "<b>%{x|%b %d, %Y}</b><br>"
                 "End-of-day value: <b>$%{y:,.0f}</b><br>"
@@ -762,66 +783,79 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
 
     # ── Trade markers ─────────────────────────────────────────────────────────
     if not trades_df.empty and not history_df.empty:
-        # Map trade date → portfolio_value on that day for marker y-position
-        hist_val = history_df.set_index("date")["portfolio_value"]
+        # Map trade date → portfolio_value on that day for marker y-position.
+        # Index by normalized date string so Timestamp vs string mismatches don't cause KeyErrors.
+        hist_val = (
+            history_df.assign(_d=history_df["date"].dt.strftime('%Y-%m-%d'))
+            .set_index("_d")["portfolio_value"]
+        )
+        _last_pv = float(hist_val.iloc[-1])
 
-        buys  = trades_df[trades_df["action"] == "BUY"].copy()
-        sells = trades_df[trades_df["action"] == "SELL"].copy()
-
-        def _marker_y(dates: pd.Series) -> list:
-            """
-            Look up portfolio value for each trade date to position the marker
-            at the correct y-coordinate on the equity curve.
-
-            Falls back to the last known portfolio value for any trade date
-            that is not found in history (e.g. weekend trades or pre-history).
-            The isinstance(v, pd.Series) guard handles duplicate index entries
-            that pandas returns as a Series rather than a scalar.
-            """
-            last = float(hist_val.iloc[-1])
-            out  = []
-            for d in dates:
+        def _marker_y(date_series: pd.Series) -> list:
+            """One y value per grouped date string; falls back to last known PV."""
+            out = []
+            for d in date_series:
+                key = pd.Timestamp(d).strftime('%Y-%m-%d') if not isinstance(d, str) else d
                 try:
-                    v = hist_val[d]
+                    v = hist_val[key]
                     out.append(float(v.iloc[0]) if isinstance(v, pd.Series) else float(v))
                 except KeyError:
-                    out.append(last)
+                    out.append(_last_pv)
             return out
 
+        def _group_trades(subset: pd.DataFrame) -> pd.DataFrame:
+            """Collapse to one row per trading date; tickers joined as comma list."""
+            subset = subset.copy()
+            subset["_date_str"] = subset["date"].dt.strftime('%Y-%m-%d')
+            grp = (
+                subset.groupby("_date_str")["ticker"]
+                .apply(lambda t: ", ".join(sorted(set(t))))
+                .reset_index()
+            )
+            grp.columns = ["date_str", "tickers"]
+            # x-position: plot at 4 PM ET same as history dots
+            grp["plot_x"] = grp["date_str"] + "T16:00:00"
+            grp["y"] = _marker_y(grp["date_str"])
+            grp["n"] = grp["tickers"].apply(lambda t: len(t.split(",")))
+            return grp
+
+        buys  = trades_df[trades_df["action"] == "BUY"]
+        sells = trades_df[trades_df["action"] == "SELL"]
+
         if not buys.empty:
+            bg = _group_trades(buys)
             fig.add_trace(go.Scatter(
-                x=buys["date"], y=_marker_y(buys["date"]),
+                x=bg["plot_x"], y=bg["y"],
                 mode="markers+text",
                 name="Buy",
-                marker=dict(symbol="triangle-up", size=12,
+                marker=dict(symbol="triangle-up", size=14,
                             color=PALETTE["pos"], line=dict(color="#1c1c1c", width=1)),
-                text=buys["ticker"].tolist(),
+                text=bg["n"].apply(lambda n: f"+{n}"),
                 textposition="top center",
                 textfont=dict(size=9, color=PALETTE["pos"]),
+                customdata=bg["tickers"].tolist(),
                 hovertemplate=(
-                    "<b>BUY %{text}</b><br>"
+                    "<b>BUY — %{customdata}</b><br>"
                     "%{x|%b %d, %Y}<br>"
-                    "Entry price: $%{y:,.2f}<br>"
-                    "<i>Strategy opened a long position — MA50 crossed above MA200 (golden cross).</i>"
                     "<extra></extra>"
                 ),
             ))
 
         if not sells.empty:
+            sg = _group_trades(sells)
             fig.add_trace(go.Scatter(
-                x=sells["date"], y=_marker_y(sells["date"]),
+                x=sg["plot_x"], y=sg["y"],
                 mode="markers+text",
                 name="Sell",
-                marker=dict(symbol="triangle-down", size=12,
+                marker=dict(symbol="triangle-down", size=14,
                             color=PALETTE["neg"], line=dict(color="#1c1c1c", width=1)),
-                text=sells["ticker"].tolist(),
+                text=sg["n"].apply(lambda n: f"−{n}"),
                 textposition="bottom center",
                 textfont=dict(size=9, color=PALETTE["neg"]),
+                customdata=sg["tickers"].tolist(),
                 hovertemplate=(
-                    "<b>SELL %{text}</b><br>"
+                    "<b>SELL — %{customdata}</b><br>"
                     "%{x|%b %d, %Y}<br>"
-                    "Exit price: $%{y:,.2f}<br>"
-                    "<i>Strategy closed the position — MA50 crossed below MA200 (death cross) or trailing stop hit.</i>"
                     "<extra></extra>"
                 ),
             ))
@@ -863,7 +897,14 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
         _now = now or pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
         _today = _now.strftime('%Y-%m-%d')
         _right = max(_now, pd.Timestamp(_today + " 16:05:00"))
-        x_range = [f"{_today}T09:25:00", _right.strftime('%Y-%m-%dT%H:%M:00')]
+        # Default left edge: 1 day before earliest history entry so the daily
+        # equity curve is in frame; fall back to 7 days ago if history is empty.
+        if not history_df.empty:
+            _first = pd.Timestamp(history_df["date"].min())
+            _left = (_first - pd.Timedelta(days=1)).strftime('%Y-%m-%dT09:00:00')
+        else:
+            _left = (pd.Timestamp(_today) - pd.Timedelta(days=7)).strftime('%Y-%m-%dT09:00:00')
+        x_range = [_left, _right.strftime('%Y-%m-%dT%H:%M:00')]
 
     fig.update_layout(**_layout(
         height=height,
@@ -902,4 +943,101 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             ),
         ),
     ))
+    return fig
+
+
+def chart_beta_rolling(df_port: pd.DataFrame, spy_col: str = "buy_hold",
+                       methods: list = None, height: int = 320) -> go.Figure:
+    """Rolling 60-day OLS beta to SPY for selected methods."""
+    spy_ret = df_port[spy_col].pct_change().dropna() if spy_col in df_port.columns else None
+    if spy_ret is None or len(spy_ret) < 60:
+        return None
+    fig = go.Figure()
+    if methods is None:
+        candidates = [c for c in df_port.columns if c != spy_col and c != "buy_hold"]
+        methods = sorted(candidates, key=lambda c: df_port[c].iloc[-1], reverse=True)[:3]
+    for col in methods:
+        if col not in df_port.columns:
+            continue
+        ret = df_port[col].pct_change().dropna()
+        aligned = pd.concat([ret, spy_ret], axis=1).dropna()
+        aligned.columns = ["strat", "spy"]
+        if len(aligned) < 60:
+            continue
+        rolling_beta = (aligned["strat"].rolling(60).cov(aligned["spy"]) /
+                        aligned["spy"].rolling(60).var())
+        fig.add_trace(go.Scatter(
+            x=rolling_beta.index, y=rolling_beta.values,
+            name=get_label(col), line=dict(color=get_color(col), width=1.5),
+        ))
+    fig.add_hline(y=0, line_color="#555", line_dash="dot")
+    fig.add_hline(y=1, line_color="#555", line_dash="dot",
+                  annotation_text="  β=1 (index)", annotation_font_color="#666")
+    fig.update_layout(**_layout(height=height, dragmode="pan",
+        title=dict(text="Rolling 60-Day Beta to S&P 500", font=dict(size=13)),
+        yaxis=dict(title="Beta", fixedrange=False),
+        xaxis=dict(fixedrange=False)))
+    return fig
+
+
+def chart_active_return(df_port: pd.DataFrame, spy_col: str = "buy_hold",
+                        methods: list = None, height: int = 320) -> go.Figure:
+    """Cumulative active return (strategy return minus beta × SPY return)."""
+    spy_ret = df_port[spy_col].pct_change().dropna() if spy_col in df_port.columns else None
+    if spy_ret is None or len(spy_ret) < 60:
+        return None
+    fig = go.Figure()
+    if methods is None:
+        candidates = [c for c in df_port.columns if c != spy_col and c != "buy_hold"]
+        methods = sorted(candidates, key=lambda c: df_port[c].iloc[-1], reverse=True)[:3]
+    for col in methods:
+        if col not in df_port.columns:
+            continue
+        ret = df_port[col].pct_change().dropna()
+        aligned = pd.concat([ret, spy_ret], axis=1).dropna()
+        aligned.columns = ["strat", "spy"]
+        if len(aligned) < 60:
+            continue
+        beta = (aligned["strat"].cov(aligned["spy"]) / aligned["spy"].var())
+        active_ret = aligned["strat"] - beta * aligned["spy"]
+        cum_active = (1 + active_ret).cumprod()
+        fig.add_trace(go.Scatter(
+            x=cum_active.index, y=cum_active.values,
+            name=get_label(col), line=dict(color=get_color(col), width=1.5),
+        ))
+    fig.add_hline(y=1.0, line_color="#555", line_dash="dot",
+                  annotation_text="  zero active return", annotation_font_color="#666")
+    fig.update_layout(**_layout(height=height, dragmode="pan",
+        title=dict(text="Cumulative Active Return (vs SPY Beta)", font=dict(size=13)),
+        yaxis=dict(title="Cumulative Active Growth", fixedrange=False),
+        xaxis=dict(fixedrange=False)))
+    return fig
+
+
+def chart_dead_weight(df_dw: pd.DataFrame, height: int = 380) -> go.Figure:
+    """Horizontal bar chart of dead-weight % by ticker."""
+    if df_dw is None or df_dw.empty:
+        return None
+    df = df_dw.copy()
+    # Detect dead_weight column name
+    dw_col = "dead_weight_pct" if "dead_weight_pct" in df.columns else \
+             next((c for c in df.columns if "dead" in c.lower()), None)
+    tick_col = "ticker" if "ticker" in df.columns else df.columns[0]
+    if dw_col is None:
+        return None
+    df = df.sort_values(dw_col, ascending=True)
+    colors = ["#e06c75" if v > 0.45 else "#e5c07b" if v > 0.40 else "#98c379"
+              for v in df[dw_col]]
+    fig = go.Figure(go.Bar(
+        x=df[dw_col] * 100, y=df[tick_col],
+        orientation="h", marker_color=colors,
+        text=[f"{v*100:.1f}%" for v in df[dw_col]], textposition="outside",
+    ))
+    fig.add_vline(x=50, line_color="#e06c75", line_dash="dash",
+                  annotation_text="  Random (50%)", annotation_font_color="#e06c75")
+    fig.update_layout(**_layout(height=height, dragmode="pan",
+        title=dict(text="Dead Weight by Ticker (Long Signal on Down Days)", font=dict(size=13)),
+        xaxis=dict(title="Dead Weight %", fixedrange=False),
+        yaxis=dict(fixedrange=True),
+        margin=dict(l=60, r=60)))
     return fig

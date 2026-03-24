@@ -80,21 +80,57 @@ def _layout(**overrides) -> dict:
 # chart traces so each method always appears in the same colour.
 # "pos"/"neg" are generic green/red used for bar charts, P&L cells, etc.
 PALETTE = {
-    "equal_weight"  : "#4a9eff",
-    "atr_sized"     : "#50fa7b",
-    "atr_pca_macro" : "#bd93f9",
-    "eq_dd_control" : "#ffb86c",
-    "vol_target"    : "#ff79c6",
-    "buy_hold"      : "#6272a4",
-    "pos"           : "#50fa7b",
-    "neg"           : "#ff5555",
+    "equal_weight"          : "#4a9eff",
+    "atr_sized"             : "#50fa7b",
+    "atr_pca_macro"         : "#bd93f9",
+    "eq_dd_control"         : "#ffb86c",
+    "vol_target"            : "#ff79c6",
+    "buy_hold"              : "#6272a4",
+    "pos"                   : "#50fa7b",
+    "neg"                   : "#ff5555",
+    "multi_equal_weight"    : "#56b6c2",
+    "multi_atr_pure"        : "#e06c75",
+    "multi_atr_macro"       : "#d19a66",
+    "multi_fast_atr"        : "#61afef",
+    "fast_atr"              : "#98c379",
+    "multi_mom_tilt"        : "#c678dd",
+    "multi_fast_mom_tilt"   : "#e5c07b",
+    "multi_fast_atr_vol"    : "#4ec9b0",
+    "multi_fast_mom_vol"    : "#b5cea8",
+    "pair_atr"              : "#be5046",
+    "multi_pair_atr"        : "#7c3aed",
+    "rp_macro"              : "#f472b6",
+    "multi_fast_atr_earn"   : "#9d8ecb",
+    "multi_fast_mom_earn"   : "#6b8ecb",
 }
 # LABELS maps the same keys to human-readable legend/table strings.
 LABELS = {
-    "equal_weight"  : "Equal Weight",
-    "atr_sized"     : "ATR Sized",
-    "atr_pca_macro" : "ATR + PCA + Macro",
-    "eq_dd_control" : "Equal Wt + DD Control",
-    "vol_target"    : "Vol Target",
-    "buy_hold"      : "Buy & Hold",
+    "equal_weight"          : "Equal Weight",
+    "atr_sized"             : "ATR Sized",
+    "atr_pca_macro"         : "ATR + PCA + Macro",
+    "eq_dd_control"         : "Equal Wt + DD Control",
+    "vol_target"            : "Vol Target",
+    "buy_hold"              : "Buy & Hold",
+    "multi_equal_weight"    : "Multi Equal Weight",
+    "multi_atr_pure"        : "Multi ATR",
+    "multi_atr_macro"       : "Multi ATR + Macro",
+    "multi_fast_atr"        : "Multi Fast ATR",
+    "fast_atr"              : "Fast ATR",
+    "multi_mom_tilt"        : "Multi Mom Tilt ★",
+    "multi_fast_mom_tilt"   : "Multi Fast Mom Tilt",
+    "multi_fast_atr_vol"    : "Multi Fast ATR + Vol",
+    "multi_fast_mom_vol"    : "Multi Fast Mom + Vol",
+    "pair_atr"              : "Pair ATR",
+    "multi_pair_atr"        : "Multi Pair ATR",
+    "rp_macro"              : "Risk Parity + Macro",
+    "multi_fast_atr_earn"   : "Multi Fast ATR (Earn)",
+    "multi_fast_mom_earn"   : "Multi Fast Mom (Earn)",
 }
+
+
+def get_color(method_key: str) -> str:
+    return PALETTE.get(method_key, "#888888")
+
+
+def get_label(method_key: str) -> str:
+    return LABELS.get(method_key, method_key.replace("_", " ").title())

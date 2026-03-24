@@ -63,6 +63,7 @@ START = 2015-01-01.  Chosen because:
     relevant to the current market structure.
 """
 
+import json
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -101,11 +102,16 @@ TICKERS = {
     "DBC" : "commodity",      # Broad commodity basket (oil + agriculture + metals) — diversified supply/demand driver
     "UUP" : "commodity",      # US Dollar Index ETF — FX exposure; inversely correlated to EM and commodities
 
-    # --- Sector ETFs ---
+    # --- Sector ETFs (trading universe + beta-hedge vehicles) ---
     "XLE" : "sector_etf",     # Energy — oil supply/demand, NOT Fed policy
     "XLU" : "sector_etf",     # Utilities — defensive, rate sensitive, counter-cyclical
     "XLF" : "sector_etf",     # Financials — yield curve slope, credit cycle
     "VNQ" : "sector_etf",     # REITs — rental income driver distinct from XLU regulated utility revenue; rate sensitive
+    "XLK" : "sector_etf",     # Technology — hedge for MSFT, NVDA, AMZN, INTC (GICS tech sector)
+    "XLV" : "sector_etf",     # Healthcare — hedge for JNJ (GICS healthcare sector)
+    "XLI" : "sector_etf",     # Industrials — hedge for GE (GICS industrials sector)
+    "XLC" : "sector_etf",     # Communication services — hedge for VZ (GICS comm services)
+    "XLP" : "sector_etf",     # Consumer staples — hedge for COST (GICS consumer staples)
 
     # --- Individual stocks: each with a distinct economic driver ---
     "JPM" : "stock",          # Financials — interest rate spreads, commercial banking, credit
@@ -157,6 +163,26 @@ EQUITY_LIKE = {"equity_index", "sector_etf", "stock"}
 ASSET_CLASS = TICKERS
 TICKER_LIST = list(TICKERS.keys())
 
+# GICS sector-ETF mapping for beta-hedged pair trades.
+# Each stock is paired with its sector ETF. Long stock + short sector ETF
+# isolates idiosyncratic return (stock outperformance within its sector)
+# from the sector/market beta. Factual GICS classification — not fitted.
+HEDGE_MAP: dict[str, str] = {
+    "MSFT" : "XLK",   # Technology (GICS 45)
+    "NVDA" : "XLK",   # Technology (GICS 45)
+    "AMZN" : "XLK",   # Technology / Consumer Discretionary — primarily treated as tech
+    "INTC" : "XLK",   # Technology (GICS 45)
+    "JPM"  : "XLF",   # Financials (GICS 40)
+    "GS"   : "XLF",   # Financials (GICS 40)
+    "JNJ"  : "XLV",   # Healthcare (GICS 35)
+    "XOM"  : "XLE",   # Energy (GICS 10)
+    "NEE"  : "XLU",   # Utilities (GICS 55)
+    "GE"   : "XLI",   # Industrials (GICS 20)
+    "VZ"   : "XLC",   # Communication Services (GICS 50)
+    "COST" : "XLP",   # Consumer Staples (GICS 30)
+    "BRK-B": "SPY",   # Conglomerate — no single sector ETF; use broad market
+}
+
 START = "2015-01-01"
 END   = "2026-01-01"
 
@@ -167,6 +193,30 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Tickers below this threshold are skipped with a warning so a mid-period
 # delisting or recent IPO degrades gracefully instead of crashing downstream.
 MIN_TRADING_DAYS = 1000
+
+
+def fetch_earnings_dates(ticker: str) -> list:
+    """
+    Fetch quarterly earnings announcement dates for a stock from yfinance.
+
+    Uses yf.Ticker.get_earnings_dates(limit=50) which reliably returns ~50
+    historical + upcoming quarterly dates (12+ years).  Dates are timezone-
+    stripped and returned as ISO-format strings ("YYYY-MM-DD").
+
+    Returns an empty list on failure — earnings filtering is optional and the
+    strategy works without it.  Only called for asset_class == "stock".
+    """
+    try:
+        tk = yf.Ticker(ticker)
+        ed = tk.get_earnings_dates(limit=50)
+        if ed is None or ed.empty:
+            return []
+        dates = pd.to_datetime(ed.index).tz_localize(None)
+        # Filter to our backtest window plus a small buffer
+        dates = dates[(dates >= START) & (dates <= END)]
+        return sorted(d.strftime("%Y-%m-%d") for d in dates)
+    except Exception:
+        return []
 
 
 def download(ticker: str) -> pd.DataFrame:
@@ -267,6 +317,12 @@ def main():
         "GE"  : "industrial restructuring, power write-downs, long-term decline",
         "INTC": "process node lag vs TSMC/AMD, fab investment overhang",
         "VZ"  : "5G capex drag, subscriber pressure, near-zero real return",
+        # sector ETFs added as beta-hedge vehicles for pair trades
+        "XLK" : "Technology sector ETF — hedge for MSFT, NVDA, AMZN, INTC (GICS 45)",
+        "XLV" : "Healthcare sector ETF — hedge for JNJ (GICS 35)",
+        "XLI" : "Industrials sector ETF — hedge for GE (GICS 20)",
+        "XLC" : "Communication Services sector ETF — hedge for VZ (GICS 50)",
+        "XLP" : "Consumer Staples sector ETF — hedge for COST (GICS 30)",
         # phase 5 stress-uncorrelated additions (bear_stress corr verified < 0.35)
         "BWX" : "International govt bonds ex-US — ECB/BOJ divergence from Fed; bear_stress corr 0.048",
         "DBA" : "Agriculture ETF — weather, crop supply; ~0.05 corr to S&P in all regimes",
@@ -293,6 +349,24 @@ def main():
     closes.to_parquet(DATA_DIR / "closes_matrix.parquet")
 
     print(f"\nClose matrix: {closes.shape}  (trading days x tickers)")
+
+    # ── Earnings dates (stocks only) ───────────────────────────────────────────
+    # Fetch quarterly earnings announcement dates for individual stocks.
+    # Used by signal_generation.py to go flat 2 days before / 1 day after each
+    # release — avoids the 3-8% binary coin-flip gap risk.
+    # ETFs, bonds, and commodities are skipped (no single-date earnings event).
+    stock_tickers = [t for t in all_data if ASSET_CLASS[t] == "stock"]
+    earnings_map: dict[str, list] = {}
+    print("\nFetching earnings dates (stocks only)...")
+    for t in stock_tickers:
+        dates = fetch_earnings_dates(t)
+        earnings_map[t] = dates
+        print(f"  {t:<8} {len(dates):>3} dates  "
+              f"({dates[0] if dates else 'n/a'} — {dates[-1] if dates else 'n/a'})")
+    earn_path = DATA_DIR / "earnings_dates.json"
+    with open(earn_path, "w") as fh:
+        json.dump(earnings_map, fh, indent=2)
+    print(f"\nEarnings dates saved -> {earn_path}")
 
     # print correlation matrix grouped by asset class so structure is visible
     returns = closes.pct_change().dropna()
