@@ -390,6 +390,7 @@ def chart_walk_forward(wf: pd.DataFrame, height: int = 280) -> go.Figure:
                    font=dict(size=13)),
         xaxis=dict(title=None, fixedrange=False),
         yaxis=dict(title="Sharpe ratio", fixedrange=False),
+        margin=dict(t=60),
     ))
     return fig
 
@@ -462,35 +463,54 @@ def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
 
 
 def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
+                         fred: pd.DataFrame = None,
                          height: int = 560) -> go.Figure:
     """
-    Build a three-panel subplot chart overlaying the portfolio equity curve
+    Build a multi-panel subplot chart overlaying the portfolio equity curve
     with key macro regime indicators.
 
     Subplots (shared x-axis):
       Row 1 — Portfolio vs Buy & Hold equity curves (go.Scatter).
       Row 2 — VIX level with fill, and reference lines at 20 (caution)
-               and 30 (fear).  VIX z-score > 2.5 triggers a hard signal
-               gate in the strategy.
-      Row 3 — 10Y–2Y Treasury yield spread.  Negative = inverted curve
-               (recession warning, position sizing reduced).  Reference
-               line at 0 marks inversion threshold.
+               and 30 (fear).
+      Row 3 — 10Y–2Y Treasury yield spread.
+      Row 4 — HY credit spread (if FRED data available).
+      Row 5 — FRED macro score (if available).
 
     Args:
         df_port: Portfolio equity curve DataFrame (same as load_portfolio_curves()).
         macro:   Macro features DataFrame (same as load_macro()).
-        height:  Total chart height in pixels across all three rows.
+        fred:    FRED features DataFrame (from load_fred_features()), optional.
+        height:  Total chart height in pixels across all rows.
 
     Returns:
         go.Figure using make_subplots with shared x-axes and dragmode="pan".
     """
     macro = macro.reindex(df_port.index).ffill()
-    fig   = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                          vertical_spacing=0.04,
-                          row_heights=[0.5, 0.25, 0.25],
-                          subplot_titles=("Portfolio vs Buy & Hold",
-                                          "VIX (fear gauge)", "10Y–2Y Yield Spread"))
-    # Equity
+
+    # Determine how many rows based on available FRED data
+    has_credit = fred is not None and not fred.empty and "hy_oas" in fred.columns
+    has_fred_score = "fred_macro_score" in macro.columns
+    n_rows = 3 + int(has_credit) + int(has_fred_score)
+
+    row_heights = [0.35, 0.18, 0.18]
+    subtitles = ["Portfolio vs Buy & Hold", "VIX (fear gauge)", "10Y–2Y Yield Spread"]
+    if has_credit:
+        row_heights.append(0.15)
+        subtitles.append("HY Credit Spread (OAS)")
+    if has_fred_score:
+        row_heights.append(0.14)
+        subtitles.append("FRED Macro Score")
+    # Normalize row heights to sum to 1
+    _total = sum(row_heights)
+    row_heights = [h / _total for h in row_heights]
+
+    fig = make_subplots(rows=n_rows, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.035,
+                        row_heights=row_heights,
+                        subplot_titles=tuple(subtitles))
+
+    # Row 1: Equity
     for col in ["equal_weight", "buy_hold"]:
         if col in df_port.columns:
             fig.add_trace(go.Scatter(
@@ -504,7 +524,8 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                     "<extra></extra>"
                 ),
             ), row=1, col=1)
-    # VIX
+
+    # Row 2: VIX
     if "vix" in macro.columns:
         fig.add_trace(go.Scatter(
             x=macro.index, y=macro["vix"], name="VIX",
@@ -522,7 +543,8 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
         for lvl, clr in [(20, "#555"), (30, PALETTE["neg"])]:
             fig.add_hline(y=lvl, line_color=clr, line_dash="dot",
                           line_width=1, row=2, col=1)
-    # Yield curve
+
+    # Row 3: Yield curve
     if "yield_curve" in macro.columns:
         yc = macro["yield_curve"]
         fig.add_trace(go.Scatter(
@@ -541,13 +563,55 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
         fig.add_hline(y=0, line_color="#555", line_dash="dot",
                       line_width=1, row=3, col=1)
 
+    # Row 4: HY credit spread (dynamic — only when FRED data available)
+    _next_row = 4
+    if has_credit:
+        _fred_aligned = fred.reindex(df_port.index).ffill()
+        fig.add_trace(go.Scatter(
+            x=_fred_aligned.index, y=_fred_aligned["hy_oas"],
+            name="HY OAS", showlegend=False,
+            line=dict(color="#ffb86c", width=1.2),
+            fill="tozeroy", fillcolor="rgba(255,184,108,0.06)",
+            hovertemplate=(
+                "<b>%{x|%Y-%m-%d}</b><br>"
+                "HY OAS: %{y:.2f}%<br>"
+                "<i>ICE BofA High Yield credit spread.<br>"
+                "Rising = risk-off / credit stress.<br>"
+                "Spikes above 5% historically precede drawdowns.</i>"
+                "<extra></extra>"
+            ),
+        ), row=_next_row, col=1)
+        fig.add_hline(y=5, line_color=PALETTE["neg"], line_dash="dot",
+                      line_width=1, row=_next_row, col=1)
+        _next_row += 1
+
+    # Row 5: FRED macro score (dynamic)
+    if has_fred_score:
+        fig.add_trace(go.Scatter(
+            x=macro.index, y=macro["fred_macro_score"],
+            name="FRED Score", showlegend=False,
+            line=dict(color="#8be9fd", width=1.2),
+            fill="tozeroy", fillcolor="rgba(139,233,253,0.06)",
+            hovertemplate=(
+                "<b>%{x|%Y-%m-%d}</b><br>"
+                "FRED Score: %{y:+.2f}<br>"
+                "<i>Composite of 8 FRED indicators (credit, sentiment,<br>"
+                "claims, PMI, USD, inflation, VIX). Range −1 to +1.<br>"
+                "+1 = all bullish, −1 = all bearish.</i>"
+                "<extra></extra>"
+            ),
+        ), row=_next_row, col=1)
+        fig.add_hline(y=0, line_color="#555", line_dash="dot",
+                      line_width=1, row=_next_row, col=1)
+
+    _dyn_height = height if n_rows <= 3 else height + 120 * (n_rows - 3)
     fig.update_layout(paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
                       font=dict(color="#c0c0c0", size=11),
-                      height=height, showlegend=True, dragmode="pan",
+                      height=_dyn_height, showlegend=True, dragmode="pan",
                       uirevision="macro_overlay",
                       legend=dict(bgcolor="#252525", bordercolor="#333", borderwidth=1),
                       margin=dict(l=56, r=20, t=44, b=36))
-    for r in range(1, 4):
+    for r in range(1, n_rows + 1):
         fig.update_xaxes(gridcolor="#2a2a2a", fixedrange=False, row=r, col=1)
         fig.update_yaxes(gridcolor="#2a2a2a", fixedrange=False, row=r, col=1)
     return fig
@@ -713,6 +777,12 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
     """
     fig = go.Figure()
 
+    # Capture portfolio inception date before history_df gets filtered below
+    _orig_inception_dt = (
+        pd.Timestamp(history_df["date"].min()).normalize()
+        if not history_df.empty else None
+    )
+
     # ── Resample intraday data to the requested timeframe ───────────────────
     candle_df = pd.DataFrame()
     if not intraday_df.empty and {"open", "high", "low", "close"}.issubset(intraday_df.columns):
@@ -770,11 +840,28 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 hovertemplate="<b>Portfolio</b> (market closed)<br>%{x|%H:%M} $%{y:,.0f}<extra></extra>",
             ))
 
-    # ── S&P 500 benchmark (subtle dashed line, close-to-close baseline) ──────
+    # ── S&P 500 benchmark (normalized to $100k at portfolio inception) ─────
     if spy_curve is not None and not spy_curve.empty:
+        # Re-normalize the S&P curve so it starts at PT_INITIAL_CAPITAL on the
+        # portfolio's inception date.  The raw spy_curve from get_intraday_curve()
+        # is anchored at the RIGHT edge (close-to-close baseline for intraday),
+        # but the main equity chart needs inception-anchored normalization so the
+        # visual "above/below" matches the historical alpha metric.
+        _spy_normed = spy_curve.copy()
+        _spy_inception_val = None
+        if _orig_inception_dt is not None:
+            _spy_bar_dates = pd.to_datetime(_spy_normed.index).normalize()
+            _inception_mask = _spy_bar_dates >= _orig_inception_dt
+            if _inception_mask.any():
+                _spy_inception_val = float(_spy_normed[_inception_mask].iloc[0])
+        if _spy_inception_val is None or _spy_inception_val <= 0:
+            _spy_inception_val = float(_spy_normed.iloc[0])
+        if _spy_inception_val > 0:
+            _spy_normed = _spy_normed / _spy_inception_val * PT_INITIAL_CAPITAL
+
         # Extend SPY benchmark to current time (flat after close)
-        _spy_x = list(spy_curve.index)
-        _spy_y = list(spy_curve.values)
+        _spy_x = list(_spy_normed.index)
+        _spy_y = list(_spy_normed.values)
         if now is not None and now > pd.Timestamp(_spy_x[-1]):
             _spy_x.append(now)
             _spy_y.append(_spy_y[-1])
@@ -788,7 +875,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 "<b>S&P 500 Benchmark</b><br>"
                 "%{x|%H:%M}<br>"
                 "Equivalent value: <b>$%{y:,.0f}</b><br>"
-                "<i>^GSPC (S&P 500 index) — both measured from yesterday's close. "
+                "<i>^GSPC normalized to $100k at portfolio inception. "
                 "Drift shows relative over/under-performance vs the index.</i>"
                 "<extra></extra>"
             ),

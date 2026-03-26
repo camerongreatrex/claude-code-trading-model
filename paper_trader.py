@@ -1377,11 +1377,18 @@ def get_intraday_curve() -> tuple:
     # SPY with auto_adjust=True adjusts for dividends which distorts the daily %.
     #
     # Normalize spy_curve so its LAST bar equals prev_pv × (1 + gspc_pct/100).
-    # This anchors BOTH the main equity chart and the vs-S&P chart to the same
-    # close-to-close baseline — "line above/below" always matches the metric.
+    # This close-to-close baseline is used by the intraday vs-S&P chart.
+    # The main equity chart re-normalizes to inception in chart_paper_portfolio().
     spy_curve         = _empty_spy
     spy_pct_from_prev = None   # None = daily fetch failed; dashboard falls back to first-bar %
+    # If EOD already ran today, state["portfolio_value"] is today's close —
+    # use the previous day's close from history for the close-to-close baseline,
+    # mirroring the same correction the dashboard makes for alpha calculation.
     prev_pv_state     = state.get("portfolio_value", INITIAL_CAPITAL)
+    if state.get("last_eod_date") == today_str:
+        _hist = load_history()
+        if not _hist.empty and len(_hist) >= 2:
+            prev_pv_state = float(_hist.sort_values("date").iloc[-2]["portfolio_value"])
     if "^GSPC" in intraday:
         gspc_df  = intraday["^GSPC"]
         gspc_col = gspc_df["Close"] if "Close" in gspc_df.columns else gspc_df.iloc[:, 3]

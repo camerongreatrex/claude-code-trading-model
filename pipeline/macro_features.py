@@ -13,6 +13,8 @@ Data sources
   VIX  (^VIX)   — Yahoo Finance, free, no API key
   VIX9D (^VIX9D) — Yahoo Finance, free, no API key
   10Y-2Y spread  — FRED public CSV (no API key, no library required)
+  FRED features  — fred_features.py (credit spreads, sentiment, claims, PMI,
+                   USD index, breakeven inflation, VIX cross-check)
 
 Output
 ──────
@@ -31,6 +33,7 @@ Output
     curve_steep      — 1 when yield_curve > 1 (strong growth signal)
     curve_momentum   — 20-day change in spread (steepening vs flattening)
     macro_score      — composite -1 to +1 (−1 = full bear, +1 = full bull)
+    fred_macro_score — composite -1 to +1 from FRED indicators (if available)
     size_multiplier  — position size scalar for portfolio.py (0.50 to 1.25)
 
 Consumed by
@@ -208,6 +211,25 @@ def compute_macro_features(vix: pd.DataFrame, curve: pd.DataFrame) -> pd.DataFra
     # that "max bear" should produce half-exposure, which is a standard risk
     # management heuristic across systematic funds.
     macro["size_multiplier"] = (1.0 + 0.5 * macro["macro_score"]).clip(0.50, 1.25)
+
+    # ── FRED macro score (from fred_features.py) ─────────────────────────
+    # Merge fred_macro_score if the parquet exists.  This keeps the two
+    # pipelines decoupled — macro_features.py works fine without FRED data,
+    # and fred_features.py can be run independently.
+    fred_path = MACRO_DIR / "fred_features.parquet"
+    if fred_path.exists():
+        try:
+            fred = pd.read_parquet(fred_path)
+            if "fred_macro_score" in fred.columns:
+                macro["fred_macro_score"] = (
+                    fred["fred_macro_score"]
+                    .reindex(macro.index)
+                    .ffill()
+                    .fillna(0.0)
+                )
+                print(f"  Merged fred_macro_score from {fred_path}")
+        except Exception as e:
+            print(f"  FRED features merge skipped: {e}")
 
     return macro
 

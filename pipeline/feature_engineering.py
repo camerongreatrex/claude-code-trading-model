@@ -543,6 +543,7 @@ def engineer(
     df: pd.DataFrame,
     ticker: str = None,
     closes_matrix: pd.DataFrame = None,
+    cross_asset_df: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Apply all feature transformations in the correct dependency order.
@@ -555,6 +556,10 @@ def engineer(
                         If None, cross-sectional features are skipped.
                         Supply both ticker and closes_matrix to enable
                         xsec_mom_20, xsec_vol_rank, and relative_strength.
+        cross_asset_df: Cross-asset lead-lag features from
+                        cross_asset_signals.py.  If provided, columns are
+                        merged via left join + ffill so every ticker gets
+                        the same market-level signals aligned to its dates.
 
     Returns:
         Feature-enriched DataFrame with all columns from each add_*
@@ -586,6 +591,14 @@ def engineer(
     if ticker is not None and closes_matrix is not None:
         df = add_cross_sectional(df, ticker, closes_matrix)
 
+    if cross_asset_df is not None and not cross_asset_df.empty:
+        # Left join: keep only dates already in df, forward-fill to handle
+        # any gaps (e.g. cross-asset data may have slightly different trading
+        # calendars).  These are market-level signals — identical for every ticker.
+        ca = cross_asset_df.reindex(df.index).ffill()
+        for col in ca.columns:
+            df[col] = ca[col]
+
     df = df.dropna()
     return df
 
@@ -606,6 +619,18 @@ def main():
         print("Warning: closes_matrix.parquet not found — cross-sectional features "
               "will be skipped. Run python run.py (full pipeline) to include them.\n")
 
+    # Load cross-asset lead-lag features (from cross_asset_signals.py).
+    ca_path = Path("data/signals/cross_asset_features.parquet")
+    if ca_path.exists():
+        cross_asset_df = pd.read_parquet(ca_path)
+        cross_asset_df.index = pd.to_datetime(cross_asset_df.index)
+        print(f"Cross-asset features loaded: {cross_asset_df.shape} "
+              f"({list(cross_asset_df.columns)})\n")
+    else:
+        cross_asset_df = None
+        print("Warning: cross_asset_features.parquet not found — cross-asset features "
+              "will be skipped. Run python -m pipeline.cross_asset_signals first.\n")
+
     all_data = {}
 
     for ticker in TICKER_LIST:
@@ -614,12 +639,14 @@ def main():
             print(f"  {ticker}: raw parquet missing — skipped (run data_pipeline.py first)")
             continue
         raw = pd.read_parquet(raw_path)
-        df  = engineer(raw, ticker=ticker, closes_matrix=closes_matrix)
+        df  = engineer(raw, ticker=ticker, closes_matrix=closes_matrix,
+                       cross_asset_df=cross_asset_df)
         out = FEATURE_DIR / f"{ticker}.parquet"
         df.to_parquet(out, engine="pyarrow", compression="snappy")
 
         xsec_note = " + xsec" if closes_matrix is not None else ""
-        print(f"  {ticker}: {len(df)} rows, {len(df.columns)} cols{xsec_note}  ->  {out}")
+        ca_note   = " + ca"   if cross_asset_df is not None else ""
+        print(f"  {ticker}: {len(df)} rows, {len(df.columns)} cols{xsec_note}{ca_note}  ->  {out}")
         all_data[ticker] = df
 
     returns = pd.DataFrame({t: d["log_return"] for t, d in all_data.items()}).dropna()

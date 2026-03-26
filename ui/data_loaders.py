@@ -145,6 +145,22 @@ def load_macro() -> pd.DataFrame:
     return df
 
 
+@st.cache_data
+def load_fred_features() -> pd.DataFrame:
+    """
+    Load precomputed FRED indicator features from fred_features.parquet.
+
+    Returns DataFrame with raw levels, z-scores, regime dummies, and
+    fred_macro_score.  Returns empty DataFrame if the file doesn't exist.
+    """
+    path = Path("data/macro/fred_features.parquet")
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    df.index = pd.to_datetime(df.index)
+    return df
+
+
 # ── Monte Carlo (block bootstrap) ────────────────────────────────────────────
 @st.cache_data
 def run_monte_carlo(returns_bytes: bytes, n_paths: int = 1000,

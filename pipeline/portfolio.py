@@ -63,7 +63,9 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from .risk_model import estimate_covariance, risk_parity_weights
+from .risk_model import estimate_covariance, risk_parity_weights, regime_conditional_covariance
+from .optimizer import optimizer_sizes, minimum_variance_gated_weights
+from .regime_analysis import label_regimes
 from .backtester import (
     compute_strategy_returns, sharpe_ratio, max_drawdown,
     calmar_ratio, win_rate, profit_factor, summarise, equity_curve
@@ -579,6 +581,324 @@ def risk_parity_sizes(
     return apply_macro_multiplier(adjusted)
 
 
+def rp_regime_aware_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    cov_window: int = 126,
+    rebalance_freq: int = 21,
+    min_regime_obs: int = 63,
+) -> pd.DataFrame:
+    """
+    Risk-parity sizing with regime-conditional covariance estimation.
+
+    Problem solved
+    ──────────────
+    Standard risk_parity_sizes() uses a rolling 126-day window that blends
+    returns from different market regimes.  During bear_stress periods the
+    window still contains bull_calm days that UNDERESTIMATE correlations:
+      bull_calm avg pairwise corr ≈ 0.20
+      bear_stress avg pairwise corr ≈ 0.45+
+
+    The blended estimate sits somewhere in between — the portfolio THINKS
+    it is diversified (low-correlation ERC weights) when it is actually
+    concentrated (high-correlation reality).  This is the precise mechanism
+    behind "diversification fails when you need it most."
+
+    Solution
+    ────────
+    Replace estimate_covariance(rolling_window) with
+    regime_conditional_covariance(all_history, regimes, today's_regime):
+    - In bull_calm:  fit on all historical bull_calm days → low-correlation
+      weights that lean into diversification (this is when it works).
+    - In bear_stress: fit on all historical bear_stress days → high-correlation
+      weights that defensively concentrate into true diversifiers (bonds, gold,
+      commodities — the assets whose marginal risk contribution is genuinely
+      low when equities are correlated at 0.45+).
+
+    Regime labelling reuses regime_analysis.label_regimes() — same VIX < 20
+    and SPY 60d return > 0 logic, no new thresholds.
+
+    Flow per rebalance day
+    ──────────────────────
+    1. Determine today's regime from VIX + SPY 60d return.
+    2. Filter ALL history up to today to rows matching that regime.
+    3. If ≥ min_regime_obs (63 ≈ 3 months): fit Ledoit-Wolf on those rows.
+       Else: fall back to standard 126-day rolling window.
+    4. Compute ERC weights from the regime-conditional covariance.
+    5. Apply to ATR base sizes (same two-step logic as risk_parity_sizes).
+    6. Apply macro multiplier overlay last.
+
+    Args:
+        signals:        Signal DataFrame (T × N).
+        features:       Dict[ticker -> feature DataFrame] with atr_14, Close.
+        returns:        Daily return DataFrame (T × N).
+        capital:        Total capital in dollars.
+        cov_window:     Fallback rolling window (default 126).
+        rebalance_freq: Days between covariance recomputation (default 21).
+        min_regime_obs: Minimum regime-filtered observations for conditional
+                        estimate (default 63 = ~3 months).
+
+    Returns:
+        Dollar position size DataFrame, same shape as signals.
+    """
+    # ── Build regime labels for the full history ──────────────────────────
+    macro_path = MACRO_DIR / "macro_features.parquet"
+    spy_path   = FEATURE_DIR / "SPY.parquet"
+
+    if not macro_path.exists() or not spy_path.exists():
+        # Cannot label regimes — fall back to standard risk parity
+        return risk_parity_sizes(signals, features, returns, capital,
+                                 cov_window, rebalance_freq)
+
+    macro     = pd.read_parquet(macro_path)
+    spy_close = pd.read_parquet(spy_path)["Close"]
+    vix       = macro["vix"] if "vix" in macro.columns else None
+
+    if vix is None:
+        return risk_parity_sizes(signals, features, returns, capital,
+                                 cov_window, rebalance_freq)
+
+    regimes = label_regimes(vix, spy_close, returns.index)
+
+    # ── ATR base sizes (same as risk_parity_sizes) ────────────────────────
+    base_sizes = atr_sizes(signals, features, capital)
+    adjusted   = base_sizes.copy()
+    tickers    = [t for t in signals.columns if t in returns.columns]
+    col_locs   = {t: signals.columns.get_loc(t) for t in tickers}
+
+    rp_weights_cache: dict = {}
+
+    for i in range(cov_window, len(signals)):
+        # ── Rebalance: recompute covariance with regime conditioning ──────
+        if (i - cov_window) % rebalance_freq == 0:
+            # Returns history up to (not including) today
+            ret_history = returns.iloc[:i][tickers]
+            ret_history = ret_history.dropna(
+                thresh=int(min(len(ret_history), cov_window) * 0.90), axis=1
+            )
+            available = ret_history.columns.tolist()
+
+            if len(available) >= 2 and len(ret_history) >= 20:
+                current_regime = regimes.iloc[i]
+
+                if current_regime in ("bull_calm", "bull_stress",
+                                      "bear_calm", "bear_stress"):
+                    # Regime-conditional: use only same-regime days
+                    regime_hist = regimes.iloc[:i]
+                    cov, n_obs = regime_conditional_covariance(
+                        ret_history.ffill().fillna(0),
+                        regime_hist,
+                        current_regime,
+                        min_obs=min_regime_obs,
+                        fallback_window=cov_window,
+                    )
+                else:
+                    # Unlabelled (warm-up) — standard rolling window
+                    ret_window = ret_history.iloc[-cov_window:]
+                    cov = estimate_covariance(ret_window.ffill().fillna(0))
+
+                w_rp = risk_parity_weights(cov)
+                rp_weights_cache = {
+                    t: float(w_rp[j]) for j, t in enumerate(available)
+                }
+
+        if not rp_weights_cache:
+            continue
+
+        sig_today = signals.iloc[i]
+        active = [t for t in tickers
+                  if sig_today[t] != 0 and t in rp_weights_cache]
+        if not active:
+            continue
+
+        total_atr = base_sizes.iloc[i][[t for t in active]].abs().sum()
+        if total_atr <= 0:
+            continue
+
+        w_sum = sum(rp_weights_cache[t] for t in active)
+        if w_sum <= 0:
+            continue
+
+        for ticker in active:
+            w_norm = rp_weights_cache[ticker] / w_sum
+            sign   = float(sig_today[ticker])
+            adjusted.iloc[i, col_locs[ticker]] = np.clip(
+                sign * w_norm * total_atr,
+                -capital * MAX_POSITION_PCT,
+                capital * MAX_POSITION_PCT,
+            )
+
+    return apply_macro_multiplier(adjusted)
+
+
+def signal_gated_mv_regime_sizes(
+    signals: pd.DataFrame,
+    ensemble_signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    rebalance_freq: int = 21,
+    min_regime_obs: int = 63,
+    cov_fallback_window: int = 126,
+) -> pd.DataFrame:
+    """
+    Signal-gated minimum variance sizing with regime-conditional covariance.
+
+    Combines three components that each address a specific weakness:
+
+    1. Regime-conditional covariance (from rp_regime_aware):
+       Uses only same-regime historical returns for covariance estimation.
+       This correctly captures the 0.20→0.45+ correlation spike in stress.
+
+    2. Minimum variance objective (new):
+       Minimizes w^T Σ w with NO alpha vector — avoids the estimation error
+       that hurt ir_optimized.  MV weights work best in bull_calm where
+       the covariance estimate is most accurate (rp_regime_aware's weakest
+       regime).
+
+    3. Ensemble tilt (±20% post-solve):
+       After solving the MV optimization, tilts weights by the IC-weighted
+       ensemble signal.  Score=+1 → 1.20× weight, score=-1 → 0.80× weight.
+       Small enough to preserve the MV structure, large enough to add
+       conviction-based alpha.
+
+    Signal gating: uses binary regime signals (MA50/200 crossover) for
+    direction — a ticker must have signal==1 (long) to receive any weight.
+    This keeps the entry/exit discipline from the trend-following system
+    while allowing the optimizer to allocate AMONG active positions.
+
+    Args:
+        signals:          Binary signal DataFrame (T × N), signal_regime.
+        ensemble_signals: Continuous [-1, +1] ensemble signal DataFrame (T × N).
+        features:         Dict[ticker -> feature DataFrame].
+        returns:          Daily log-return DataFrame (T × N).
+        capital:          Total capital in dollars.
+        rebalance_freq:   Days between covariance recomputation (default 21).
+        min_regime_obs:   Min observations for regime-conditional cov (default 63).
+        cov_fallback_window: Fallback window if insufficient regime obs (default 126).
+
+    Returns:
+        Dollar position size DataFrame (T × N).
+    """
+    # ── Load regime labels ────────────────────────────────────────────────
+    macro_path = MACRO_DIR / "macro_features.parquet"
+    spy_path   = FEATURE_DIR / "SPY.parquet"
+
+    if not macro_path.exists() or not spy_path.exists():
+        # Cannot build regime labels — fall back to equal weight
+        return equal_weight_sizes(signals, capital)
+
+    macro     = pd.read_parquet(macro_path)
+    spy_close = pd.read_parquet(spy_path)["Close"]
+    vix       = macro.get("vix")
+    if vix is None:
+        return equal_weight_sizes(signals, capital)
+
+    regimes = label_regimes(vix, spy_close, returns.index)
+
+    sizes    = pd.DataFrame(0.0, index=signals.index, columns=signals.columns)
+    tickers  = [t for t in signals.columns if t in returns.columns]
+    col_locs = {t: signals.columns.get_loc(t) for t in tickers}
+
+    # Cache: recompute cov when regime changes or every rebalance_freq days
+    cov_cache        = None
+    cov_tickers      = None
+    last_regime      = None
+    days_since_rebal = 0
+
+    warmup = max(cov_fallback_window, min_regime_obs)
+
+    for i in range(warmup, len(signals)):
+        # ── Active tickers: signal == 1 (long only via MA crossover) ─────
+        sig_today = signals.iloc[i]
+        active = [t for t in tickers if sig_today.get(t, 0) == 1]
+
+        if len(active) < 3:
+            # Too few for meaningful optimization — equal weight fallback
+            if active:
+                w_eq = 1.0 / len(active)
+                for t in active:
+                    sizes.iloc[i, col_locs[t]] = capital * min(w_eq, MAX_POSITION_PCT)
+            continue
+
+        # ── Regime label for today ───────────────────────────────────────
+        current_regime = regimes.iloc[i]
+        regime_changed = current_regime != last_regime
+        days_since_rebal += 1
+
+        # ── Recompute covariance if regime changed or rebalance interval ─
+        need_rebal = (
+            cov_cache is None
+            or regime_changed
+            or days_since_rebal >= rebalance_freq
+        )
+
+        if need_rebal:
+            ret_history = returns.iloc[:i][active]
+            ret_history = ret_history.dropna(
+                thresh=int(min(len(ret_history), cov_fallback_window) * 0.90),
+                axis=1,
+            )
+            avail = ret_history.columns.tolist()
+
+            if len(avail) >= 3 and len(ret_history) >= 20:
+                if current_regime in (
+                    "bull_calm", "bull_stress", "bear_calm", "bear_stress"
+                ):
+                    regime_hist = regimes.iloc[:i]
+                    cov_cache, _ = regime_conditional_covariance(
+                        ret_history.ffill().fillna(0),
+                        regime_hist,
+                        current_regime,
+                        min_obs=min_regime_obs,
+                        fallback_window=cov_fallback_window,
+                    )
+                else:
+                    tail = ret_history.iloc[-cov_fallback_window:]
+                    cov_cache = estimate_covariance(tail.ffill().fillna(0))
+
+                cov_tickers = avail
+                last_regime = current_regime
+                days_since_rebal = 0
+
+        if cov_cache is None or cov_tickers is None:
+            continue
+
+        # ── Build sub-cov for today's active set ─────────────────────────
+        active_in_cov = [t for t in active if t in cov_tickers]
+        if len(active_in_cov) < 3:
+            if active:
+                w_eq = 1.0 / len(active)
+                for t in active:
+                    sizes.iloc[i, col_locs[t]] = capital * min(w_eq, MAX_POSITION_PCT)
+            continue
+
+        sub_idx = [cov_tickers.index(t) for t in active_in_cov]
+        sub_cov = cov_cache[np.ix_(sub_idx, sub_idx)]
+
+        # ── Ensemble scores for active tickers ───────────────────────────
+        ens_today = ensemble_signals.iloc[i]
+        ens_scores = {
+            t: float(ens_today.get(t, 0.0)) for t in active_in_cov
+        }
+
+        # ── Asset classes ────────────────────────────────────────────────
+        ac_map = {t: ASSET_CLASS.get(t, "equity_index") for t in active_in_cov}
+
+        # ── Solve MV + tilt ──────────────────────────────────────────────
+        weights = minimum_variance_gated_weights(
+            active_in_cov, sub_cov, ens_scores, ac_map,
+        )
+
+        # ── Convert to dollar positions ──────────────────────────────────
+        for t, w in weights.items():
+            sizes.iloc[i, col_locs[t]] = capital * w
+
+    return apply_macro_multiplier(sizes)
+
+
 def beta_hedged_sizes(
     signals: pd.DataFrame,
     features: dict,
@@ -1040,6 +1360,41 @@ def main():
         sizes_ens        = ensemble_sizes(signals_ensemble, features, returns, CAPITAL)
         ret_ens          = portfolio_returns(sizes_ens, returns)
 
+    # ── IR-optimized sizing (mean-variance optimizer) ──────────────────────
+    has_ir_opt = has_ensemble
+    if has_ir_opt:
+        print("  Computing IR-optimized sizes (mean-variance optimizer, daily)...")
+        sizes_ir_opt = optimizer_sizes(
+            signals_regime, signals_ensemble, features, returns, CAPITAL
+        )
+        ret_ir_opt = portfolio_returns(sizes_ir_opt, returns)
+
+    # ── Regime-aware risk parity ─────────────────────────────────────────
+    print("  Computing regime-aware risk parity sizes (regime-conditional cov)...")
+    sizes_rp_regime = rp_regime_aware_sizes(
+        signals_regime, features, returns, CAPITAL
+    )
+    ret_rp_regime = portfolio_returns(sizes_rp_regime, returns)
+
+    # ── Blended: 60% rp_regime_aware + 40% multi_mom_tilt ────────────────
+    # Return-level blend. Since portfolio_returns is linear in sizes,
+    # blending dollar sizes is equivalent to blending the return streams.
+    has_blend = has_multi
+    if has_blend:
+        print("  Computing rp_blend sizes (0.60 rp_regime_aware + 0.40 multi_mom_tilt)...")
+        sizes_blend = (0.60 * sizes_rp_regime.reindex(columns=returns.columns, fill_value=0)
+                       + 0.40 * sizes_multi_mom.reindex(columns=returns.columns, fill_value=0))
+        ret_blend = portfolio_returns(sizes_blend, returns)
+
+    # ── Signal-gated MV regime ───────────────────────────────────────────
+    has_sgmr = has_ensemble
+    if has_sgmr:
+        print("  Computing signal-gated MV regime sizes (MV + regime cov + ensemble tilt)...")
+        sizes_sgmr = signal_gated_mv_regime_sizes(
+            signals_regime, signals_ensemble, features, returns, CAPITAL
+        )
+        ret_sgmr = portfolio_returns(sizes_sgmr, returns)
+
     # ── Unified method registry ────────────────────────────────────────────────
     # Each entry: (label, full-period return series, signal matrix for WF, sizing_fn for WF)
     # signal matrix must match what the sizing_fn expects — regime methods use
@@ -1101,12 +1456,46 @@ def main():
             lambda sig, ret: apply_macro_multiplier(
                 risk_parity_sizes(sig, features, ret, CAPITAL)),
         ),
+        (
+            "rp_regime_aware",
+            ret_rp_regime, signals_regime,
+            lambda sig, ret: rp_regime_aware_sizes(sig, features, ret, CAPITAL),
+        ),
     ]
+    if has_blend:
+        # Capture signals_multi via default arg to avoid late-binding closure issues.
+        all_methods.append((
+            "rp_blend",
+            ret_blend, signals_regime,
+            lambda sig, ret, _sm=signals_multi: (
+                0.60 * rp_regime_aware_sizes(sig, features, ret, CAPITAL)
+                     .reindex(columns=ret.columns, fill_value=0)
+                + 0.40 * momentum_tilt_sizes(
+                     _sm.reindex(ret.index).fillna(0), features, CAPITAL)
+                     .reindex(columns=ret.columns, fill_value=0)
+            ),
+        ))
+    if has_sgmr:
+        all_methods.append((
+            "signal_gated_mv_regime",
+            ret_sgmr, signals_regime,
+            lambda sig, ret: signal_gated_mv_regime_sizes(
+                sig, ensemble_signals.reindex(ret.index).fillna(0),
+                features, ret, CAPITAL),
+        ))
     if has_ensemble:
         all_methods.append((
             "ensemble + ATR + PCA + macro",
             ret_ens, signals_ensemble,
             lambda sig, ret: ensemble_sizes(sig, features, ret, CAPITAL),
+        ))
+    if has_ir_opt:
+        all_methods.append((
+            "ir_optimized",
+            ret_ir_opt, signals_regime,
+            lambda sig, ret: optimizer_sizes(sig,
+                ensemble_signals.reindex(ret.index).fillna(0),
+                features, ret, CAPITAL),
         ))
     if has_multi:
         all_methods.extend([
@@ -1275,11 +1664,30 @@ def main():
               f"{oos_sharpes[label]:>10.3f} {oos_act_sharpes[label]:>10.3f} "
               f"{gap:>+12.3f}  {'  '.join(tags)}")
 
-    # Production method: smallest IS-OOS gap with OOS Sharpe > 0.8.
-    # Rationale: a method with OOS 0.95 / gap 0.20 is more trustworthy than
-    # OOS 1.02 / gap 0.40 — the lower-gap method will likely degrade less
-    # when the market regime shifts.
-    best_label = best_gap_label
+    # Production method selection — two criteria, checked in order:
+    #
+    # 1. Prefer signal_gated_mv_regime if it meets BOTH:
+    #      OOS Sharpe > 1.20  AND  IS-OOS gap ∈ [-0.20, +0.30]
+    #    Rationale: a near-zero gap is more predictable in live trading than
+    #    a large negative gap (like rp_regime_aware's -0.388) which means
+    #    OOS advantage is concentrated in specific stress windows.
+    #
+    # 2. Otherwise: fall back to smallest IS-OOS gap with OOS Sharpe > 0.8
+    #    (existing logic).
+    # Priority 1: rp_blend if OOS Sharpe > 0.8 AND gap ∈ [-0.15, +0.15]
+    blend_label = "rp_blend"
+    sgmr_label  = "signal_gated_mv_regime"
+    if (blend_label in oos_sharpes
+            and oos_sharpes[blend_label] > 0.8
+            and -0.15 <= (is_sharpes[blend_label] - oos_sharpes[blend_label]) <= 0.15):
+        best_label = blend_label
+    elif (sgmr_label in oos_sharpes
+            and oos_sharpes[sgmr_label] > 1.20
+            and -0.20 <= (is_sharpes[sgmr_label] - oos_sharpes[sgmr_label]) <= 0.30):
+        best_label = sgmr_label
+    else:
+        best_label = best_gap_label
+
     best_ret   = dict((m[0], m[1]) for m in all_methods)[best_label]
     prod_gap   = is_sharpes[best_label] - oos_sharpes[best_label]
 
@@ -1306,11 +1714,18 @@ def main():
         "eq_dd_control" : equity_curve(ret_dd,        CAPITAL),
         "vol_target"    : equity_curve(ret_vol,       CAPITAL),
         "risk_parity"   : equity_curve(ret_rp,        CAPITAL),
-        "rp_macro"      : equity_curve(ret_rp_macro,  CAPITAL),
-        "buy_hold"      : equity_curve(ret_bnh,       CAPITAL),
+        "rp_macro"       : equity_curve(ret_rp_macro,   CAPITAL),
+        "rp_regime_aware"      : equity_curve(ret_rp_regime,  CAPITAL),
+        "buy_hold"             : equity_curve(ret_bnh,        CAPITAL),
     }
+    if has_blend:
+        comparison_curves["rp_blend"] = equity_curve(ret_blend, CAPITAL)
+    if has_sgmr:
+        comparison_curves["signal_gated_mv_regime"] = equity_curve(ret_sgmr, CAPITAL)
     if has_ensemble:
         comparison_curves["ensemble_atr_pca_macro"] = equity_curve(ret_ens, CAPITAL)
+    if has_ir_opt:
+        comparison_curves["ir_optimized"] = equity_curve(ret_ir_opt, CAPITAL)
     if has_multi:
         comparison_curves["multi_equal_weight"] = equity_curve(ret_multi_eq,    CAPITAL)
         comparison_curves["multi_atr_pure"]     = equity_curve(ret_multi_atr,   CAPITAL)

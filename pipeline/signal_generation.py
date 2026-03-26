@@ -1229,6 +1229,12 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     # bonds and commodities pass through full [-1, +1] range
     out["signal_ensemble"] = ens
 
+    # ── Insider sizing modifier ──────────────────────────────────────────
+    # Placeholder: 1.0 = no adjustment. Upstream logic (e.g. insider_signals
+    # pipeline) can set to 1.3 for tickers with recent insider buying.
+    # Consumed by portfolio.py to scale position sizes.
+    out["insider_size_mult"] = 1.0
+
     return out.dropna()
 
 # -----------------------------------------------------------------------------

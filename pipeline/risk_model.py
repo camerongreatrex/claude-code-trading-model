@@ -41,7 +41,7 @@ import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Tuple
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -134,6 +134,75 @@ def estimate_covariance(
             cov = np.array([[float(cov)]])
 
     return cov * 252                   # annualise: Var[annual] = 252 × Var[daily]
+
+
+# ── Regime-conditional covariance ─────────────────────────────────────────────
+
+def regime_conditional_covariance(
+    returns_df: pd.DataFrame,
+    regimes_series: pd.Series,
+    current_regime: str,
+    min_obs: int = 63,
+    fallback_window: int = 126,
+) -> Tuple[np.ndarray, int]:
+    """
+    Estimate covariance using only returns from a specific market regime.
+
+    Why regime-conditional?
+    ───────────────────────
+    The correlation diagnostic shows average pairwise correlation spikes from
+    ~0.20 in bull_calm to ~0.45+ in bear_stress.  Standard risk parity uses a
+    rolling window that mixes regimes: during a stress period the recent window
+    still contains bull_calm days that pull correlations DOWN, making the
+    portfolio appear more diversified than it actually is.
+
+    By filtering returns to the current regime's historical observations, the
+    covariance matrix reflects the correlation structure that actually prevails
+    NOW — not a blended average of different market states.
+
+    Algorithm
+    ─────────
+    1. Filter returns_df to rows where regimes_series == current_regime.
+    2. If filtered count >= min_obs (default 63 ≈ 3 months): fit Ledoit-Wolf
+       on those observations only.
+    3. Else: fall back to standard estimate_covariance() on the last
+       fallback_window (default 126) rows of returns_df.
+
+    The fallback guarantees a valid covariance matrix even for rare regimes
+    (e.g. bear_stress may only have 40 days in a bull market period).
+
+    Args:
+        returns_df:     Daily log-returns DataFrame (T × N).
+        regimes_series: Series of regime label strings ('bull_calm',
+                        'bull_stress', 'bear_calm', 'bear_stress') aligned
+                        to returns_df.index.  Produced by
+                        regime_analysis.label_regimes().
+        current_regime: Which regime to condition on (e.g. 'bear_stress').
+        min_obs:        Minimum observations required to use the regime-
+                        filtered sample (default 63 = ~3 months).
+        fallback_window: Number of trailing rows to use when the regime
+                         sample is too small (default 126 = 6 months).
+
+    Returns:
+        Tuple of (cov_matrix, n_regime_obs):
+          cov_matrix:   Annualised covariance matrix (N × N), positive
+                        semi-definite by construction (Ledoit-Wolf).
+          n_regime_obs: Number of regime-matched observations used.
+                        If < min_obs, the fallback was used and this value
+                        equals fallback_window (or len(returns_df) if shorter).
+    """
+    aligned = regimes_series.reindex(returns_df.index)
+    mask = aligned == current_regime
+    regime_returns = returns_df.loc[mask]
+
+    if len(regime_returns) >= min_obs:
+        cov = estimate_covariance(regime_returns)
+        return cov, len(regime_returns)
+
+    # Fallback: not enough regime-specific observations
+    tail = returns_df.iloc[-fallback_window:]
+    cov = estimate_covariance(tail)
+    return cov, len(tail)
 
 
 # ── Portfolio risk ─────────────────────────────────────────────────────────────

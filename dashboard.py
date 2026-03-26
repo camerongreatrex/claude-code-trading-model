@@ -89,7 +89,8 @@ from ui.charts import (
 )
 from ui.data_loaders import (
     load_portfolio_curves, load_ticker_curves, load_walk_forward,
-    load_walk_forward_atr, load_oos_selection, load_macro, run_monte_carlo,
+    load_walk_forward_atr, load_oos_selection, load_macro, load_fred_features,
+    run_monte_carlo,
     load_correlation_diagnostic, load_regime_correlation, load_dead_weight,
 )
 from ui.styles import get_color, get_label
@@ -148,6 +149,7 @@ def main():
     wf_atr        = load_walk_forward_atr()
     oos_sel       = load_oos_selection()
     macro         = load_macro()
+    fred          = load_fred_features()
     n_assets      = len(ticker_curves) if ticker_curves else 20
 
     # Header
@@ -652,7 +654,7 @@ def main():
                 "</span>",
                 unsafe_allow_html=True,
             )
-            st.plotly_chart(chart_macro_overlay(df_port, macro),
+            st.plotly_chart(chart_macro_overlay(df_port, macro, fred=fred),
                             theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
             # Regime statistics
@@ -674,6 +676,36 @@ def main():
                                  help="Days where 10Y−2Y spread > 1% (steep). Historically "
                                       "associated with early-cycle expansion. Macro multiplier "
                                       "slightly increases sizing in steep environments.")
+
+            # FRED indicator scores (dynamic — only shown when fred_features.parquet exists)
+            if "fred_macro_score" in macro.columns:
+                st.markdown('<div class="section-head">FRED indicator summary</div>',
+                            unsafe_allow_html=True)
+                _fms = macro["fred_macro_score"].dropna()
+                f1, f2, f3, f4 = st.columns(4)
+                with f1: st.metric("FRED Score (latest)", f"{_fms.iloc[-1]:+.2f}" if not _fms.empty else "N/A",
+                                     help="Composite of 8 FRED indicators (credit spreads, sentiment, "
+                                          "claims, PMI, USD, inflation, VIX). Range −1 to +1.")
+                with f2: st.metric("FRED Bullish days", f"{(_fms > 0).mean()*100:.0f}%" if not _fms.empty else "N/A",
+                                     help="Days where FRED composite score > 0 (majority of "
+                                          "indicators in bullish regime).")
+                with f3:
+                    if not fred.empty and "hy_oas" in fred.columns:
+                        _hy = fred["hy_oas"].dropna()
+                        st.metric("HY Spread (latest)", f"{_hy.iloc[-1]:.2f}%" if not _hy.empty else "N/A",
+                                    help="ICE BofA High Yield OAS. Rising = credit stress / risk-off. "
+                                         "Spikes above 5% historically precede equity drawdowns.")
+                    else:
+                        st.metric("HY Spread", "N/A", help="Run fred_features.py to populate.")
+                with f4:
+                    if not fred.empty and "ism_pmi" in fred.columns:
+                        _pmi = fred["ism_pmi"].dropna()
+                        st.metric("Mfg Production (latest)", f"{_pmi.iloc[-1]:.1f}" if not _pmi.empty else "N/A",
+                                    help="Industrial Production: Manufacturing (IPMAN). "
+                                         "Rising = expansion, falling = contraction. "
+                                         "Leading indicator of economic activity.")
+                    else:
+                        st.metric("Mfg Production", "N/A", help="Run fred_features.py to populate.")
 
     # ── Tab 6: Paper Trading & Live Signals ──────────────────────────────────
     with tab6:
@@ -920,18 +952,18 @@ def main():
                 # Reconciliation: pnl already includes sell commissions,
                 # so only subtract buy fees to avoid double-counting.
                 _reconciled = PT_INITIAL_CAPITAL + realized_gains + realized_losses + tot_unreal - buy_fees
-                _parts = [f"$100,000 start"]
+                _parts = [f"\\$100,000 start"]
                 if realized_gains:
-                    _parts.append(f"+ ${realized_gains:,.0f} gains")
+                    _parts.append(f"+ \\${realized_gains:,.0f} gains")
                 if realized_losses:
-                    _parts.append(f"− ${abs(realized_losses):,.0f} losses")
+                    _parts.append(f"− \\${abs(realized_losses):,.0f} losses")
                 if tot_unreal >= 0:
-                    _parts.append(f"+ ${tot_unreal:,.0f} unrealized")
+                    _parts.append(f"+ \\${tot_unreal:,.0f} unrealized")
                 else:
-                    _parts.append(f"− ${abs(tot_unreal):,.0f} unrealized")
+                    _parts.append(f"− \\${abs(tot_unreal):,.0f} unrealized")
                 if buy_fees:
-                    _parts.append(f"− ${buy_fees:,.0f} entry fees")
-                _parts.append(f"= ${_reconciled:,.0f}")
+                    _parts.append(f"− \\${buy_fees:,.0f} entry fees")
+                _parts.append(f"= \\${_reconciled:,.0f}")
                 st.caption("  ".join(_parts))
 
                 # ── Equity chart ──────────────────────────────────────────────
@@ -1523,8 +1555,8 @@ def main():
                     title=dict(text="Today — Portfolio vs S&P 500 (both vs yesterday's close)",
                                font=dict(size=12)),
                     yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
-                    xaxis=dict(type="date", tickformat="%H:%M", rangeslider=dict(visible=False),
-                               range=[f"{_vs_today}T09:25:00", _vs_right.strftime('%Y-%m-%dT%H:%M:00')]),
+                    xaxis=dict(type="date", rangeslider=dict(visible=False),
+                               autorange=True, fixedrange=False),
                     margin=dict(l=70),
                 ))
                 st.plotly_chart(fig_intra, theme=None, use_container_width=True,
