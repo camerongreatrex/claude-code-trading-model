@@ -80,6 +80,13 @@ STRATEGIES = {
     # ── Risk-parity strategies ────────────────────────────────────────────────
     "risk_parity":          {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     "rp_macro":             {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
+    # Note: rp_regime_aware live sizing uses standard RP + macro multiplier as
+    # approximation. Full regime-conditional covariance requires historical
+    # return fetch at runtime — not implemented for paper trading.
+    "rp_regime_aware":      {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
+    # rp_blend: 60% rp_regime_aware + 40% multi_mom_tilt. Live sizing uses
+    # ATR + mom_tilt + macro as approximation (see rp_regime_aware note above).
+    "rp_blend":             {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
     "multi_rp":             {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     "multi_rp_mom":         {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
     # ── Full-stack composite (all overlays) ───────────────────────────────────
@@ -104,6 +111,8 @@ _OOS_NAME_MAP = {
     "fast_atr":             "fast_atr",
     "risk parity":          "risk_parity",
     "rp_macro":             "rp_macro",
+    "rp_regime_aware":      "rp_regime_aware",
+    "rp_blend":             "rp_blend",
 }
 
 

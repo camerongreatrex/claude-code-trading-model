@@ -102,6 +102,18 @@ PALETTE = {
     "rp_macro"              : "#f472b6",
     "multi_fast_atr_earn"   : "#9d8ecb",
     "multi_fast_mom_earn"   : "#6b8ecb",
+    "half_kelly"            : "#e2b86d",
+    "atr_pca"               : "#56d6a0",
+    "composite_vol_target"  : "#a78bfa",
+    "risk_parity"           : "#f9a8d4",
+    "rp_regime_aware"       : "#34d399",
+    "rp_regime_vix"         : "#0891b2",
+    "rp_regime_dw"          : "#0e7490",
+    "rp_regime_vix_dw"      : "#155e75",
+    "rp_blend"              : "#fbbf24",
+    "signal_gated_mv_regime": "#818cf8",
+    "ir_optimized"          : "#94a3b8",
+    "ensemble_atr_pca_macro": "#fb923c",
 }
 # LABELS maps the same keys to human-readable legend/table strings.
 LABELS = {
@@ -125,6 +137,18 @@ LABELS = {
     "rp_macro"              : "Risk Parity + Macro",
     "multi_fast_atr_earn"   : "Multi Fast ATR (Earn)",
     "multi_fast_mom_earn"   : "Multi Fast Mom (Earn)",
+    "half_kelly"            : "Half-Kelly",
+    "atr_pca"               : "ATR + PCA",
+    "composite_vol_target"  : "Composite + Vol Target",
+    "risk_parity"           : "Risk Parity",
+    "rp_regime_aware"       : "RP Regime Aware",
+    "rp_regime_vix"         : "RP Regime + VIX",
+    "rp_regime_dw"          : "RP Regime + DW",
+    "rp_regime_vix_dw"      : "RP Regime + VIX + DW",
+    "rp_blend"              : "RP Blend",
+    "signal_gated_mv_regime": "Signal-Gated MV Regime",
+    "ir_optimized"          : "IR Optimized",
+    "ensemble_atr_pca_macro": "Ensemble ATR+PCA+Macro",
 }
 
 

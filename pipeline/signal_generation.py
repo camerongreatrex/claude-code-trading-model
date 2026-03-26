@@ -304,6 +304,27 @@ def vix_gate(macro: pd.DataFrame, index: pd.Index) -> pd.Series:
     vix_z = macro["vix_zscore"].reindex(index).ffill().fillna(0)
     return (vix_z < 2.5).astype(int)
 
+def vix_position_scalar(macro: pd.DataFrame, index: pd.Index) -> pd.Series:
+    """
+    Continuous VIX-based position size scalar in [0.30, 1.0].
+
+    Returns 1.0 in normal conditions, smoothly reduces to 0.30
+    at extreme VIX. Uses CBOE published VIX regime breakpoints.
+    Applied to sizing only — does not affect signal direction.
+    """
+    if macro.empty:
+        return pd.Series(1.0, index=index)
+    vix = macro["vix"].reindex(index).ffill().fillna(20)
+    xp  = [0,   15,   20,   25,   30,   35,  100]
+    fp  = [1.0, 1.0,  1.0,  0.70, 0.50, 0.35, 0.30]
+    scalar = pd.Series(
+        np.interp(vix.values, xp, fp),
+        index=index,
+        name="vix_position_scalar",
+    )
+    return scalar
+
+
 # -----------------------------------------------------------------------------
 # Signal rules — with ticker-aware thresholds
 # -----------------------------------------------------------------------------

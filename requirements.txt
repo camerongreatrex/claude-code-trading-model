@@ -1,4 +1,5 @@
 numpy==2.4.3
+scipy
 pandas==2.3.3
 plotly==6.6.0
 streamlit==1.55.0

@@ -171,10 +171,21 @@ def main():
         return
 
     # ── Top metrics ──────────────────────────────────────────────────────────
-    # Select production method: best OOS Sharpe from oos_selection, or equal_weight fallback
+    # Select production method via two-stage gap-filtered OOS Sharpe.
+    # Stage 1: filter to OOS Sharpe > 0.9 AND IS-OOS gap in [-0.20, +0.50]
+    # Stage 2: among qualifying methods, pick highest OOS Sharpe
+    # Fallback: if no method passes gap filter, use highest OOS Sharpe
     _prod_method = "equal_weight"
     if not oos_sel.empty and "oos_sharpe" in oos_sel.columns and "method" in oos_sel.columns:
-        _best_idx = oos_sel["oos_sharpe"].idxmax()
+        _filtered = pd.DataFrame()
+        if "is_sharpe" in oos_sel.columns:
+            _gaps = oos_sel["is_sharpe"] - oos_sel["oos_sharpe"]
+            _mask = (oos_sel["oos_sharpe"] > 0.9) & (_gaps >= -0.20) & (_gaps <= 0.50)
+            _filtered = oos_sel[_mask]
+        if not _filtered.empty:
+            _best_idx = _filtered["oos_sharpe"].idxmax()
+        else:
+            _best_idx = oos_sel["oos_sharpe"].idxmax()
         _best_m   = oos_sel.loc[_best_idx, "method"]
         # Map oos_selection method name → df_port column name (spaces → underscores)
         _best_col = _best_m.replace(" ", "_").replace("-", "_")
@@ -638,7 +649,8 @@ def main():
             )
             st.markdown(
                 f"<span style='color:#50fa7b;font-size:.82rem'>"
-                f"✓ Selected method: <b>{_wf_best_oos}</b></span>",
+                f"✓ Production method: <b>{_prod_label}</b> — selected by highest OOS Sharpe "
+                f"among methods with IS-OOS gap in [−0.20, +0.50]</span>",
                 unsafe_allow_html=True,
             )
 
@@ -932,7 +944,7 @@ def main():
 
                 st.markdown('<div class="section-head">Capital Flow</div>',
                             unsafe_allow_html=True)
-                wf1, wf2, wf3, wf4, wf5 = st.columns(5)
+                wf1, wf2, wf3, wf4 = st.columns(4)
                 with wf1:
                     st.metric("Starting Capital", f"${PT_INITIAL_CAPITAL:,.0f}")
                 with wf2:
@@ -946,9 +958,6 @@ def main():
                 with wf4:
                     st.metric("Unrealized P&L", f"${tot_unreal:+,.0f}",
                               help="Open position value minus cost basis.")
-                with wf5:
-                    st.metric("Fees Paid", f"-${total_fees:,.0f}",
-                              help=f"Entry: ${buy_fees:,.2f} · Exit: ${sell_fees:,.2f}")
                 # Reconciliation: pnl already includes sell commissions,
                 # so only subtract buy fees to avoid double-counting.
                 _reconciled = PT_INITIAL_CAPITAL + realized_gains + realized_losses + tot_unreal - buy_fees
@@ -1431,7 +1440,7 @@ def main():
                 return
 
             # ── Intraday (live) comparison ────────────────────────────────────
-            st.markdown('<div class="section-head">Live — Today vs S&P 500</div>',
+            st.markdown('<div class="section-head">Overall vs S&P 500</div>',
                         unsafe_allow_html=True)
 
             intraday_df, live_prices, spy_intraday, spy_pct_from_prev = get_intraday_curve()
@@ -1496,72 +1505,74 @@ def main():
                 st.metric("Portfolio Value", f"${pv:,.0f}",
                           help="Live portfolio value (positions × latest 5-min bar + cash).")
 
-            # Intraday chart — both normalized to same starting value
-            if not spy_intraday.empty or not intraday_df.empty:
-                fig_intra = go.Figure()
-
-                if not intraday_df.empty and {"open","high","low","close"}.issubset(intraday_df.columns):
-                    fig_intra.add_trace(go.Candlestick(
-                        x=intraday_df.index,
-                        open=intraday_df["open"],
-                        high=intraday_df["high"],
-                        low=intraday_df["low"],
-                        close=intraday_df["close"],
-                        name="My Portfolio",
-                        increasing=dict(line=dict(color="#50fa7b", width=1),
-                                        fillcolor="rgba(80,250,123,0.7)"),
-                        decreasing=dict(line=dict(color="#ff5555", width=1),
-                                        fillcolor="rgba(255,85,85,0.7)"),
-                    ))
-                    # Flat dotted line from last candle to now
-                    if now_et > pd.Timestamp(intraday_df.index[-1]):
-                        _lv = float(intraday_df["close"].iloc[-1])
-                        fig_intra.add_trace(go.Scatter(
-                            x=[intraday_df.index[-1], now_et],
-                            y=[_lv, _lv],
-                            mode="lines",
-                            line=dict(color="#4a9eff", width=1.5, dash="dot"),
-                            showlegend=False,
-                            hovertemplate="<b>Portfolio</b> (closed)<br>%{x|%H:%M} $%{y:,.0f}<extra></extra>",
-                        ))
-
-                if not spy_intraday.empty:
-                    # spy_intraday is already normalized to the close-to-close baseline
-                    # in paper_trader.get_intraday_curve() — last bar equals
-                    # prev_pv × (1 + gspc_pct/100) — so no rescaling needed here.
-                    # Extend ^GSPC line to current time (flat after last bar)
-                    _spy_x = list(spy_intraday.index)
-                    _spy_y = list(spy_intraday.values)
-                    if now_et > pd.Timestamp(_spy_x[-1]):
-                        _spy_x.append(now_et)
-                        _spy_y.append(_spy_y[-1])
-                    fig_intra.add_trace(go.Scatter(
-                        x=_spy_x, y=_spy_y,
-                        name="S&P 500 (^GSPC)", line=dict(color="#ffb86c", width=2, dash="dot"),
-                        hovertemplate="<b>S&P 500</b><br>%{x|%H:%M}  $%{y:,.0f}<extra></extra>",
-                    ))
-
-                # Now line
-                now_str = now_et.strftime('%Y-%m-%dT%H:%M:%S')
-                fig_intra.add_shape(type="line", x0=now_str, x1=now_str,
-                                    y0=0, y1=1, yref="paper",
-                                    line=dict(color="#888", dash="dot", width=1))
-
-                _vs_today = now_et.strftime('%Y-%m-%d')
-                _vs_right = max(now_et, pd.Timestamp(_vs_today + " 16:05:00"))
-                fig_intra.update_layout(**_layout(
-                    height=300, uirevision="vs_spy_intra",
-                    dragmode="pan",
-                    title=dict(text="Today — Portfolio vs S&P 500 (both vs yesterday's close)",
-                               font=dict(size=12)),
-                    yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
-                    xaxis=dict(type="date", rangeslider=dict(visible=False),
-                               autorange=True, fixedrange=False),
-                    margin=dict(l=70),
-                ))
-                st.plotly_chart(fig_intra, theme=None, use_container_width=True,
-                                config={"scrollZoom": True, "displayModeBar": False},
-                                key="vs_spy_intra_chart")
+            # Daily alpha bar chart — all trading days including today
+            _alpha_chart_shown = False
+            if not pt_history.empty and len(pt_history) >= 2:
+                _bar_start = str(pt_history["date"].min().date())
+                _bar_spy = _spy_history(_bar_start)
+                if not _bar_spy.empty:
+                    _bar_hist = pt_history.set_index("date")["portfolio_value"].copy()
+                    _bar_hist.index = pd.to_datetime(_bar_hist.index)
+                    _bar_hist = _bar_hist[~_bar_hist.index.duplicated(keep='last')]
+                    # Always use live portfolio value for today (overwrite stale EOD)
+                    _bar_today = pd.Timestamp(now_et.date())
+                    if pv > 0:
+                        _bar_hist[_bar_today] = pv
+                    _bar_dates = _bar_spy.index.intersection(
+                        pd.date_range(_bar_hist.index.min(), _bar_hist.index.max(), freq="B")
+                    )
+                    _bar_hf = _bar_hist.reindex(_bar_dates).ffill()
+                    _bar_sa = _bar_spy.reindex(_bar_dates).ffill()
+                    _bar_valid = _bar_hf.notna() & _bar_sa.notna()
+                    _bar_hf = _bar_hf[_bar_valid]
+                    _bar_sa = _bar_sa[_bar_valid]
+                    if len(_bar_hf) >= 2:
+                        _bar_pr = _bar_hf.pct_change().dropna() * 100
+                        _bar_sr = _bar_sa.pct_change().dropna() * 100
+                        _bar_common = _bar_pr.index.intersection(_bar_sr.index)
+                        _bar_alpha = _bar_pr[_bar_common] - _bar_sr[_bar_common]
+                        if len(_bar_alpha) > 0:
+                            fig_alpha = go.Figure()
+                            _bar_colors = ['#50fa7b' if a >= 0 else '#ff5555'
+                                           for a in _bar_alpha.values]
+                            fig_alpha.add_trace(go.Bar(
+                                x=_bar_alpha.index, y=_bar_alpha.values,
+                                marker_color=_bar_colors,
+                                hovertemplate=(
+                                    "<b>%{x|%b %d}</b><br>"
+                                    "Alpha: %{y:+.2f}%<extra></extra>"
+                                ),
+                            ))
+                            fig_alpha.add_hline(y=0, line_color="#555", line_width=1)
+                            _avg_alpha = float(_bar_alpha.mean())
+                            fig_alpha.add_hline(
+                                y=_avg_alpha, line_color="#4a9eff", line_dash="dash",
+                                line_width=1,
+                                annotation_text=f"  avg {_avg_alpha:+.2f}%",
+                                annotation_font_color="#4a9eff",
+                            )
+                            fig_alpha.update_layout(**_layout(
+                                height=300, uirevision="vs_spy_daily_alpha",
+                                dragmode="pan",
+                                title=dict(
+                                    text="Daily Alpha vs S&P 500 (Portfolio Return − Index Return)",
+                                    font=dict(size=12),
+                                ),
+                                yaxis=dict(title="Alpha %", gridcolor="#2a2a2a",
+                                           zeroline=True, zerolinecolor="#555"),
+                                xaxis=dict(type="date", tickformat="%b %d",
+                                           gridcolor="#2a2a2a"),
+                                margin=dict(l=60, r=20, t=35, b=30),
+                                showlegend=False, bargap=0.15,
+                            ))
+                            st.plotly_chart(
+                                fig_alpha, theme=None, use_container_width=True,
+                                config={"scrollZoom": True, "displayModeBar": True},
+                                key="vs_spy_daily_alpha",
+                            )
+                            _alpha_chart_shown = True
+            if not _alpha_chart_shown:
+                st.info("Need at least 2 trading days to show the daily alpha chart.")
 
             # ── Historical comparison (daily) ─────────────────────────────────
             st.markdown('<div class="section-head">Historical Record vs S&P 500</div>',
@@ -1585,6 +1596,10 @@ def main():
                     hist = pt_history.set_index("date")["portfolio_value"].copy()
                     hist.index = pd.to_datetime(hist.index)
                     hist = hist[~hist.index.duplicated(keep='last')]
+                    # Always use live portfolio value for today (overwrite stale EOD)
+                    _today_ts = pd.Timestamp(now_et.date())
+                    if pv > 0:
+                        hist[_today_ts] = pv
 
                     all_dates = spy_closes.index.intersection(
                         pd.date_range(hist.index.min(), hist.index.max(), freq="B")

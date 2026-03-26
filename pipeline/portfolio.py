@@ -71,6 +71,7 @@ from .backtester import (
     calmar_ratio, win_rate, profit_factor, summarise, equity_curve
 )
 from .data_pipeline import TICKER_LIST, ASSET_CLASS, HEDGE_MAP
+from .signal_generation import vix_position_scalar
 
 SIGNAL_DIR  = Path("data/signals")
 FEATURE_DIR = Path("data/features")
@@ -81,6 +82,52 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 CAPITAL          = 100_000
 MAX_POSITION_PCT = 0.20
 RISK_PER_TRADE   = 0.01
+
+RESEARCH_DIR = Path("data/research")
+
+
+def load_dead_weight_scalars(
+    floor: float = 0.70,
+    ceiling: float = 1.20
+) -> dict:
+    """
+    Load dead_weight_pct from research parquet and convert to
+    per-ticker position size scalar in [floor, ceiling].
+
+    edge = 0.50 - dead_weight_pct  (positive = better than random)
+    scalar = floor + edge_norm * (ceiling - floor)
+
+    Result: TIP (~37.6% DW) gets ~1.20x, FXY (~49.8% DW) gets
+    ~0.70x. Pure rank transformation — no return fitting.
+    """
+    path = RESEARCH_DIR / "correlation_diagnostic_dead_weight.parquet"
+    if not path.exists():
+        print("  Dead weight parquet not found — scalars defaulting to 1.0")
+        return {}
+    df = pd.read_parquet(path)
+    df = df[df["dead_weight_pct"].notna()].copy()
+    df["edge"] = 0.50 - df["dead_weight_pct"] / 100.0
+    edge_min = df["edge"].min()
+    edge_max = df["edge"].max()
+    if edge_max == edge_min:
+        return {row["ticker"]: 1.0 for _, row in df.iterrows()}
+    df["edge_norm"] = (df["edge"] - edge_min) / (edge_max - edge_min)
+    df["scalar"]    = floor + df["edge_norm"] * (ceiling - floor)
+    return dict(zip(df["ticker"], df["scalar"]))
+
+
+_MACRO_CACHE = None
+
+
+def _get_macro() -> pd.DataFrame:
+    global _MACRO_CACHE
+    if _MACRO_CACHE is None:
+        path = MACRO_DIR / "macro_features.parquet"
+        if path.exists():
+            _MACRO_CACHE = pd.read_parquet(path)
+        else:
+            _MACRO_CACHE = pd.DataFrame()
+    return _MACRO_CACHE
 
 
 def equal_weight_sizes(signals: pd.DataFrame, capital: float) -> pd.DataFrame:
@@ -527,56 +574,56 @@ def risk_parity_sizes(
 
     adjusted = base_sizes.copy()
     tickers  = [t for t in signals.columns if t in returns.columns]
-    col_locs = {t: signals.columns.get_loc(t) for t in tickers}
+    n_rows   = len(signals)
 
-    # Cache risk-parity weights for the full universe; update monthly.
-    # Weights are indexed by ticker name so they survive active-set changes.
-    rp_weights_cache: dict = {}   # {ticker: weight}
+    # ── Precompute RP weights at each rebalance date ─────────────────────
+    # Build a (T × N) weight matrix: each row carries the RP weights in
+    # effect on that day.  Rebalance every `rebalance_freq` days; between
+    # rebalances the previous weights persist via forward-fill.
+    rp_weight_df = pd.DataFrame(np.nan, index=signals.index, columns=tickers)
 
-    for i in range(cov_window, len(signals)):
-        # Monthly rebalance: refit covariance on the most recent cov_window days.
-        # We compute weights for the full universe regardless of which assets
-        # are active today — the active mask is applied below at signal time.
-        if (i - cov_window) % rebalance_freq == 0:
-            ret_window = returns.iloc[i - cov_window : i][tickers]
-            # Drop any ticker with >10% missing returns (illiquid / just listed)
-            ret_window = ret_window.dropna(thresh=int(len(ret_window) * 0.90), axis=1)
-            available  = ret_window.columns.tolist()
+    for i in range(cov_window, n_rows, rebalance_freq):
+        ret_window = returns.iloc[i - cov_window : i][tickers]
+        ret_window = ret_window.dropna(thresh=int(len(ret_window) * 0.90), axis=1)
+        available  = ret_window.columns.tolist()
 
-            if len(available) >= 2 and len(ret_window) >= 20:
-                ret_clean = ret_window.ffill().fillna(0)
-                cov       = estimate_covariance(ret_clean)
-                w_rp      = risk_parity_weights(cov)
-                rp_weights_cache = {t: float(w_rp[j]) for j, t in enumerate(available)}
-            # else: keep previous cache (or empty → fall through to ATR below)
+        if len(available) >= 2 and len(ret_window) >= 20:
+            ret_clean = ret_window.ffill().fillna(0)
+            cov_mat   = estimate_covariance(ret_clean)
+            w_rp      = risk_parity_weights(cov_mat)
+            for j, t in enumerate(available):
+                rp_weight_df.iloc[i, rp_weight_df.columns.get_loc(t)] = w_rp[j]
 
-        if not rp_weights_cache:
-            continue  # warm-up: not enough history yet, keep ATR sizes
+    # Forward-fill weights between rebalance dates
+    rp_weight_df = rp_weight_df.ffill()
 
-        sig_today = signals.iloc[i]
-        active    = [t for t in tickers if sig_today[t] != 0 and t in rp_weights_cache]
-        if not active:
-            continue
+    # ── Vectorised redistribution ─────────────────────────────────────────
+    # active mask: where signal != 0 AND we have RP weights
+    sig_vals  = signals[tickers]
+    active    = (sig_vals != 0) & rp_weight_df[tickers].notna()
 
-        # Total gross ATR exposure today (preserve the overall size level)
-        total_atr = base_sizes.iloc[i][[t for t in active]].abs().sum()
-        if total_atr <= 0:
-            continue
+    # Zero out inactive weights, normalise per row
+    w_active  = rp_weight_df[tickers].where(active, 0.0)
+    w_sum     = w_active.sum(axis=1).replace(0, np.nan)
+    w_norm    = w_active.div(w_sum, axis=0).fillna(0.0)
 
-        # Renormalise risk-parity weights among today's active assets
-        w_sum = sum(rp_weights_cache[t] for t in active)
-        if w_sum <= 0:
-            continue
+    # Total ATR exposure among active tickers per day
+    total_atr = base_sizes[tickers].where(active, 0.0).abs().sum(axis=1)
 
-        # Redistribute ATR total using risk-parity proportions
-        for ticker in active:
-            w_norm = rp_weights_cache[ticker] / w_sum
-            sign   = float(sig_today[ticker])
-            adjusted.iloc[i, col_locs[ticker]] = np.clip(
-                sign * w_norm * total_atr,
-                -capital * MAX_POSITION_PCT,
-                capital * MAX_POSITION_PCT,
-            )
+    # Redistribute: sign × normalised_weight × total_atr
+    sign_df   = sig_vals.where(active, 0.0).clip(-1, 1)
+    raw       = sign_df * w_norm * total_atr.values[:, None]
+
+    # Clip to position limits and write back
+    cap_limit = capital * MAX_POSITION_PCT
+    clipped   = raw.clip(-cap_limit, cap_limit)
+
+    # Only overwrite rows past warm-up (first valid RP weight row)
+    first_valid = rp_weight_df.first_valid_index()
+    if first_valid is not None:
+        mask = signals.index >= first_valid
+        for t in tickers:
+            adjusted.loc[mask, t] = clipped.loc[mask, t]
 
     return apply_macro_multiplier(adjusted)
 
@@ -644,16 +691,22 @@ def rp_regime_aware_sizes(
         Dollar position size DataFrame, same shape as signals.
     """
     # ── Build regime labels for the full history ──────────────────────────
+    # Cache parquet reads across repeated calls (walk-forward windows).
+    if not hasattr(rp_regime_aware_sizes, "_macro_cache"):
+        rp_regime_aware_sizes._macro_cache = {}
+    _cache = rp_regime_aware_sizes._macro_cache
     macro_path = MACRO_DIR / "macro_features.parquet"
     spy_path   = FEATURE_DIR / "SPY.parquet"
 
     if not macro_path.exists() or not spy_path.exists():
-        # Cannot label regimes — fall back to standard risk parity
         return risk_parity_sizes(signals, features, returns, capital,
                                  cov_window, rebalance_freq)
 
-    macro     = pd.read_parquet(macro_path)
-    spy_close = pd.read_parquet(spy_path)["Close"]
+    if "macro" not in _cache:
+        _cache["macro"]     = pd.read_parquet(macro_path)
+        _cache["spy_close"] = pd.read_parquet(spy_path)["Close"]
+    macro     = _cache["macro"]
+    spy_close = _cache["spy_close"]
     vix       = macro["vix"] if "vix" in macro.columns else None
 
     if vix is None:
@@ -666,71 +719,114 @@ def rp_regime_aware_sizes(
     base_sizes = atr_sizes(signals, features, capital)
     adjusted   = base_sizes.copy()
     tickers    = [t for t in signals.columns if t in returns.columns]
-    col_locs   = {t: signals.columns.get_loc(t) for t in tickers}
+    n_rows     = len(signals)
 
-    rp_weights_cache: dict = {}
+    # ── Precompute RP weights at each rebalance date (regime-conditional) ─
+    rp_weight_df = pd.DataFrame(np.nan, index=signals.index, columns=tickers)
 
-    for i in range(cov_window, len(signals)):
-        # ── Rebalance: recompute covariance with regime conditioning ──────
-        if (i - cov_window) % rebalance_freq == 0:
-            # Returns history up to (not including) today
-            ret_history = returns.iloc[:i][tickers]
-            ret_history = ret_history.dropna(
-                thresh=int(min(len(ret_history), cov_window) * 0.90), axis=1
-            )
-            available = ret_history.columns.tolist()
+    for i in range(cov_window, n_rows, rebalance_freq):
+        ret_history = returns.iloc[:i][tickers]
+        ret_history = ret_history.dropna(
+            thresh=int(min(len(ret_history), cov_window) * 0.90), axis=1
+        )
+        available = ret_history.columns.tolist()
 
-            if len(available) >= 2 and len(ret_history) >= 20:
-                current_regime = regimes.iloc[i]
+        if len(available) >= 2 and len(ret_history) >= 20:
+            current_regime = regimes.iloc[i]
 
-                if current_regime in ("bull_calm", "bull_stress",
-                                      "bear_calm", "bear_stress"):
-                    # Regime-conditional: use only same-regime days
-                    regime_hist = regimes.iloc[:i]
-                    cov, n_obs = regime_conditional_covariance(
-                        ret_history.ffill().fillna(0),
-                        regime_hist,
-                        current_regime,
-                        min_obs=min_regime_obs,
-                        fallback_window=cov_window,
-                    )
-                else:
-                    # Unlabelled (warm-up) — standard rolling window
-                    ret_window = ret_history.iloc[-cov_window:]
-                    cov = estimate_covariance(ret_window.ffill().fillna(0))
+            if current_regime in ("bull_calm", "bull_stress",
+                                  "bear_calm", "bear_stress"):
+                regime_hist = regimes.iloc[:i]
+                cov_mat, _ = regime_conditional_covariance(
+                    ret_history.ffill().fillna(0),
+                    regime_hist,
+                    current_regime,
+                    min_obs=min_regime_obs,
+                    fallback_window=cov_window,
+                )
+            else:
+                ret_window = ret_history.iloc[-cov_window:]
+                cov_mat = estimate_covariance(ret_window.ffill().fillna(0))
 
-                w_rp = risk_parity_weights(cov)
-                rp_weights_cache = {
-                    t: float(w_rp[j]) for j, t in enumerate(available)
-                }
+            w_rp = risk_parity_weights(cov_mat)
+            for j, t in enumerate(available):
+                rp_weight_df.iloc[i, rp_weight_df.columns.get_loc(t)] = w_rp[j]
 
-        if not rp_weights_cache:
-            continue
+    # Forward-fill weights between rebalance dates
+    rp_weight_df = rp_weight_df.ffill()
 
-        sig_today = signals.iloc[i]
-        active = [t for t in tickers
-                  if sig_today[t] != 0 and t in rp_weights_cache]
-        if not active:
-            continue
+    # ── Vectorised redistribution (same logic as risk_parity_sizes) ───────
+    sig_vals  = signals[tickers]
+    active    = (sig_vals != 0) & rp_weight_df[tickers].notna()
 
-        total_atr = base_sizes.iloc[i][[t for t in active]].abs().sum()
-        if total_atr <= 0:
-            continue
+    w_active  = rp_weight_df[tickers].where(active, 0.0)
+    w_sum     = w_active.sum(axis=1).replace(0, np.nan)
+    w_norm    = w_active.div(w_sum, axis=0).fillna(0.0)
 
-        w_sum = sum(rp_weights_cache[t] for t in active)
-        if w_sum <= 0:
-            continue
+    total_atr = base_sizes[tickers].where(active, 0.0).abs().sum(axis=1)
+    sign_df   = sig_vals.where(active, 0.0).clip(-1, 1)
+    raw       = sign_df * w_norm * total_atr.values[:, None]
 
-        for ticker in active:
-            w_norm = rp_weights_cache[ticker] / w_sum
-            sign   = float(sig_today[ticker])
-            adjusted.iloc[i, col_locs[ticker]] = np.clip(
-                sign * w_norm * total_atr,
-                -capital * MAX_POSITION_PCT,
-                capital * MAX_POSITION_PCT,
-            )
+    cap_limit = capital * MAX_POSITION_PCT
+    clipped   = raw.clip(-cap_limit, cap_limit)
+
+    first_valid = rp_weight_df.first_valid_index()
+    if first_valid is not None:
+        mask = signals.index >= first_valid
+        for t in tickers:
+            adjusted.loc[mask, t] = clipped.loc[mask, t]
 
     return apply_macro_multiplier(adjusted)
+
+
+def rp_regime_vix_sizes(signals, features, returns, capital):
+    """rp_regime_aware + graduated VIX scalar only."""
+    base   = rp_regime_aware_sizes(signals, features, returns, capital)
+    macro  = _get_macro()
+    scalar = vix_position_scalar(macro, base.index)
+    scaled = base.multiply(scalar, axis=0)
+    # Re-apply gross cap: prevent leverage from scalar > 1.0
+    gross  = scaled.abs().sum(axis=1).replace(0, np.nan)
+    cap    = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return scaled.multiply(cap, axis=0)
+
+
+def rp_regime_dw_sizes(signals, features, returns, capital):
+    """rp_regime_aware + dead weight per-ticker scalar only."""
+    base       = rp_regime_aware_sizes(signals, features, returns, capital)
+    dw_scalars = load_dead_weight_scalars()
+    if not dw_scalars:
+        return base
+    dw_series  = pd.Series(dw_scalars).reindex(base.columns).fillna(1.0)
+    scaled     = base.multiply(dw_series, axis=1)
+    gross      = scaled.abs().sum(axis=1).replace(0, np.nan)
+    cap        = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return scaled.multiply(cap, axis=0)
+
+
+def rp_regime_vix_dw_sizes(signals, features, returns, capital):
+    """
+    rp_regime_aware + VIX scalar + dead weight scalar.
+
+    Combines three orthogonal improvements:
+      1. Regime-conditional covariance (from rp_regime_aware)
+      2. Graduated VIX scalar — reduces in bull_stress
+      3. Dead weight scalar — overweights proven signal tickers
+
+    Order: VIX scalar first (portfolio-level), then dead weight
+    (ticker-level), then gross cap.
+    """
+    base       = rp_regime_aware_sizes(signals, features, returns, capital)
+    macro      = _get_macro()
+    vix_scalar = vix_position_scalar(macro, base.index)
+    scaled     = base.multiply(vix_scalar, axis=0)
+    dw_scalars = load_dead_weight_scalars()
+    if dw_scalars:
+        dw_series = pd.Series(dw_scalars).reindex(base.columns).fillna(1.0)
+        scaled    = scaled.multiply(dw_series, axis=1)
+    gross = scaled.abs().sum(axis=1).replace(0, np.nan)
+    cap   = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return scaled.multiply(cap, axis=0)
 
 
 def signal_gated_mv_regime_sizes(
@@ -1056,24 +1152,23 @@ def momentum_tilt_sizes(
     # Step 3: 63-day trailing return for each ticker, computed daily.
     mom = closes.pct_change(mom_window)   # (T × N), backward-looking only
 
-    # Step 4: On each day, rank ONLY active tickers (signal ≠ 0) by momentum.
+    # Step 4: Vectorised cross-sectional momentum ranking.
+    # On each day, rank ONLY active tickers (signal ≠ 0) by momentum.
     # Tickers with no active signal get a neutral tilt of 1.0 (base size).
+    active_mask = signals.abs() > 0
+    # Restrict to columns present in mom; mask out inactive tickers with NaN
+    mom_cols = [c for c in signals.columns if c in mom.columns]
+    mom_masked = mom[mom_cols].where(active_mask[mom_cols])
+    # Percentile rank across columns (axis=1), only among non-NaN (active) tickers
+    ranks = mom_masked.rank(axis=1, pct=True)  # NaN stays NaN for inactive
+    # Count active+non-NaN tickers per row; only apply tilt where ≥ 2
+    n_active = ranks.notna().sum(axis=1)
     tilt = pd.DataFrame(1.0, index=base.index, columns=base.columns)
-
-    for date in base.index:
-        active_mask = signals.loc[date].abs() > 0
-        active_cols = [c for c in active_mask.index if active_mask[c] and c in mom.columns]
-        if len(active_cols) < 2:
-            continue   # need ≥ 2 active tickers to form a meaningful rank
-
-        mom_row = mom.loc[date, active_cols].dropna()
-        if len(mom_row) < 2:
-            continue
-
-        # Percentile rank within the active set for this date.
-        ranks = mom_row.rank(pct=True)   # 0 = worst, 1 = best
-        for col, rank_val in ranks.items():
-            tilt.loc[date, col] = tilt_min + tilt_range * rank_val
+    valid_rows = n_active >= 2
+    for c in mom_cols:
+        col_ranks = ranks[c]
+        col_valid = valid_rows & col_ranks.notna()
+        tilt.loc[col_valid, c] = tilt_min + tilt_range * col_ranks[col_valid].values
 
     # Step 5: Apply tilt and re-apply gross exposure cap.
     tilted = base * tilt
@@ -1376,6 +1471,18 @@ def main():
     )
     ret_rp_regime = portfolio_returns(sizes_rp_regime, returns)
 
+    print("  Computing rp_regime_vix sizes (regime cov + VIX scalar)...")
+    sizes_rpv  = rp_regime_vix_sizes(signals_regime, features, returns, CAPITAL)
+    ret_rpv    = portfolio_returns(sizes_rpv, returns)
+
+    print("  Computing rp_regime_dw sizes (regime cov + dead weight)...")
+    sizes_rpd  = rp_regime_dw_sizes(signals_regime, features, returns, CAPITAL)
+    ret_rpd    = portfolio_returns(sizes_rpd, returns)
+
+    print("  Computing rp_regime_vix_dw sizes (regime cov + VIX + DW)...")
+    sizes_rprvd = rp_regime_vix_dw_sizes(signals_regime, features, returns, CAPITAL)
+    ret_rprvd   = portfolio_returns(sizes_rprvd, returns)
+
     # ── Blended: 60% rp_regime_aware + 40% multi_mom_tilt ────────────────
     # Return-level blend. Since portfolio_returns is linear in sizes,
     # blending dollar sizes is equivalent to blending the return streams.
@@ -1461,6 +1568,21 @@ def main():
             ret_rp_regime, signals_regime,
             lambda sig, ret: rp_regime_aware_sizes(sig, features, ret, CAPITAL),
         ),
+        (
+            "rp_regime_vix",
+            ret_rpv, signals_regime,
+            lambda sig, ret: rp_regime_vix_sizes(sig, features, ret, CAPITAL),
+        ),
+        (
+            "rp_regime_dw",
+            ret_rpd, signals_regime,
+            lambda sig, ret: rp_regime_dw_sizes(sig, features, ret, CAPITAL),
+        ),
+        (
+            "rp_regime_vix_dw",
+            ret_rprvd, signals_regime,
+            lambda sig, ret: rp_regime_vix_dw_sizes(sig, features, ret, CAPITAL),
+        ),
     ]
     if has_blend:
         # Capture signals_multi via default arg to avoid late-binding closure issues.
@@ -1475,27 +1597,14 @@ def main():
                      .reindex(columns=ret.columns, fill_value=0)
             ),
         ))
-    if has_sgmr:
-        all_methods.append((
-            "signal_gated_mv_regime",
-            ret_sgmr, signals_regime,
-            lambda sig, ret: signal_gated_mv_regime_sizes(
-                sig, ensemble_signals.reindex(ret.index).fillna(0),
-                features, ret, CAPITAL),
-        ))
+    # signal_gated_mv_regime (OOS 0.660) and ir_optimized (OOS -0.019) removed
+    # from walk-forward to eliminate ~2,000 SLSQP solver calls per run.
+    # Equity curves are still saved for comparison; code is kept in optimizer.py.
     if has_ensemble:
         all_methods.append((
             "ensemble + ATR + PCA + macro",
             ret_ens, signals_ensemble,
             lambda sig, ret: ensemble_sizes(sig, features, ret, CAPITAL),
-        ))
-    if has_ir_opt:
-        all_methods.append((
-            "ir_optimized",
-            ret_ir_opt, signals_regime,
-            lambda sig, ret: optimizer_sizes(sig,
-                ensemble_signals.reindex(ret.index).fillna(0),
-                features, ret, CAPITAL),
         ))
     if has_multi:
         all_methods.extend([
@@ -1676,15 +1785,10 @@ def main():
     #    (existing logic).
     # Priority 1: rp_blend if OOS Sharpe > 0.8 AND gap ∈ [-0.15, +0.15]
     blend_label = "rp_blend"
-    sgmr_label  = "signal_gated_mv_regime"
     if (blend_label in oos_sharpes
             and oos_sharpes[blend_label] > 0.8
             and -0.15 <= (is_sharpes[blend_label] - oos_sharpes[blend_label]) <= 0.15):
         best_label = blend_label
-    elif (sgmr_label in oos_sharpes
-            and oos_sharpes[sgmr_label] > 1.20
-            and -0.20 <= (is_sharpes[sgmr_label] - oos_sharpes[sgmr_label]) <= 0.30):
-        best_label = sgmr_label
     else:
         best_label = best_gap_label
 
@@ -1708,15 +1812,21 @@ def main():
 
     # ── Persist results ────────────────────────────────────────────────────────
     comparison_curves = {
-        "equal_weight"  : equity_curve(ret_eq,       CAPITAL),
-        "atr_sized"     : equity_curve(ret_atr,       CAPITAL),
-        "atr_pca_macro" : equity_curve(ret_final,     CAPITAL),
-        "eq_dd_control" : equity_curve(ret_dd,        CAPITAL),
-        "vol_target"    : equity_curve(ret_vol,       CAPITAL),
-        "risk_parity"   : equity_curve(ret_rp,        CAPITAL),
-        "rp_macro"       : equity_curve(ret_rp_macro,   CAPITAL),
-        "rp_regime_aware"      : equity_curve(ret_rp_regime,  CAPITAL),
-        "buy_hold"             : equity_curve(ret_bnh,        CAPITAL),
+        "equal_weight"         : equity_curve(ret_eq,        CAPITAL),
+        "atr_sized"            : equity_curve(ret_atr,       CAPITAL),
+        "half_kelly"           : equity_curve(ret_kelly,     CAPITAL),
+        "atr_pca"              : equity_curve(ret_atr_pca,   CAPITAL),
+        "atr_pca_macro"        : equity_curve(ret_final,     CAPITAL),
+        "eq_dd_control"        : equity_curve(ret_dd,        CAPITAL),
+        "vol_target"           : equity_curve(ret_vol,       CAPITAL),
+        "composite_vol_target" : equity_curve(ret_comp_vol,  CAPITAL),
+        "risk_parity"          : equity_curve(ret_rp,        CAPITAL),
+        "rp_macro"             : equity_curve(ret_rp_macro,  CAPITAL),
+        "rp_regime_aware"      : equity_curve(ret_rp_regime, CAPITAL),
+        "rp_regime_vix"        : equity_curve(ret_rpv,       CAPITAL),
+        "rp_regime_dw"         : equity_curve(ret_rpd,       CAPITAL),
+        "rp_regime_vix_dw"     : equity_curve(ret_rprvd,     CAPITAL),
+        "buy_hold"             : equity_curve(ret_bnh,       CAPITAL),
     }
     if has_blend:
         comparison_curves["rp_blend"] = equity_curve(ret_blend, CAPITAL)

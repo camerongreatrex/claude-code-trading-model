@@ -256,15 +256,21 @@ def optimize_weights(
         else:
             w0 = np.zeros(n)
 
-    result = minimize(
-        objective,
-        w0,
-        jac=gradient,
-        method="SLSQP",
-        bounds=bounds,
-        constraints=constraints,
-        options={"maxiter": 200, "ftol": 1e-10},
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Values in x were outside bounds",
+            category=RuntimeWarning,
+        )
+        result = minimize(
+            objective,
+            w0,
+            jac=gradient,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"maxiter": 200, "ftol": 1e-10},
+        )
 
     w_opt = result.x
 
@@ -486,15 +492,21 @@ def minimum_variance_gated_weights(
     w0 /= w0.sum()
 
     try:
-        result = minimize(
-            objective,
-            w0,
-            jac=gradient,
-            method="SLSQP",
-            bounds=bounds,
-            constraints=constraints,
-            options={"maxiter": 200, "ftol": 1e-10},
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Values in x were outside bounds",
+                category=RuntimeWarning,
+            )
+            result = minimize(
+                objective,
+                w0,
+                jac=gradient,
+                method="SLSQP",
+                bounds=bounds,
+                constraints=constraints,
+                options={"maxiter": 200, "ftol": 1e-10},
+            )
         if result.success or result.fun < objective(w0):
             w_solved = result.x
         else:

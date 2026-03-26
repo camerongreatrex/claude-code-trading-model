@@ -207,7 +207,7 @@ def regime_correlation(
         mask = regimes == regime
 
         # ── Avg pairwise correlation of universe tickers ──────────────────────
-        ret_mask    = mask.reindex(returns_matrix.index).fillna(False).astype(bool)
+        ret_mask    = mask.reindex(returns_matrix.index).fillna(False).infer_objects(copy=False).astype(bool)
         regime_rets = returns_matrix.loc[ret_mask]
         n_regime    = int(ret_mask.sum())
 
@@ -224,7 +224,7 @@ def regime_correlation(
         avg_corr = float(corr_mat.where(upper).stack().mean())
 
         # ── Portfolio beta and active return within regime ────────────────────
-        port_mask = mask.reindex(port_ret.index).fillna(False).astype(bool)
+        port_mask = mask.reindex(port_ret.index).fillna(False).infer_objects(copy=False).astype(bool)
         p_regime  = port_ret[port_mask]
         s_regime  = spy_ret.reindex(p_regime.index)
 
