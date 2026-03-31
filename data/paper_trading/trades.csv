@@ -29,3 +29,4 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-03-30,SPY,SELL,7.000679,634.09,4439.06,2.22,-182.21,signal_exit
 2026-03-30,JPM,SELL,16.040031,282.84,4536.76,2.27,-84.55,signal_exit
 2026-03-30,NVDA,BUY,82.194416,167.52,13769.21,6.88,,signal_entry
+2026-03-31,GE,SELL,15.839813,273.25,4328.23,2.16,-292.98,signal_exit
