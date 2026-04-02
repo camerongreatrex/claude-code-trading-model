@@ -361,6 +361,126 @@ def max_diversification_weights(
     return w
 
 
+# ── Hierarchical Risk Parity ───────────────────────────────────────────────────
+
+def hrp_weights(cov: np.ndarray, max_weight: float = 0.30) -> np.ndarray:
+    """
+    Hierarchical Risk Parity (HRP) weights via López de Prado (2016).
+
+    Three-step algorithm:
+      1. Correlation → distance matrix: d_ij = sqrt(0.5 * (1 - rho_ij))
+      2. Hierarchical clustering (single linkage) → quasi-diagonalised leaf order
+      3. Recursive bisection: split each cluster, allocate capital inversely
+         proportional to sub-cluster variance until every asset is a leaf.
+
+    Why HRP over ERC (risk_parity_weights)?
+    ─────────────────────────────────────────
+    ERC solves a fixed-point iteration using Cov @ w in the denominator.
+    For small T/N (≈ 6 in our 126-day / 21-asset case) even Ledoit-Wolf
+    shrinkage leaves small eigenvalues that can make marginal risk contributions
+    numerically unstable.
+
+    HRP bypasses matrix inversion entirely:
+      • Tree structure comes from pairwise distances (robust to noise)
+      • Variance estimates use only diagonal elements of covariance sub-blocks
+        (single number per sub-cluster — no inversion required)
+    Result: weights are numerically well-behaved for any N, T regime.
+
+    Reference: López de Prado (2016), "Building Diversified Portfolios That
+    Outperform Out of Sample", Journal of Portfolio Management 42(4).
+
+    Args:
+        cov:        Covariance matrix (N × N).  May be daily or annualised —
+                    scalar scaling cancels inside the bisection ratio.
+        max_weight: Per-asset weight cap (default 0.30 = 30%).
+
+    Returns:
+        Weight vector (N,): non-negative, sums to 1, each ≤ max_weight.
+        Falls back to inverse-vol weights if scipy is unavailable.
+    """
+    n = cov.shape[0]
+    if n == 1:
+        return np.array([1.0])
+
+    try:
+        from scipy.cluster.hierarchy import linkage, leaves_list
+        from scipy.spatial.distance import squareform
+    except ImportError:
+        # Graceful degradation: inverse-vol (same as ERC initialisation)
+        sig = np.sqrt(np.maximum(np.diag(cov), 1e-12))
+        w   = 1.0 / sig
+        w  /= w.sum()
+        return w
+
+    # ── Step 1: Correlation → distance ──────────────────────────────────────
+    sig  = np.sqrt(np.maximum(np.diag(cov), 1e-12))
+    corr = cov / np.outer(sig, sig)
+    corr = np.clip(corr, -1.0, 1.0)
+    np.fill_diagonal(corr, 1.0)
+
+    # LdP (2016) eq. 4.1 — maps corr ∈ [-1,1] to distance ∈ [0,1]
+    dist = np.sqrt(np.clip(0.5 * (1.0 - corr), 0.0, 1.0))
+    np.fill_diagonal(dist, 0.0)
+
+    # ── Step 2: Hierarchical clustering → ordered leaf sequence ────────────
+    condensed = squareform(dist, checks=False)
+    link      = linkage(condensed, method="single")   # single linkage (LdP)
+    sort_ix   = list(leaves_list(link))               # quasi-diagonalised order
+
+    # ── Step 3: Recursive bisection ─────────────────────────────────────────
+    w = np.ones(n)   # weights accumulate multiplicatively through bisections
+
+    def _cluster_var(items: list) -> float:
+        """Equal-weight variance of a sub-portfolio (uses diagonal + off-diag)."""
+        sub   = np.array(items, dtype=int)
+        eq_w  = np.ones(len(sub)) / len(sub)
+        return float(eq_w @ cov[np.ix_(sub, sub)] @ eq_w)
+
+    def _bisect(items: list) -> None:
+        if len(items) <= 1:
+            return
+        mid   = len(items) // 2
+        left  = items[:mid]
+        right = items[mid:]
+
+        var_l = _cluster_var(left)
+        var_r = _cluster_var(right)
+        total = var_l + var_r
+
+        if total < 1e-15:
+            return   # degenerate — skip, weights unchanged
+
+        # alpha = fraction allocated to left sub-cluster
+        # (right sub-cluster gets 1 - alpha)
+        alpha = 1.0 - var_l / total
+
+        for i in left:
+            w[i] *= alpha
+        for i in right:
+            w[i] *= (1.0 - alpha)
+
+        _bisect(left)
+        _bisect(right)
+
+    _bisect(sort_ix)
+
+    w_sum = w.sum()
+    if w_sum > 1e-10:
+        w /= w_sum
+
+    # ── Per-asset cap, iterative redistribution ──────────────────────────────
+    if max_weight < 1.0:
+        for _ in range(20):
+            w = np.clip(w, 0.0, max_weight)
+            s = w.sum()
+            if s > 1e-10:
+                w /= s
+            if w.max() <= max_weight + 1e-9:
+                break
+
+    return w
+
+
 # ── Standalone analysis ────────────────────────────────────────────────────────
 
 def main():

@@ -114,6 +114,15 @@ PALETTE = {
     "signal_gated_mv_regime": "#818cf8",
     "ir_optimized"          : "#94a3b8",
     "ensemble_atr_pca_macro": "#fb923c",
+    "hrp"                   : "#00b4d8",
+    "multi_hrp"             : "#48cae4",
+    "multi_hrp_mom"         : "#e63946",
+    "regime_adaptive"       : "#f59e0b",
+    "adaptive_blend"        : "#10b981",
+    "multi_mom_portable"    : "#06b6d4",
+    "multi_mom_port_low"    : "#0284c7",
+    "multi_mom_carry"       : "#a3e635",   # lime
+    "portable_carry"        : "#facc15",   # yellow
 }
 # LABELS maps the same keys to human-readable legend/table strings.
 LABELS = {
@@ -149,6 +158,15 @@ LABELS = {
     "signal_gated_mv_regime": "Signal-Gated MV Regime",
     "ir_optimized"          : "IR Optimized",
     "ensemble_atr_pca_macro": "Ensemble ATR+PCA+Macro",
+    "hrp"                   : "HRP",
+    "multi_hrp"             : "Multi HRP",
+    "multi_hrp_mom"         : "Multi HRP + Mom ★",
+    "regime_adaptive"       : "Regime Adaptive ★★",
+    "adaptive_blend"        : "Adaptive Blend ★★★",
+    "multi_mom_portable"    : "Portable Alpha (β=0.30)",
+    "multi_mom_port_low"    : "Portable Alpha (β=0.15)",
+    "multi_mom_carry"       : "Multi Mom + Carry",
+    "portable_carry"        : "Portable + Carry",
 }
 
 

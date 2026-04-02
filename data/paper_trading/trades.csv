@@ -26,3 +26,7 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-03-24,DBC,SELL,160.161151,27.75,4444.47,2.22,-176.8,signal_exit
 2026-03-24,EFA,BUY,206.413195,95.84,19782.64,9.89,,signal_entry
 2026-03-25,BRK-B,SELL,9.593436,479.33,4598.42,2.3,-22.93,signal_exit
+2026-03-27,SPY,SELL,7.000679,634.09,4439.06,2.22,-182.21,catchup_signal_exit
+2026-03-27,JPM,SELL,16.040031,282.84,4536.76,2.27,-84.55,catchup_signal_exit
+2026-03-27,NVDA,BUY,82.194416,167.52,13769.21,6.88,,catchup_signal_entry
+2026-03-30,GE,SELL,15.839813,273.25,4328.23,2.16,-292.98,catchup_signal_exit

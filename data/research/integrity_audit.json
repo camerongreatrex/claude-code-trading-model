@@ -1,0 +1,98 @@
+[
+  {
+    "check": 1,
+    "name": "look_ahead_bias",
+    "pass": true,
+    "details": {
+      "multi_mom_tilt": {
+        "max_diff_dollars": 0.0,
+        "worst_ticker": "SPY",
+        "pass": true
+      },
+      "adaptive_blend": {
+        "max_diff_dollars": 0.0,
+        "worst_ticker": "SPY",
+        "pass": true
+      },
+      "regime_adaptive": {
+        "max_diff_dollars": 0.0,
+        "worst_ticker": "SPY",
+        "pass": true
+      }
+    }
+  },
+  {
+    "check": 2,
+    "name": "walkforward_integrity",
+    "pass": true,
+    "issues": []
+  },
+  {
+    "check": 3,
+    "name": "parameter_sensitivity",
+    "pass": true,
+    "details": {
+      "baseline_sharpe": 1.1753,
+      "gross_sweep": {
+        "0.85": 1.1799,
+        "0.88": 1.1783,
+        "0.9": 1.1772,
+        "0.92": 1.1761,
+        "0.95": 1.1753
+      },
+      "hedge_sweep": {
+        "0.08": 1.1753,
+        "0.1": 1.1753,
+        "0.12": 1.1753,
+        "0.15": 1.1753,
+        "0.18": 1.1753
+      },
+      "gross_fragile": false,
+      "hedge_fragile": false
+    }
+  },
+  {
+    "check": 4,
+    "name": "transaction_costs",
+    "pass": true,
+    "details": {
+      "multi_mom_tilt": {
+        "daily_turnover": 0.161,
+        "annual_turnover": 40.577,
+        "to_ratio": 1.0,
+        "est_cost_pct": 0.0284,
+        "net_sharpe": 1.194,
+        "pass": true
+      },
+      "adaptive_blend": {
+        "daily_turnover": 0.1479,
+        "annual_turnover": 37.262,
+        "to_ratio": 0.918,
+        "est_cost_pct": 0.0261,
+        "net_sharpe": 1.195,
+        "pass": true
+      },
+      "regime_adaptive": {
+        "daily_turnover": 0.1356,
+        "annual_turnover": 34.171,
+        "to_ratio": 0.842,
+        "est_cost_pct": 0.0239,
+        "net_sharpe": 1.175,
+        "pass": true
+      }
+    }
+  },
+  {
+    "check": 5,
+    "name": "recommendation",
+    "method": "multi_mom_tilt",
+    "score": 1.2387,
+    "reason": "Highest OOS Sharpe \u00d7 Capture product (1.239). Tightest IS-OOS gap (+0.086) across all 4 walk-forward windows \u2014 strongest evidence of out-of-sample generalisation. Consistent positive OOS Sharpe in every year tested.",
+    "disqualified": [],
+    "all_scores": {
+      "multi_mom_tilt": 1.2387,
+      "adaptive_blend": 1.1888,
+      "regime_adaptive": 1.1252
+    }
+  }
+]

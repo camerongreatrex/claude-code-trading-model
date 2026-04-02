@@ -77,6 +77,12 @@ STRATEGIES = {
     "multi_mom_tilt":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
     "multi_fast_atr":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     "multi_fast_mom_tilt":  {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    # Live approximation: ATR + mom tilt + macro (VIX scalar).  Full regime-
+    # conditional gross-exposure scaling and hedge cap require historical returns
+    # at runtime — not implemented for paper trading.
+    "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
+    # Average of adaptive + plain ATR+mom_tilt: approximates 50/50 blend offline.
+    "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend", "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
     # ── Risk-parity strategies ────────────────────────────────────────────────
     "risk_parity":          {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     "rp_macro":             {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
@@ -92,6 +98,22 @@ STRATEGIES = {
     # ── Full-stack composite (all overlays) ───────────────────────────────────
     "multi_rp_full":        {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": True,  "pca_scale": True,  "dd_control": True,  "macro": True},
     "multi_atr_full":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": True,  "dd_control": True,  "macro": True},
+    # Portable alpha: live sizing uses multi_mom_tilt (beta hedge requires
+    # portfolio-level beta computation — not yet implemented for per-ticker live mode).
+    "multi_mom_portable":   {"signal_col": "signal_multi",  "sizing": "portable",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_mom_port_low":   {"signal_col": "signal_multi",  "sizing": "portable",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    # Carry blend: 75% momentum-tilt ATR + 25% carry (bond/commodity curve slope).
+    # Live: carry signal read from signal_carry column in generate() output.
+    "multi_mom_carry":      {"signal_col": "signal_multi",  "sizing": "carry_blend",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    # Portable + carry: stacks trend + carry alpha + beta hedge.
+    "portable_carry":       {"signal_col": "signal_multi",  "sizing": "portable_carry", "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+}
+
+# Portable-alpha strategies and their target betas for the live hedge
+_HEDGE_STRATEGIES = {
+    "multi_mom_portable": 0.30,
+    "multi_mom_port_low": 0.15,
+    "portable_carry":     0.30,   # same target beta as multi_mom_portable
 }
 
 # Normalize oos_selection method names (spaces/hyphens → underscores) → STRATEGIES key
@@ -113,20 +135,59 @@ _OOS_NAME_MAP = {
     "rp_macro":             "rp_macro",
     "rp_regime_aware":      "rp_regime_aware",
     "rp_blend":             "rp_blend",
+    "regime_adaptive":      "regime_adaptive",
+    "adaptive_blend":       "adaptive_blend",
+    "multi_mom_portable":   "multi_mom_portable",
+    "multi_mom_port_low":   "multi_mom_port_low",
+    "multi_mom_carry":      "multi_mom_carry",
+    "portable_carry":       "portable_carry",
 }
 
 
-def _best_oos_strategy() -> str:
-    """Read oos_selection.parquet and return the strategy key with highest OOS Sharpe."""
+def get_production_method() -> tuple:
+    """
+    Single source of truth for production method selection.
+
+    Used by dashboard.py top metrics AND paper_trader.py strategy selection so
+    the same method is shown everywhere without separate gap-filter blocks.
+
+    Selection logic:
+      Stage 1 — filter to OOS Sharpe > 0.9 AND IS-OOS gap in [-0.20, +0.50]
+      Stage 2 — among qualifying methods, pick highest OOS Sharpe
+      Fallback — if no method qualifies, pick highest OOS Sharpe without filter
+
+    Returns:
+        (method_key, display_label) e.g. ("multi_mom_tilt", "Multi Mom Tilt ★")
+    """
+    from ui.styles import get_label  # lazy import to avoid circular dependency
+
+    fallback_key = "equal_weight"
     try:
         oos = pd.read_parquet("data/results/oos_selection.parquet")
-        best_method = oos.loc[oos["oos_sharpe"].idxmax(), "method"]
-        key = _OOS_NAME_MAP.get(best_method, best_method.replace(" ", "_").replace("-", "_").lower())
-        if key in STRATEGIES:
-            return key
     except Exception:
-        pass
-    return "multi_mom_tilt"  # hardcoded fallback
+        return fallback_key, get_label(fallback_key)
+
+    if oos.empty or "oos_sharpe" not in oos.columns or "method" not in oos.columns:
+        return fallback_key, get_label(fallback_key)
+
+    if "is_sharpe" in oos.columns:
+        gaps     = oos["is_sharpe"] - oos["oos_sharpe"]
+        mask     = (oos["oos_sharpe"] > 0.9) & (gaps >= -0.20) & (gaps <= 0.50)
+        filtered = oos[mask]
+        best_idx = filtered["oos_sharpe"].idxmax() if not filtered.empty else oos["oos_sharpe"].idxmax()
+    else:
+        best_idx = oos["oos_sharpe"].idxmax()
+
+    best_method = oos.loc[best_idx, "method"]
+    best_key    = _OOS_NAME_MAP.get(best_method,
+                                    best_method.replace(" ", "_").replace("-", "_").lower())
+    return best_key, get_label(best_key)
+
+
+def _best_oos_strategy() -> str:
+    """Return the strategy key with highest OOS Sharpe (delegates to get_production_method)."""
+    key, _ = get_production_method()
+    return key if key in STRATEGIES else "multi_mom_tilt"
 
 
 def get_active_strategy() -> tuple:
@@ -266,7 +327,7 @@ def _fetch_daily(ticker: str, lookback_days: int = 700,
     Returns:
         OHLCV DataFrame indexed by timezone-naive date.
     """
-    end   = datetime(end_date.year, end_date.month, end_date.day) if end_date else datetime.today()
+    end   = datetime(end_date.year, end_date.month, end_date.day) if end_date else datetime.today() + timedelta(days=1)
     start = end - timedelta(days=lookback_days)
     df = yf.download(
         ticker,
@@ -671,6 +732,41 @@ def _compute_position_size(
         base = pv * rp_weights[ticker]
     elif sizing == "atr":
         base = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1))
+    elif sizing == "adaptive":
+        # ATR base with hedge-asset cap (15% of pv for bond/commodity in bull).
+        # Gross-exposure scaling and full regime conditioning are not implemented
+        # for paper trading; macro multiplier (applied below) serves as the
+        # regime-level scalar.
+        base = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1))
+        if ASSET_CLASS.get(ticker) in ("bond", "commodity"):
+            base = min(base, pv * 0.15)
+    elif sizing == "adaptive_blend":
+        # 50/50 blend: adaptive (with hedge cap) + plain ATR.
+        adaptive_size = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1))
+        if ASSET_CLASS.get(ticker) in ("bond", "commodity"):
+            adaptive_size = min(adaptive_size, pv * 0.15)
+        atr_size = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1))
+        base = 0.5 * adaptive_size + 0.5 * atr_size
+    elif sizing == "portable":
+        # Live mode: use multi_mom_tilt sizing (ATR + momentum tilt).
+        # The beta hedge overlay requires a portfolio-level rolling beta computation
+        # that is not available per-ticker at sizing time.  compute_and_apply_hedge()
+        # runs after each EOD update and manages the _SPY_HEDGE position directly.
+        base = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1))
+    elif sizing == "carry_blend":
+        # 75% ATR base + 25% carry-weighted ATR.
+        # carry signal from signal_carry column (populated by signal_generation.py
+        # when carry_signals.parquet exists, otherwise 0).
+        trend_base  = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1))
+        carry_val   = float(sig.get("signal_carry", 0.0))
+        carry_base  = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1)) * carry_val
+        base        = 0.75 * trend_base + 0.25 * carry_base
+    elif sizing == "portable_carry":
+        # Same as carry_blend; beta hedge added by compute_and_apply_hedge().
+        trend_base  = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1))
+        carry_val   = float(sig.get("signal_carry", 0.0))
+        carry_base  = _atr_size(pv, sig.get("atr", 0), sig.get("close", 1)) * carry_val
+        base        = 0.75 * trend_base + 0.25 * carry_base
     else:
         base = pv / max(len(TICKER_LIST), 1)
 
@@ -916,6 +1012,128 @@ def init_positions():
     print("Run 'python paper_trader.py run' (or scheduler.py) after each close.")
 
 
+# ── Live beta hedge ───────────────────────────────────────────────────────────
+
+def compute_and_apply_hedge(state: dict, prices: dict, today_str: str) -> dict:
+    """
+    Compute rolling portfolio beta vs SPY and maintain a synthetic short-SPY
+    position (_SPY_HEDGE) to bring net beta to the strategy's target.
+
+    Called at the end of end_of_day_update() for portable-alpha strategies.
+    The hedge is stored as state["positions"]["_SPY_HEDGE"] with negative shares
+    (short).  It does not change cash — the position is purely synthetic.
+
+    Dead-band: only rebalances if the required change exceeds 5% of portfolio
+    value, preventing micro-adjustments on quiet days.
+
+    Args:
+        state:     Current portfolio state dict (modified in place).
+        prices:    Dict[ticker -> close_price] from the EOD signal fetch.
+        today_str: ISO date string for the current trading day.
+
+    Returns:
+        Updated state dict (also mutated in place).
+    """
+    strat_key   = state.get("strategy", "")
+    target_beta = _HEDGE_STRATEGIES.get(strat_key)
+
+    # Not a portable-alpha strategy — remove any stale hedge and return
+    if target_beta is None:
+        if "_SPY_HEDGE" in state["positions"]:
+            del state["positions"]["_SPY_HEDGE"]
+        return state
+
+    pv = _portfolio_value(state, prices)
+    if pv <= 0:
+        return state
+
+    # Load history for rolling beta computation
+    hist = load_history()
+    if hist.empty or "portfolio_value" not in hist.columns or len(hist) < 20:
+        print("  [hedge] Insufficient history for beta — skipping hedge")
+        return state
+
+    hist = hist.sort_values("date").tail(100)
+
+    # Portfolio daily returns
+    hist_dates = pd.to_datetime(hist["date"])
+    port_vals  = pd.Series(hist["portfolio_value"].values.astype(float), index=hist_dates)
+    port_ret   = port_vals.pct_change().dropna()
+
+    # SPY daily returns over the same window
+    spy_start = (hist_dates.iloc[0] - timedelta(days=5)).strftime("%Y-%m-%d")
+    spy_end   = (pd.Timestamp(today_str) + timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        spy_raw = yf.download("SPY", start=spy_start, end=spy_end,
+                              interval="1d", auto_adjust=True, progress=False)["Close"]
+        spy_raw.index = pd.to_datetime(spy_raw.index).tz_localize(None)
+        spy_ret = spy_raw.pct_change().dropna()
+    except Exception as _e:
+        print(f"  [hedge] SPY fetch failed ({_e}) — skipping hedge")
+        return state
+
+    # Align dates and require at least 20 common observations
+    common = port_ret.index.intersection(spy_ret.index)
+    if len(common) < 20:
+        print(f"  [hedge] Only {len(common)} aligned days — skipping hedge")
+        return state
+
+    pr = port_ret.loc[common]
+    sr = spy_ret.loc[common]
+
+    # Rolling 63-day beta (capped at available window)
+    win      = min(63, len(common))
+    cov_roll = pr.rolling(win).cov(sr)
+    var_roll = sr.rolling(win).var().replace(0, np.nan)
+    beta     = float((cov_roll / var_roll).fillna(target_beta).iloc[-1])
+
+    # Hedge notional = (beta − target) × pv, shorted against SPY
+    hedge_needed = max(beta - target_beta, 0.0) * pv
+    hedge_needed = min(hedge_needed, 0.40 * pv)   # cap at 40% of portfolio
+
+    # Dead-band: skip rebalance if change < 5% of pv
+    existing_hedge = 0.0
+    if "_SPY_HEDGE" in state["positions"]:
+        hpos = state["positions"]["_SPY_HEDGE"]
+        spy_px_now = prices.get("SPY") or hpos.get("last_close") or hpos["entry_price"]
+        existing_hedge = abs(hpos["shares"]) * float(spy_px_now)
+
+    if existing_hedge > 0 and abs(hedge_needed - existing_hedge) < 0.05 * pv:
+        # Within dead-band — refresh last_close but skip rebalance
+        if "_SPY_HEDGE" in state["positions"]:
+            spy_px = prices.get("SPY") or state["positions"]["_SPY_HEDGE"]["entry_price"]
+            state["positions"]["_SPY_HEDGE"]["last_close"] = float(spy_px)
+        return state
+
+    spy_price = prices.get("SPY")
+    if not spy_price or float(spy_price) <= 0:
+        print("  [hedge] No SPY price — skipping hedge")
+        return state
+    spy_price = float(spy_price)
+
+    if hedge_needed < 200:
+        # Hedge too small to bother — close any existing position
+        if "_SPY_HEDGE" in state["positions"]:
+            print(f"  [hedge] CLOSE _SPY_HEDGE  (notional ${hedge_needed:.0f} below min)")
+            del state["positions"]["_SPY_HEDGE"]
+        return state
+
+    hedge_shares = -(hedge_needed / spy_price)   # negative = short
+    action = "UPDATE" if "_SPY_HEDGE" in state["positions"] else "OPEN"
+    state["positions"]["_SPY_HEDGE"] = {
+        "shares"            : round(hedge_shares, 6),
+        "entry_price"       : spy_price,
+        "entry_date"        : today_str,
+        "cost_basis"        : round(hedge_needed, 2),   # notional of short
+        "last_close"        : spy_price,
+        "hedge_target_beta" : target_beta,
+        "hedge_current_beta": round(beta, 4),
+    }
+    print(f"  [hedge] {action} _SPY_HEDGE  β={beta:.3f} → target {target_beta}  "
+          f"short ${hedge_needed:,.0f}  ({abs(hedge_shares):.2f} sh @ ${spy_price:.2f})")
+    return state
+
+
 # ── End-of-day update ─────────────────────────────────────────────────────────
 
 def end_of_day_update():
@@ -965,6 +1183,27 @@ def end_of_day_update():
 
     signals = compute_live_signals()
     prices  = {t: s["close"] for t, s in signals.items()}
+
+    # ── Fetch confirmed official closing prices for every open position ────────
+    # compute_live_signals() runs the pipeline which reads locally-cached data.
+    # If the cache was built before the market close (e.g., a morning run.py),
+    # "close" will be yesterday's price.  Override with fresh yfinance daily
+    # closes for any ticker already in our portfolio so that last_close and the
+    # EOD snapshot always reflect actual 4 PM prices.
+    _held = list(state["positions"].keys())
+    if _held:
+        try:
+            _daily = yf.download(_held, period="5d", interval="1d",
+                                 auto_adjust=True, progress=False)["Close"]
+            _daily.index = pd.to_datetime(_daily.index).tz_localize(None)
+            _today_row = _daily[_daily.index.normalize() == pd.Timestamp(today_str)]
+            if not _today_row.empty:
+                for _t in _held:
+                    _col = _t if _t in _today_row.columns else None
+                    if _col and not pd.isna(_today_row[_col].iloc[-1]):
+                        prices[_t] = float(_today_row[_col].iloc[-1])
+        except Exception as _e:
+            print(f"  [warn] fresh close fetch failed ({_e}), using pipeline prices")
 
     # ── Exits: sell anything where active signal flipped to 0 ────────────────
     for ticker in list(state["positions"]):
@@ -1019,28 +1258,37 @@ def end_of_day_update():
     # Store last EOD close per position so the dashboard shows correct
     # unrealised P&L when the market is closed and live_prices is empty.
     for _t, _p in state["positions"].items():
-        if _t in prices:
-            _p["last_close"] = prices[_t]
+        _pk = "SPY" if _t == "_SPY_HEDGE" else _t
+        if _pk in prices:
+            _p["last_close"] = prices[_pk]
 
     state["portfolio_value"] = pv
     state["last_eod_date"]   = today_str
     save_state(state)
 
+    _n_regular = sum(1 for t in state["positions"] if t != "_SPY_HEDGE")
     _append_csv(HISTORY_FILE, {
         "date": today_str, "portfolio_value": round(pv, 2),
         "cash": round(state["cash"], 2),
         "invested": round(pv - state["cash"], 2),
-        "n_positions": len(state["positions"]),
+        "n_positions": _n_regular,
         "daily_return": round(daily_ret * 100, 4),
     })
 
     print(f"\n{'='*52}")
     print(f"  Portfolio value : ${pv:>10,.2f}")
     print(f"  Cash            : ${state['cash']:>10,.2f}")
-    print(f"  Positions       : {len(state['positions'])}")
+    print(f"  Positions       : {_n_regular}")
     print(f"  Daily return    : {daily_ret*100:>+8.2f}%")
     print(f"  Total return    : {total_ret:>+8.2f}%")
     print(f"{'='*52}")
+
+    # ── Beta hedge (portable-alpha strategies only) ──────────────────────────
+    try:
+        state = compute_and_apply_hedge(state, prices, today_str)
+        save_state(state)
+    except Exception as _he:
+        print(f"  [hedge] Skipped ({_he})")
 
 
 # ── Catch-up (replay missed trading days when PC was off) ─────────────────────
@@ -1277,6 +1525,35 @@ def catchup() -> int:
     return len(missed)
 
 
+# ── Shared prev_pv helper ─────────────────────────────────────────────────────
+
+def _resolve_prev_pv(state: dict, history: "pd.DataFrame") -> float:
+    """
+    Return yesterday's EOD portfolio value as the daily-return baseline.
+
+    When EOD has already run today, state["portfolio_value"] is *today's* close.
+    In that case we look up history[-2] to get the previous day's close.
+    Otherwise state["portfolio_value"] is already yesterday's close and is
+    the correct baseline.
+
+    This is the single authoritative implementation of the "if EOD ran today,
+    use second-to-last history row" pattern.  It is called by both
+    get_intraday_curve() and compute_live_portfolio_metrics() so the logic
+    cannot diverge between the intraday chart and the metric display.
+
+    Args:
+        state   — portfolio state dict from load_state().
+        history — daily snapshot DataFrame from load_history() (sorted by date).
+
+    Returns:
+        float — the portfolio value that represents the previous day's close.
+    """
+    today_str = pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d')
+    if state.get("last_eod_date") == today_str and not history.empty and len(history) >= 2:
+        return float(history.sort_values("date").iloc[-2]["portfolio_value"])
+    return state.get("portfolio_value", INITIAL_CAPITAL)
+
+
 # ── Intraday curve (used by dashboard) ────────────────────────────────────────
 
 def get_intraday_curve() -> tuple:
@@ -1319,7 +1596,11 @@ def get_intraday_curve() -> tuple:
         return empty
 
     cash      = state["cash"]
-    positions = state["positions"]
+    # Exclude synthetic positions (_SPY_HEDGE is not a real ticker)
+    positions = {t: p for t, p in state["positions"].items() if not t.startswith("_")}
+    if not positions:
+        return empty
+
     # Always include ^GSPC (the actual S&P 500 index) so the benchmark curve
     # is available.  Using ^GSPC instead of the SPY ETF means the % shown
     # matches Yahoo Finance and TradingView exactly (SPY's auto_adjust distorts it).
@@ -1390,14 +1671,10 @@ def get_intraday_curve() -> tuple:
     # The main equity chart re-normalizes to inception in chart_paper_portfolio().
     spy_curve         = _empty_spy
     spy_pct_from_prev = None   # None = daily fetch failed; dashboard falls back to first-bar %
-    # If EOD already ran today, state["portfolio_value"] is today's close —
-    # use the previous day's close from history for the close-to-close baseline,
-    # mirroring the same correction the dashboard makes for alpha calculation.
-    prev_pv_state     = state.get("portfolio_value", INITIAL_CAPITAL)
-    if state.get("last_eod_date") == today_str:
-        _hist = load_history()
-        if not _hist.empty and len(_hist) >= 2:
-            prev_pv_state = float(_hist.sort_values("date").iloc[-2]["portfolio_value"])
+    # prev_pv_state: yesterday's EOD close — used to anchor the SPY benchmark curve.
+    # Delegates to _resolve_prev_pv() so this function and compute_live_portfolio_metrics()
+    # always use identical logic and can never disagree about what "yesterday's close" was.
+    prev_pv_state = _resolve_prev_pv(state, load_history())
     if "^GSPC" in intraday:
         gspc_df  = intraday["^GSPC"]
         gspc_col = gspc_df["Close"] if "Close" in gspc_df.columns else gspc_df.iloc[:, 3]
@@ -1405,6 +1682,12 @@ def get_intraday_curve() -> tuple:
             gspc_col = gspc_col.iloc[:, 0]
         gspc_today = gspc_col
         if not gspc_today.empty:
+            # Restrict to today's session only — the Portfolio chart overlays this
+            # curve on top of daily history points, so multi-day 5-min bars create
+            # visual noise.  Historical S&P comparison lives in the vs S&P tab.
+            _today_date = today_str  # e.g. "2026-03-26"
+            gspc_today = gspc_today[gspc_today.index.normalize() == pd.Timestamp(_today_date)]
+
             # Compute ^GSPC % from yesterday's official close.
             # period="5d" ensures enough rows; filter to dates < today so the
             # incomplete in-progress row never corrupts the prev-close calculation.
@@ -1441,6 +1724,296 @@ def get_intraday_curve() -> tuple:
     return result, last_prices, spy_curve, spy_pct_from_prev
 
 
+# ── Single source of truth for live portfolio metrics ─────────────────────────
+
+def compute_live_portfolio_metrics() -> dict:
+    """
+    Single source of truth for ALL live portfolio metrics used by both dashboard tabs.
+
+    Loads state, history, and trades internally, then calls get_intraday_curve()
+    so callers never need to coordinate three separate fetches.  Both the Paper
+    Trading tab and the vs-S&P tab call this independently (they are separate
+    Streamlit fragments with different refresh rates).
+
+    Returns dict with keys:
+        # Portfolio state
+        pv, cash, n_positions, strategy_name
+        # Return metrics
+        prev_pv, daily_pnl_usd, daily_ret_pct, total_ret_pct
+        # Position metrics
+        tot_invested, tot_cur_val, tot_unreal, tot_chg_pct
+        # Today's P&L
+        today_unrealized, today_unrealized_pct, today_realized
+        # Cumulative P&L
+        all_realized, realized_gains, realized_losses
+        # Fees
+        total_fees, buy_fees, sell_fees
+        # S&P comparison
+        spy_today_pct, alpha_today
+        # Intraday data (passed through from get_intraday_curve)
+        intraday_df, live_prices, spy_curve, spy_pct_from_prev
+        # Misc
+        prev_cash, hedge_pos, now
+
+    Returns empty dict if portfolio is not yet initialised.
+    """
+    state = load_state()
+    if not state:
+        return {}
+
+    history = load_history()
+    trades  = load_trades()
+    now_et  = pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
+    today_str = now_et.strftime('%Y-%m-%d')
+
+    cash      = state.get("cash", INITIAL_CAPITAL)
+    positions = state.get("positions", {})
+    eod_pv    = state.get("portfolio_value", INITIAL_CAPITAL)
+    eod_today = state.get("last_eod_date") == today_str
+    mkt_closed = now_et.hour >= 16 or now_et.hour < 9
+
+    # ── Intraday data (single fetch shared by both return values) ──────────────
+    intraday_df, live_prices, spy_curve, spy_pct_from_prev = get_intraday_curve()
+
+    # ── prev_pv / prev_cash: yesterday's EOD close ─────────────────────────────
+    prev_pv  = _resolve_prev_pv(state, history)
+    _sorted  = history.sort_values("date") if not history.empty else pd.DataFrame()
+    if eod_today and len(_sorted) >= 2:
+        prev_cash = float(_sorted.iloc[-2]["cash"]) if "cash" in _sorted.columns else cash
+    elif not _sorted.empty:
+        prev_cash = float(_sorted.iloc[-1]["cash"]) if "cash" in _sorted.columns else cash
+    else:
+        prev_cash = cash
+
+    # ── Separate regular long positions from the synthetic hedge ───────────────
+    long_pos  = {t: p for t, p in positions.items() if t != "_SPY_HEDGE"}
+    hedge_pos = positions.get("_SPY_HEDGE")
+
+    def _hedge_mkt(lp: dict) -> float:
+        if lp is None:
+            return 0.0
+        px = live_prices.get("SPY") or lp.get("last_close") or lp["entry_price"]
+        return float(lp["shares"]) * float(px)
+
+    # ── tot_cur_val: mark long positions to market ─────────────────────────────
+    tot_invested = sum(pos["cost_basis"] for pos in long_pos.values())
+    if live_prices:
+        tot_cur_val = sum(
+            pos["shares"] * (live_prices.get(t) or pos.get("last_close") or pos["entry_price"])
+            for t, pos in long_pos.items()
+        )
+        _hmkt = _hedge_mkt(hedge_pos)
+    else:
+        _has_closes = any(p.get("last_close") for p in long_pos.values())
+        if _has_closes:
+            tot_cur_val = sum(
+                pos["shares"] * (pos.get("last_close") or pos["entry_price"])
+                for pos in long_pos.values()
+            )
+            _hmkt = _hedge_mkt(hedge_pos)
+        else:
+            _hmkt = _hedge_mkt(hedge_pos)
+            tot_cur_val = (eod_pv - cash) - _hmkt
+
+    # ── pv: authoritative portfolio value ──────────────────────────────────────
+    if mkt_closed and eod_today:
+        pv = eod_pv
+        _has_closes = any(p.get("last_close") for p in long_pos.values())
+        if _has_closes:
+            tot_cur_val = sum(
+                pos["shares"] * (pos.get("last_close") or pos["entry_price"])
+                for pos in long_pos.values()
+            )
+        else:
+            _hmkt = _hedge_mkt(hedge_pos)
+            tot_cur_val = (eod_pv - cash) - _hmkt
+    elif live_prices:
+        pv = tot_cur_val + _hmkt + cash
+    else:
+        pv = eod_pv
+
+    tot_unreal  = tot_cur_val - tot_invested
+    tot_chg_pct = (tot_cur_val / tot_invested - 1) * 100 if tot_invested else 0.0
+
+    # ── Today's unrealized vs yesterday ───────────────────────────────────────
+    prev_positions_val   = prev_pv - prev_cash
+    today_unrealized     = tot_cur_val - prev_positions_val
+    today_unrealized_pct = (today_unrealized / prev_positions_val * 100
+                            if prev_positions_val else 0.0)
+
+    # ── Realized P&L and fees ─────────────────────────────────────────────────
+    all_realized   = 0.0
+    today_realized = 0.0
+    realized_gains = 0.0
+    realized_losses = 0.0
+    total_fees = 0.0
+    buy_fees   = 0.0
+    sell_fees  = 0.0
+
+    if not trades.empty:
+        if "commission" in trades.columns:
+            total_fees = float(trades["commission"].sum())
+            buy_fees   = float(trades.loc[trades["action"] == "BUY", "commission"].sum())
+            sell_fees  = float(trades.loc[trades["action"] == "SELL", "commission"].sum())
+
+        if "pnl" in trades.columns:
+            sells = trades[
+                (trades["action"] == "SELL") &
+                trades["pnl"].notna() &
+                (trades["pnl"].astype(str).str.strip() != "")
+            ]
+            sells_pnl   = pd.to_numeric(sells["pnl"], errors="coerce").fillna(0)
+            all_realized = float(sells_pnl.sum())
+            realized_gains  = float(sells_pnl[sells_pnl > 0].sum())
+            realized_losses = float(sells_pnl[sells_pnl < 0].sum())
+
+            today_sells    = sells[sells["date"].dt.strftime('%Y-%m-%d') == today_str]
+            today_realized = float(
+                pd.to_numeric(today_sells["pnl"], errors="coerce").fillna(0).sum()
+            )
+
+    # ── S&P 500 comparison ────────────────────────────────────────────────────
+    daily_ret_pct = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
+    if spy_pct_from_prev is not None:
+        spy_today_pct = spy_pct_from_prev
+    elif hasattr(spy_curve, "empty") and not spy_curve.empty:
+        spy_today_pct = (float(spy_curve.iloc[-1]) / float(spy_curve.iloc[0]) - 1) * 100
+    else:
+        spy_today_pct = 0.0
+
+    return dict(
+        # Portfolio state
+        pv             = pv,
+        cash           = cash,
+        n_positions    = len(long_pos),
+        strategy_name  = state.get("strategy", "unknown"),
+        # Return metrics
+        prev_pv        = prev_pv,
+        prev_cash      = prev_cash,
+        daily_pnl_usd  = pv - prev_pv,
+        daily_ret_pct  = daily_ret_pct,
+        total_ret_pct  = (pv / INITIAL_CAPITAL - 1) * 100,
+        # Position metrics
+        tot_invested   = tot_invested,
+        tot_cur_val    = tot_cur_val,
+        tot_unreal     = tot_unreal,
+        tot_chg_pct    = tot_chg_pct,
+        # Today's P&L
+        today_unrealized     = today_unrealized,
+        today_unrealized_pct = today_unrealized_pct,
+        today_realized       = today_realized,
+        # Cumulative P&L
+        all_realized    = all_realized,
+        realized_gains  = realized_gains,
+        realized_losses = realized_losses,
+        # Fees
+        total_fees  = total_fees,
+        buy_fees    = buy_fees,
+        sell_fees   = sell_fees,
+        # S&P comparison
+        spy_today_pct = spy_today_pct,
+        alpha_today   = daily_ret_pct - spy_today_pct,
+        # Intraday data
+        intraday_df       = intraday_df,
+        live_prices       = live_prices,
+        spy_curve         = spy_curve,
+        spy_pct_from_prev = spy_pct_from_prev,
+        # Misc
+        hedge_pos = hedge_pos,
+        now       = now_et,
+    )
+
+
+# ── One-time init anomaly correction ──────────────────────────────────────────
+
+def correct_history_baseline():
+    """
+    Fix the init-day pricing anomaly in history.csv (idempotent).
+
+    Problem: init() called compute_live_signals() which used _fetch_daily()
+    without an end_date.  yfinance's end= is exclusive, so end=today returned
+    only yesterday's close — init prices were one day stale.  The March 20
+    history row therefore stored PV ≈ $100k (only commissions deducted) even
+    though the market dropped ~1.5% that day.  This was fixed in _fetch_daily()
+    by adding timedelta(days=1) to the live path, but the historical row remains.
+
+    Fix: re-fetch actual closing prices for the init date, recompute PV, and
+    update history.csv if the corrected value differs by more than $10.
+
+    Idempotency guard: only fires if first-row PV is within 0.5% of
+    INITIAL_CAPITAL.  After correction the PV will reflect the actual market
+    move (~-1.5%), which is >0.5% from $100k, so subsequent runs skip it.
+    """
+    if not HISTORY_FILE.exists():
+        return
+
+    hist = pd.read_csv(HISTORY_FILE)
+    hist["date"] = pd.to_datetime(hist["date"])
+    hist = hist.sort_values("date").reset_index(drop=True)
+
+    if len(hist) < 2:
+        return
+
+    first_pv   = float(hist.iloc[0]["portfolio_value"])
+    first_date = hist.iloc[0]["date"].date()
+
+    # Only fire when PV is suspiciously close to INITIAL_CAPITAL
+    if abs(first_pv / INITIAL_CAPITAL - 1) > 0.005:
+        return  # already corrected or init was correct
+
+    # Load init-day BUY trades
+    trades = load_trades()
+    if trades.empty:
+        return
+    init_buys = trades[
+        (trades["date"].dt.date == first_date) &
+        (trades["action"] == "BUY")
+    ]
+    if init_buys.empty:
+        return
+
+    # Fetch actual closing prices for the init date
+    corrected_pos_val = 0.0
+    any_fetched = False
+    for _, trade in init_buys.iterrows():
+        ticker = trade["ticker"]
+        shares = float(trade["shares"])
+        try:
+            raw = yf.download(
+                ticker,
+                start=(first_date - timedelta(days=1)).isoformat(),
+                end=(first_date + timedelta(days=2)).isoformat(),
+                auto_adjust=True, progress=False, multi_level_index=False,
+            )
+            if isinstance(raw.columns, pd.MultiIndex):
+                raw.columns = raw.columns.droplevel(1)
+            raw.index = pd.to_datetime(raw.index).tz_localize(None)
+            day_row = raw[raw.index.date == first_date]
+            if not day_row.empty:
+                corrected_pos_val += shares * float(day_row["Close"].iloc[0])
+                any_fetched = True
+            else:
+                corrected_pos_val += shares * float(trade["price"])
+        except Exception:
+            corrected_pos_val += shares * float(trade["price"])
+
+    if not any_fetched:
+        return
+
+    init_cash     = float(hist.iloc[0]["cash"])
+    corrected_pv  = corrected_pos_val + init_cash
+
+    if abs(corrected_pv - first_pv) < 10:
+        return  # difference too small
+
+    print(f"  [history correction] {first_date}: "
+          f"${first_pv:,.2f} → ${corrected_pv:,.2f} "
+          f"(Δ${corrected_pv - first_pv:+,.2f})")
+
+    hist.loc[0, "portfolio_value"] = round(corrected_pv, 2)
+    hist.to_csv(HISTORY_FILE, index=False)
+
+
 # ── Status ─────────────────────────────────────────────────────────────────────
 
 def print_status():
@@ -1471,10 +2044,19 @@ def print_status():
     print(f"  Portfolio value : ${pv:>10,.2f}")
     print(f"  Cash            : ${state['cash']:>10,.2f}")
     print(f"  Total return    : {total_ret:>+8.2f}%")
-    print(f"\n  Open positions ({len(state['positions'])}):")
-    for ticker, pos in state["positions"].items():
+    regular_pos = {t: p for t, p in state["positions"].items() if t != "_SPY_HEDGE"}
+    print(f"\n  Open positions ({len(regular_pos)}):")
+    for ticker, pos in regular_pos.items():
         print(f"    {ticker:<6}  {pos['shares']:.3f} sh  "
               f"@ ${pos['entry_price']:.2f}  since {pos['entry_date']}")
+    if "_SPY_HEDGE" in state["positions"]:
+        hp = state["positions"]["_SPY_HEDGE"]
+        print(f"\n  Beta Hedge (synthetic SPY short):")
+        print(f"    notional ${hp['cost_basis']:,.0f}  "
+              f"{hp['shares']:.3f} sh @ ${hp['entry_price']:.2f}  "
+              f"since {hp['entry_date']}")
+        print(f"    target β={hp.get('hedge_target_beta','?')}  "
+              f"measured β={hp.get('hedge_current_beta','?')}")
 
     # Live signal + paper action table
     print(f"\n  Live signal state (paper action vs raw signal):")

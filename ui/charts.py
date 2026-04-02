@@ -28,6 +28,7 @@ def metrics(ret: pd.Series) -> dict:
             calmar   — Calmar ratio (ann_r / |max_dd|)
             win_rate — Fraction of non-zero days with a positive return
             total    — Total return over the full period (fraction)
+            var_95   — Historical 1-day 95% VaR (positive fraction, e.g. 0.015 = 1.5% loss threshold)
         Returns empty dict if ret is empty after dropping NaNs.
     """
     ret = ret.dropna()
@@ -46,8 +47,11 @@ def metrics(ret: pd.Series) -> dict:
     # the win rate with cash/flat days where the portfolio didn't move.
     active = ret[ret != 0]
     wr     = (active > 0).sum() / len(active) if len(active) > 0 else 0
+    # Historical 1-day 95% VaR: loss exceeded only 5% of trading days.
+    # Expressed as a positive fraction (e.g. 0.015 = 1.5% daily loss threshold).
+    var_95 = float(-np.percentile(ret, 5))
     return dict(ann_r=ann_r, vol=vol, sharpe=sharpe, max_dd=max_dd,
-                calmar=calmar, win_rate=wr, total=total)
+                calmar=calmar, win_rate=wr, total=total, var_95=var_95)
 
 
 # ── Summary table ─────────────────────────────────────────────────────────────
@@ -65,7 +69,7 @@ def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
         DataFrame with columns [Method, Ann. Return, Volatility, Sharpe,
-        Max DD, Calmar, Win Rate].  One row per sizing method present in df_port.
+        Max DD, Calmar, Win Rate, VaR 95%].  One row per sizing method present in df_port.
     """
     rows = []
     for col in df_port.columns:
@@ -81,6 +85,7 @@ def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
             "Max DD"      : f"{m['max_dd']*100:.1f}%",
             "Calmar"      : f"{m['calmar']:.2f}",
             "Win Rate"    : f"{m['win_rate']*100:.0f}%",
+            "VaR 95%"     : f"{m['var_95']*100:.2f}%",
         })
     return pd.DataFrame(rows)
 
@@ -737,8 +742,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                           height: int = 440,
                           now: datetime = None,
                           entry_value: float = None,
-                          x_range: list = None,
-                          spy_curve=None) -> go.Figure:
+                          x_range: list = None) -> go.Figure:
     """
     Build the TradingView-style paper portfolio equity curve figure.
 
@@ -776,12 +780,6 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
         scrollZoom=True              — mouse wheel to zoom
     """
     fig = go.Figure()
-
-    # Capture portfolio inception date before history_df gets filtered below
-    _orig_inception_dt = (
-        pd.Timestamp(history_df["date"].min()).normalize()
-        if not history_df.empty else None
-    )
 
     # ── Resample intraday data to the requested timeframe ───────────────────
     candle_df = pd.DataFrame()
@@ -840,46 +838,6 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 hovertemplate="<b>Portfolio</b> (market closed)<br>%{x|%H:%M} $%{y:,.0f}<extra></extra>",
             ))
 
-    # ── S&P 500 benchmark (normalized to $100k at portfolio inception) ─────
-    if spy_curve is not None and not spy_curve.empty:
-        # Re-normalize the S&P curve so it starts at PT_INITIAL_CAPITAL on the
-        # portfolio's inception date.  The raw spy_curve from get_intraday_curve()
-        # is anchored at the RIGHT edge (close-to-close baseline for intraday),
-        # but the main equity chart needs inception-anchored normalization so the
-        # visual "above/below" matches the historical alpha metric.
-        _spy_normed = spy_curve.copy()
-        _spy_inception_val = None
-        if _orig_inception_dt is not None:
-            _spy_bar_dates = pd.to_datetime(_spy_normed.index).normalize()
-            _inception_mask = _spy_bar_dates >= _orig_inception_dt
-            if _inception_mask.any():
-                _spy_inception_val = float(_spy_normed[_inception_mask].iloc[0])
-        if _spy_inception_val is None or _spy_inception_val <= 0:
-            _spy_inception_val = float(_spy_normed.iloc[0])
-        if _spy_inception_val > 0:
-            _spy_normed = _spy_normed / _spy_inception_val * PT_INITIAL_CAPITAL
-
-        # Extend SPY benchmark to current time (flat after close)
-        _spy_x = list(_spy_normed.index)
-        _spy_y = list(_spy_normed.values)
-        if now is not None and now > pd.Timestamp(_spy_x[-1]):
-            _spy_x.append(now)
-            _spy_y.append(_spy_y[-1])
-        fig.add_trace(go.Scatter(
-            x=_spy_x,
-            y=_spy_y,
-            name="S&P 500",
-            line=dict(color="#7878aa", width=1.2, dash="dot"),
-            opacity=0.6,
-            hovertemplate=(
-                "<b>S&P 500 Benchmark</b><br>"
-                "%{x|%H:%M}<br>"
-                "Equivalent value: <b>$%{y:,.0f}</b><br>"
-                "<i>^GSPC normalized to $100k at portfolio inception. "
-                "Drift shows relative over/under-performance vs the index.</i>"
-                "<extra></extra>"
-            ),
-        ))
 
     # ── Trade markers ─────────────────────────────────────────────────────────
     if not trades_df.empty and not history_df.empty:

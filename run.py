@@ -44,6 +44,7 @@ STEPS = [
     ("pipeline.feature_research",    "Computing feature IC (information coefficients)"),
     ("pipeline.macro_features",      "Fetching macro data"),
     ("pipeline.signal_generation",   "Generating signals"),
+    ("pipeline.carry_signal",        "Computing carry signals"),
     ("pipeline.backtester",          "Running backtests"),
     ("pipeline.portfolio",           "Building portfolio"),
 ]
@@ -59,6 +60,8 @@ SHORTCUTS = {
 # standalone diagnostics — run directly, not part of the main pipeline
 DIAGNOSTICS = {
     "diagnostic": "pipeline.correlation_diagnostic",  # regime / beta / dead-weight analysis
+    "capture"   : "pipeline.capture_diagnostic",      # upside/downside capture decomposition
+    "audit"     : "pipeline.integrity_audit",         # look-ahead / WF / sensitivity / cost checks
 }
 
 

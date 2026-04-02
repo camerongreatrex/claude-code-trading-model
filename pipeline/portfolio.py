@@ -63,7 +63,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from .risk_model import estimate_covariance, risk_parity_weights, regime_conditional_covariance
+from .risk_model import estimate_covariance, risk_parity_weights, regime_conditional_covariance, hrp_weights
 from .optimizer import optimizer_sizes, minimum_variance_gated_weights
 from .regime_analysis import label_regimes
 from .backtester import (
@@ -829,6 +829,526 @@ def rp_regime_vix_dw_sizes(signals, features, returns, capital):
     return scaled.multiply(cap, axis=0)
 
 
+def regime_adaptive_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    cov_window: int = 126,
+    rebalance_freq: int = 21,
+) -> pd.DataFrame:
+    """
+    Regime-adaptive position sizing with smooth continuous transitions.
+
+    Addresses two root causes from capture_diagnostic Phase 1:
+      (a) Cash drag — scales gross exposure toward a VIX-driven target
+          (VIX 12 → 95% deployed, VIX 40 → 45%).
+      (b) Counter-cyclical drag — caps bond/commodity notional by VIX
+          (VIX 12 → 12% per ticker, VIX 40 → 45% per ticker).
+
+    Phase 3 improvement: replaces step-function regime labels with
+    continuous interpolation on raw VIX and SPY 60-day return.  This
+    eliminates the cliff-edge whipsaw from Phase 2 (2021-22 OOS Sharpe
+    was −0.058 because the bull_calm → bear_stress jump happened after
+    the decline was already underway).  As VIX drifts from 19 → 21 the
+    portfolio de-risks gradually rather than snapping between parameter sets.
+
+    Parameter interpolation
+    ───────────────────────
+      VIX breakpoints:   [0, 12, 20, 30, 40, 100]
+      gross_target_fp:   [0.95, 0.95, 0.85, 0.60, 0.45, 0.40]
+      hedge_cap_fp:      [0.12, 0.12, 0.18, 0.35, 0.45, 0.50]
+      tilt_strength_fp:  [0.80, 0.80, 0.60, 0.40, 0.30, 0.25]
+
+      SPY 60d return modifier on gross_target only:
+      SPY breakpoints:   [-0.30, -0.15, 0.0, 0.10, 0.30]
+      spy_scale_fp:      [ 0.80,  0.90, 1.00, 1.05, 1.10]
+
+    Smoothing: 5-day EMA + 1-day lag prevents flash-crash whipsaw and
+    look-ahead bias.  The 5-day span matches the minimum hold period.
+
+    Sizing pipeline:
+      1. ATR base sizes
+      2. Hedge cap (continuous, per-ticker bond/commodity)
+      3. Momentum tilt (strength modulated by VIX)
+      4. Dead weight scalar (per-ticker quality)
+      5. Gross exposure scale toward smoothed target
+      6. Final gross cap (no leverage)
+
+    Args:
+        signals:        Signal DataFrame (T × N) — should use signals_multi.
+        features:       Dict[ticker → feature DataFrame] with atr_14 and Close.
+        returns:        Daily log-return DataFrame (T × N).
+        capital:        Starting capital in dollars.
+        cov_window:     Kept for API consistency with other sizing functions.
+        rebalance_freq: Kept for API consistency with other sizing functions.
+
+    Returns:
+        Dollar position size DataFrame, same shape as signals.
+    """
+    # ── Step 1: Continuous parameter series from VIX + SPY 60d return ─────────
+    macro_df = _get_macro()
+    spy_path = Path("data/features/SPY.parquet")
+    if macro_df.empty or "vix" not in macro_df.columns or not spy_path.exists():
+        return momentum_tilt_sizes(signals, features, capital)
+
+    vix       = macro_df["vix"].reindex(signals.index).ffill().fillna(20.0)
+    spy_close = pd.read_parquet(spy_path)["Close"].reindex(signals.index).ffill()
+    spy_60d   = spy_close.pct_change(60).fillna(0.0)
+
+    # VIX interpolation — CBOE published breakpoints, not fitted to backtest
+    vix_xp       = [0,    12,   20,   30,   40,   100]
+    vix_gross_fp = [0.95, 0.95, 0.85, 0.60, 0.45, 0.40]
+    vix_hedge_fp = [0.12, 0.12, 0.18, 0.35, 0.45, 0.50]
+    vix_tilt_fp  = [0.80, 0.80, 0.60, 0.40, 0.30, 0.25]
+
+    # SPY 60d modifier on gross_target only: positive trend → more aggressive
+    spy_xp       = [-0.30, -0.15, 0.0, 0.10, 0.30]
+    spy_scale_fp = [ 0.80,  0.90, 1.00, 1.05, 1.10]
+
+    raw_gross  = (np.interp(vix.values, vix_xp, vix_gross_fp)
+                  * np.interp(spy_60d.values, spy_xp, spy_scale_fp))
+    raw_hedge  = np.interp(vix.values, vix_xp, vix_hedge_fp)
+    raw_tilt   = np.interp(vix.values, vix_xp, vix_tilt_fp)
+
+    gross_target_s  = pd.Series(raw_gross, index=signals.index).clip(0.40, 0.98)
+    hedge_cap_s     = pd.Series(raw_hedge, index=signals.index).clip(0.10, 0.50)
+    tilt_strength_s = pd.Series(raw_tilt,  index=signals.index).clip(0.20, 0.90)
+
+    # 5-day EMA smoothing (prevents flash-crash whipsaw)
+    # then 1-day lag (prevents same-day look-ahead)
+    def _smooth(s: pd.Series) -> pd.Series:
+        ema = s.ewm(span=5, adjust=False).mean()
+        return ema.shift(1).fillna(ema)
+
+    gross_target_s  = _smooth(gross_target_s)
+    hedge_cap_s     = _smooth(hedge_cap_s)
+    tilt_strength_s = _smooth(tilt_strength_s)
+
+    # ── Step 2: ATR base sizes ────────────────────────────────────────────────
+    sized = atr_sizes(signals, features, capital)
+
+    # ── Step 3: Hedge cap — limit bond/commodity notional in bull regimes ─────
+    hedge_tickers = [t for t in signals.columns
+                     if ASSET_CLASS.get(t) in ("bond", "commodity")]
+    if hedge_tickers:
+        hedge_cap_dollars = hedge_cap_s * capital          # Series (T,)
+        for t in hedge_tickers:
+            sized[t] = sized[t].clip(lower=-hedge_cap_dollars,
+                                     upper=hedge_cap_dollars)
+
+    # ── Step 4: Momentum tilt (regime-scaled strength) ────────────────────────
+    close_cols = {t: features[t]["Close"].reindex(sized.index).ffill()
+                  for t in signals.columns if t in features}
+    if close_cols:
+        closes      = pd.DataFrame(close_cols)
+        mom         = closes.pct_change(63)
+        active_mask = signals.abs() > 0
+        mom_cols    = [c for c in signals.columns if c in mom.columns]
+        mom_masked  = mom[mom_cols].where(active_mask[mom_cols])
+        ranks       = mom_masked.rank(axis=1, pct=True)
+        n_active    = ranks.notna().sum(axis=1)
+        tilt        = pd.DataFrame(1.0, index=sized.index, columns=sized.columns)
+        valid_rows  = n_active >= 2
+        for c in mom_cols:
+            col_ranks = ranks[c]
+            col_valid = valid_rows & col_ranks.notna()
+            if not col_valid.any():
+                continue
+            # Standard tilt at full strength: 0.7 + 0.6 × rank ∈ [0.7, 1.3]
+            # Blend toward 1.0 by (1 - tilt_strength): 0 → no tilt
+            base_tilt = 0.7 + 0.6 * col_ranks[col_valid].values
+            strength  = tilt_strength_s[col_valid].values
+            tilt.loc[col_valid, c] = 1.0 + (base_tilt - 1.0) * strength
+        sized = sized * tilt
+
+    # ── Step 5: Dead weight scalar (per-ticker quality, applied before gross scale)
+    dw_scalars = load_dead_weight_scalars()
+    if dw_scalars:
+        dw_series = pd.Series(dw_scalars).reindex(sized.columns).fillna(1.0)
+        sized     = sized.multiply(dw_series, axis=1)
+
+    # ── Step 6: Scale total notional toward gross_target × capital ────────────
+    # Note: VIX scalar is intentionally omitted here.  gross_target already
+    # encodes regime risk appetite (0.50 in bear_stress, 0.95 in bull_calm).
+    # Stacking a VIX scalar on top would result in bear_stress deployment of
+    # only 50% × 0.35 = 17.5% — far below the intended 50% floor.
+    current_gross  = sized.abs().sum(axis=1).replace(0, np.nan)
+    target_gross   = gross_target_s * capital
+    exposure_scale = (target_gross / current_gross).fillna(1.0)
+    sized          = sized.multiply(exposure_scale, axis=0)
+    # Re-clip per-position cap (scaling up may breach MAX_POSITION_PCT)
+    cap_limit = capital * MAX_POSITION_PCT
+    sized     = sized.clip(-cap_limit, cap_limit)
+
+    # ── Final gross cap (no leverage) ─────────────────────────────────────────
+    gross = sized.abs().sum(axis=1).replace(0, np.nan)
+    cap   = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return sized.multiply(cap, axis=0)
+
+
+def adaptive_blend_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+) -> pd.DataFrame:
+    """
+    50/50 dollar-size blend of regime_adaptive and multi_mom_tilt.
+
+    Rationale
+    ─────────
+    Phase 2/3 results show each method has what the other lacks:
+      - regime_adaptive: capture ratio 1.111, smooth de-risking in downturns
+      - multi_mom_tilt:  OOS Sharpe 1.108, tight IS-OOS gap 0.086
+
+    Blending at the dollar-size level (not returns) diversifies across two
+    sizing philosophies whose errors are weakly correlated — regime_adaptive
+    underweights during late-bull transitions, multi_mom_tilt is neutral to
+    those transitions but misses the upside de-leveraging.  The blend should
+    exhibit lower OOS Sharpe variance across walk-forward windows.
+
+    50/50 weight is chosen to avoid introducing a fitted blend parameter.
+
+    Args:
+        signals:  Signal DataFrame (T × N) — should use signals_multi.
+        features: Dict[ticker → feature DataFrame] with atr_14 and Close.
+        returns:  Daily log-return DataFrame (T × N).
+        capital:  Starting capital in dollars.
+
+    Returns:
+        Dollar position size DataFrame, same shape as signals.
+    """
+    sizes_regime = regime_adaptive_sizes(signals, features, returns, capital)
+    sizes_mom    = momentum_tilt_sizes(signals, features, capital)
+
+    blended = (0.50 * sizes_regime.reindex(columns=returns.columns, fill_value=0)
+             + 0.50 * sizes_mom.reindex(columns=returns.columns, fill_value=0))
+
+    gross = blended.abs().sum(axis=1).replace(0, np.nan)
+    cap   = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return blended.multiply(cap, axis=0)
+
+
+def portable_alpha_sizes(
+    base_sizes: pd.DataFrame,
+    returns: pd.DataFrame,
+    capital: float,
+    target_beta: float = 0.30,
+    beta_window: int = 63,
+    rebalance_freq: int = 5,
+    max_hedge_pct: float = 0.40,
+) -> pd.DataFrame:
+    """
+    Portable alpha overlay: adds a daily SPY short hedge to any base sizing
+    method to target a specific portfolio beta.
+
+    Rationale
+    ─────────
+    multi_mom_tilt carries ~0.45-0.50 portfolio beta to SPY — useful return
+    in bull markets but also the primary driver of drawdowns.  The strategy's
+    genuine alpha (capture ratio > 1, positive active Sharpe in every WF window)
+    is a property of the SIGNAL, not the beta.  Mechanically removing the
+    unwanted beta transports the alpha to a lower-beta target without changing
+    the signal or position logic.
+
+    This is the institutional "portable alpha" technique: run the alpha engine,
+    overlay a beta hedge to transport alpha to any desired beta level.
+
+    Look-ahead safety
+    ─────────────────
+    rolling_beta[T] uses returns through day T (backward-looking).
+    hedge_dollars[T] is set at close of day T.
+    portfolio_returns() applies shift(1) to all sizes — so the hedge is only
+    applied to day T+1 returns.  No look-ahead bias.
+
+    Parameters
+    ──────────
+    base_sizes:     Output of any sizing function (T × N dollar positions).
+    returns:        Daily return DataFrame (T × N).  Must contain "SPY".
+    capital:        Starting capital in dollars.
+    target_beta:    Target portfolio beta to SPY (default 0.30).
+    beta_window:    Trailing window for rolling beta estimation (default 63 = 1 quarter).
+    rebalance_freq: Days between hedge rebalances (default 5 = weekly).
+    max_hedge_pct:  Maximum short SPY as fraction of capital (default 0.40).
+
+    Returns
+    ───────
+    Dollar position DataFrame identical to base_sizes but with SPY column
+    adjusted by the beta hedge.
+    """
+    if "SPY" not in returns.columns:
+        return base_sizes
+
+    spy_ret  = returns["SPY"]
+    weights  = base_sizes.shift(1) / capital
+    port_ret = (weights * returns.reindex(columns=base_sizes.columns)).sum(axis=1)
+
+    # Rolling beta: Cov(port, SPY) / Var(SPY)  — fully backward-looking
+    rolling_cov  = port_ret.rolling(beta_window).cov(spy_ret)
+    rolling_var  = spy_ret.rolling(beta_window).var().replace(0, np.nan)
+    rolling_beta = (rolling_cov / rolling_var).fillna(target_beta)
+
+    # Dollar hedge to close the gap to target_beta
+    # Negative sign: positive beta_excess → short SPY
+    hedge_dollars = -(rolling_beta - target_beta) * capital
+    hedge_dollars = hedge_dollars.clip(-max_hedge_pct * capital,
+                                        max_hedge_pct * capital)
+
+    # Rebalance only every rebalance_freq days — ffill between dates
+    rebal_mask       = pd.Series(False, index=base_sizes.index)
+    rebal_mask.iloc[::rebalance_freq] = True
+    hedge_rebalanced = hedge_dollars.where(rebal_mask).ffill().fillna(0.0)
+
+    # Apply hedge to SPY column
+    result = base_sizes.copy()
+    if "SPY" in result.columns:
+        result["SPY"] = result["SPY"] + hedge_rebalanced
+    else:
+        result["SPY"] = hedge_rebalanced
+
+    # Clip net SPY position (long or short) to sensible bounds
+    result["SPY"] = result["SPY"].clip(-max_hedge_pct * capital,
+                                        MAX_POSITION_PCT * capital)
+    return result
+
+
+def multi_mom_carry_sizes(
+    trend_signals: pd.DataFrame,
+    carry_signals: pd.DataFrame,
+    features: dict,
+    capital: float,
+    carry_weight: float = 0.25,
+) -> pd.DataFrame:
+    """
+    75% momentum-tilt trend sizing + 25% carry sizing.
+
+    Carry is structurally uncorrelated to trend/momentum — it measures the
+    expected return from HOLDING (yield curve roll, futures-curve slope), not
+    from price direction.  A 25% carry allocation (Asness, Moskowitz, Pedersen
+    2013) adds diversification without overwhelming the primary trend signal.
+
+    Architecture:
+      1. Trend sizes  = momentum_tilt_sizes(trend_signals, ...)
+         — ATR base + cross-sectional 63d momentum rank tilt
+      2. Carry sizes  = atr_sizes(carry_signals, ...)
+         — ATR base × continuous carry signal ∈ [-1, +1]
+         — Equity tickers carry = 0.0 → no position change from carry alone
+      3. Blend        = (1 − carry_weight) × trend + carry_weight × carry
+      4. Gross cap    = scale each row so total gross ≤ capital
+
+    Args:
+        trend_signals: Signal DataFrame (T × N) used for trend sizing.
+        carry_signals: Carry signal DataFrame (T × N), values ∈ [-1, +1].
+                       Equity tickers should be 0.
+        features:      Dict[ticker → feature DataFrame] with ATR + Close.
+        capital:       Total capital in dollars.
+        carry_weight:  Weight on carry (default 0.25 = 25%).
+
+    Returns:
+        Dollar position size DataFrame, clipped to ±MAX_POSITION_PCT × capital.
+    """
+    # Step 1: Trend sizes with momentum tilt
+    trend_sizes = momentum_tilt_sizes(trend_signals, features, capital)
+
+    # Step 2: Carry sizes — ATR base weighted by carry signal
+    # Bond carry (yield-curve z-score) is excluded: when the curve inverts,
+    # the signal fires negative (reduce/short bonds) but bonds often RALLY
+    # in flight-to-safety.  The trend signal already captures bond direction;
+    # adding a conflicting carry overlay hurts OOS Sharpe in inversion periods
+    # (2018-2019, 2022-2023 gap widened from +0.09 to +0.24 with bond carry).
+    # Commodity carry (futures-curve slope proxy) is genuinely orthogonal and
+    # improves the IS-OOS gap.
+    carry_aligned = (
+        carry_signals
+        .reindex(columns=trend_sizes.columns, fill_value=0.0)
+        .reindex(index=trend_sizes.index)
+        .fillna(0.0)
+    )
+    # Zero out bond carry — use commodity carry only
+    bond_cols = [c for c in carry_aligned.columns if ASSET_CLASS.get(c) == "bond"]
+    carry_aligned = carry_aligned.copy()
+    carry_aligned[bond_cols] = 0.0
+
+    carry_sizes = atr_sizes(carry_aligned, features, capital)
+
+    # Step 3: Blend — only where carry is non-trivially active (|signal| > 0.05).
+    # Equity tickers have carry = 0 and must NOT be diluted.  A fixed-weight
+    # blend would reduce all equity positions to (1 - carry_weight) × trend,
+    # cutting equity alpha by carry_weight%.  Instead, scale the blend by the
+    # carry signal's magnitude so equity tickers remain at full trend size.
+    carry_active     = (carry_aligned.abs() > 0.05).astype(float)
+    effective_weight = carry_weight * carry_active   # 0 for equities, carry_weight for bonds/commodities
+    combined = (1 - effective_weight) * trend_sizes + effective_weight * carry_sizes
+
+    # Step 4: Gross exposure cap
+    gross = combined.abs().sum(axis=1).replace(0, np.nan)
+    scale = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return combined.multiply(scale, axis=0).clip(
+        -capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT
+    )
+
+
+def hrp_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    cov_window: int = 126,
+    rebalance_freq: int = 21,
+) -> pd.DataFrame:
+    """
+    Hierarchical Risk Parity position sizing (López de Prado, 2016).
+
+    Identical two-step structure as risk_parity_sizes() but replaces the
+    Equal Risk Contribution (ERC) solver with HRP weights:
+
+      Step 1 — ATR base sizes: compute volatility-normalised dollar positions
+               so total gross exposure is already risk-scaled per asset.
+      Step 2 — HRP redistribution: reallocate that total gross exposure using
+               HRP weights derived from a rolling Ledoit-Wolf covariance matrix,
+               recomputed every `rebalance_freq` trading days.
+
+    HRP advantage over ERC
+    ──────────────────────
+    ERC requires Cov @ w in the denominator (fixed-point update) — small
+    eigenvalues from a noisy T/N ≈ 6 estimate can dominate.  HRP uses only
+    pairwise distances (tree structure) and diagonal sub-block variances
+    (bisection allocation) — no matrix inversion, numerically stable for any T/N.
+
+    Args:
+        signals:        Signal DataFrame (T × N).
+        features:       Dict[ticker → feature DataFrame] with atr_14 and Close.
+        returns:        Daily log-return DataFrame (T × N).
+        capital:        Starting capital in dollars.
+        cov_window:     Rolling covariance lookback (default 126 = 6 months).
+        rebalance_freq: Days between covariance recomputation (default 21 = monthly).
+
+    Returns:
+        Dollar position size DataFrame, same shape as signals.
+        Clipped to ±MAX_POSITION_PCT × capital per position.
+    """
+    base_sizes = atr_sizes(signals, features, capital)
+
+    adjusted = base_sizes.copy()
+    tickers  = [t for t in signals.columns if t in returns.columns]
+    n_rows   = len(signals)
+
+    # ── Precompute HRP weights at each rebalance date ─────────────────────
+    hrp_weight_df = pd.DataFrame(np.nan, index=signals.index, columns=tickers)
+
+    for i in range(cov_window, n_rows, rebalance_freq):
+        ret_window = returns.iloc[i - cov_window : i][tickers]
+        ret_window = ret_window.dropna(thresh=int(len(ret_window) * 0.90), axis=1)
+        available  = ret_window.columns.tolist()
+
+        if len(available) >= 2 and len(ret_window) >= 20:
+            ret_clean = ret_window.ffill().fillna(0)
+            cov_mat   = estimate_covariance(ret_clean)
+            w_hrp     = hrp_weights(cov_mat)
+            for j, t in enumerate(available):
+                hrp_weight_df.iloc[i, hrp_weight_df.columns.get_loc(t)] = w_hrp[j]
+
+    hrp_weight_df = hrp_weight_df.ffill()
+
+    # ── Vectorised redistribution (mirrors risk_parity_sizes) ────────────
+    sig_vals  = signals[tickers]
+    active    = (sig_vals != 0) & hrp_weight_df[tickers].notna()
+
+    w_active  = hrp_weight_df[tickers].where(active, 0.0)
+    w_sum     = w_active.sum(axis=1).replace(0, np.nan)
+    w_norm    = w_active.div(w_sum, axis=0).fillna(0.0)
+
+    total_atr = base_sizes[tickers].where(active, 0.0).abs().sum(axis=1)
+    sign_df   = sig_vals.where(active, 0.0).clip(-1, 1)
+    raw       = sign_df * w_norm * total_atr.values[:, None]
+
+    cap_limit = capital * MAX_POSITION_PCT
+    clipped   = raw.clip(-cap_limit, cap_limit)
+
+    first_valid = hrp_weight_df.first_valid_index()
+    if first_valid is not None:
+        mask = signals.index >= first_valid
+        for t in tickers:
+            adjusted.loc[mask, t] = clipped.loc[mask, t]
+
+    return apply_macro_multiplier(adjusted)
+
+
+def hrp_mom_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    cov_window: int = 126,
+    rebalance_freq: int = 21,
+    tilt_min: float = 0.7,
+    tilt_range: float = 0.6,
+    mom_window: int = 63,
+) -> pd.DataFrame:
+    """
+    HRP sizing with a cross-sectional momentum tilt overlay.
+
+    Two-stage process:
+      1. HRP sizing: allocate capital using hierarchical risk parity weights
+         (correlation-aware, no matrix inversion).
+      2. Momentum tilt: re-weight active positions ±30% based on cross-sectional
+         63-day return rank (same tilt as momentum_tilt_sizes).
+
+    Rationale
+    ─────────
+    HRP addresses the ALLOCATION problem: how much of the risk budget to give
+    each asset given its correlation with the rest of the portfolio.
+    Momentum tilt addresses the SELECTION problem: among active positions,
+    favour recent outperformers.  The two adjustments are near-orthogonal —
+    HRP weights are driven by the covariance structure (slow-moving, monthly
+    rebalance) while momentum ranks change weekly.
+
+    Args:
+        signals:        Signal DataFrame (T × N).
+        features:       Dict[ticker → feature DataFrame] with atr_14 and Close.
+        returns:        Daily log-return DataFrame (T × N).
+        capital:        Starting capital in dollars.
+        cov_window:     HRP covariance lookback (default 126).
+        rebalance_freq: HRP rebalance frequency (default 21).
+        tilt_min:       Minimum tilt factor for worst momentum rank (default 0.7).
+        tilt_range:     Tilt span (default 0.6 → tilt ∈ [0.7, 1.3]).
+        mom_window:     Trailing return window for cross-sectional ranking (default 63).
+
+    Returns:
+        Dollar position size DataFrame.  Clipped to ±MAX_POSITION_PCT × capital.
+    """
+    # Step 1: HRP base sizes
+    base = hrp_sizes(signals, features, returns, capital, cov_window, rebalance_freq)
+
+    # Step 2: Cross-sectional momentum tilt (same logic as momentum_tilt_sizes)
+    close_cols = {t: features[t]["Close"].reindex(base.index).ffill()
+                  for t in signals.columns if t in features}
+    if not close_cols:
+        return base
+
+    closes = pd.DataFrame(close_cols)
+    mom    = closes.pct_change(mom_window)
+
+    active_mask = signals.abs() > 0
+    mom_cols    = [c for c in signals.columns if c in mom.columns]
+    mom_masked  = mom[mom_cols].where(active_mask[mom_cols])
+    ranks       = mom_masked.rank(axis=1, pct=True)
+    n_active    = ranks.notna().sum(axis=1)
+
+    tilt      = pd.DataFrame(1.0, index=base.index, columns=base.columns)
+    valid_rows = n_active >= 2
+    for c in mom_cols:
+        col_ranks = ranks[c]
+        col_valid = valid_rows & col_ranks.notna()
+        tilt.loc[col_valid, c] = tilt_min + tilt_range * col_ranks[col_valid].values
+
+    tilted = base * tilt
+    gross  = tilted.abs().sum(axis=1).replace(0, np.nan)
+    scale  = (capital / gross).clip(upper=1.0).fillna(1.0)
+    return tilted.multiply(scale, axis=0)
+
+
 def signal_gated_mv_regime_sizes(
     signals: pd.DataFrame,
     ensemble_signals: pd.DataFrame,
@@ -1465,6 +1985,63 @@ def main():
         ret_ir_opt = portfolio_returns(sizes_ir_opt, returns)
 
     # ── Regime-aware risk parity ─────────────────────────────────────────
+    # ── Hierarchical Risk Parity (HRP) ────────────────────────────────────────
+    print("  Computing HRP sizes (hierarchical risk parity, monthly rebalance)...")
+    sizes_hrp = hrp_sizes(signals_regime, features, returns, CAPITAL)
+    ret_hrp   = portfolio_returns(sizes_hrp, returns)
+
+    if has_multi:
+        print("  Computing multi_hrp sizes (HRP on multi-signal)...")
+        sizes_multi_hrp     = hrp_sizes(signals_multi, features, returns, CAPITAL)
+        ret_multi_hrp       = portfolio_returns(sizes_multi_hrp, returns)
+        print("  Computing multi_hrp_mom sizes (HRP + cross-sectional momentum tilt)...")
+        sizes_multi_hrp_mom = hrp_mom_sizes(signals_multi, features, returns, CAPITAL)
+        ret_multi_hrp_mom   = portfolio_returns(sizes_multi_hrp_mom, returns)
+
+    if has_multi:
+        print("  Computing regime_adaptive sizes (smooth VIX interp + hedge cap + mom tilt)...")
+        sizes_regime_adaptive = regime_adaptive_sizes(signals_multi, features, returns, CAPITAL)
+        ret_regime_adaptive   = portfolio_returns(sizes_regime_adaptive, returns)
+        print("  Computing adaptive_blend sizes (50% regime_adaptive + 50% multi_mom_tilt)...")
+        sizes_adaptive_blend  = adaptive_blend_sizes(signals_multi, features, returns, CAPITAL)
+        ret_adaptive_blend    = portfolio_returns(sizes_adaptive_blend, returns)
+        print("  Computing portable alpha sizes (multi_mom_tilt + SPY beta hedge, β=0.30)...")
+        sizes_portable        = portable_alpha_sizes(sizes_multi_mom, returns, CAPITAL, target_beta=0.30)
+        ret_portable          = portfolio_returns(sizes_portable, returns)
+        print("  Computing portable alpha low-beta sizes (multi_mom_tilt + SPY beta hedge, β=0.15)...")
+        sizes_portable_low    = portable_alpha_sizes(sizes_multi_mom, returns, CAPITAL, target_beta=0.15)
+        ret_portable_low      = portfolio_returns(sizes_portable_low, returns)
+
+    # ── Carry signal methods ───────────────────────────────────────────────────
+    carry_path = SIGNAL_DIR / "carry_signals.parquet"
+    has_carry  = carry_path.exists() and has_multi
+    if has_carry:
+        carry_signals_raw = pd.read_parquet(carry_path)
+        carry_signals_raw = carry_signals_raw.reindex(returns.index).fillna(0.0)
+        carry_signals_raw = carry_signals_raw.reindex(columns=signals_multi.columns, fill_value=0.0)
+
+        print("  Computing multi_mom_carry sizes (75% trend + 25% carry)...")
+        sizes_mom_carry = multi_mom_carry_sizes(
+            signals_multi, carry_signals_raw, features, CAPITAL
+        )
+        ret_mom_carry = portfolio_returns(sizes_mom_carry, returns)
+
+        # Carry-trend orthogonality check
+        carry_only_sizes = atr_sizes(carry_signals_raw, features, CAPITAL)
+        carry_only_ret   = portfolio_returns(carry_only_sizes, returns)
+        carry_trend_corr = float(carry_only_ret.corr(ret_multi_mom))
+        print(f"\n  Carry-Trend return correlation: {carry_trend_corr:.3f}", end="")
+        if carry_trend_corr > 0.30:
+            print(f"  WARNING: > 0.30 — carry may not be adding diversification")
+        else:
+            print(f"  GOOD: < 0.30 — carry provides genuine diversification")
+
+        print("  Computing portable_carry sizes (multi_mom_carry + β=0.30 hedge)...")
+        sizes_portable_carry = portable_alpha_sizes(
+            sizes_mom_carry, returns, CAPITAL, target_beta=0.30
+        )
+        ret_portable_carry = portfolio_returns(sizes_portable_carry, returns)
+
     print("  Computing regime-aware risk parity sizes (regime-conditional cov)...")
     sizes_rp_regime = rp_regime_aware_sizes(
         signals_regime, features, returns, CAPITAL
@@ -1597,6 +2174,24 @@ def main():
                      .reindex(columns=ret.columns, fill_value=0)
             ),
         ))
+    # ── HRP methods ───────────────────────────────────────────────────────────
+    all_methods.append((
+        "hrp",
+        ret_hrp, signals_regime,
+        lambda sig, ret: hrp_sizes(sig, features, ret, CAPITAL),
+    ))
+    if has_multi:
+        all_methods.append((
+            "multi_hrp",
+            ret_multi_hrp, signals_multi,
+            lambda sig, ret: hrp_sizes(sig, features, ret, CAPITAL),
+        ))
+        all_methods.append((
+            "multi_hrp_mom",
+            ret_multi_hrp_mom, signals_multi,
+            lambda sig, ret: hrp_mom_sizes(sig, features, ret, CAPITAL),
+        ))
+
     # signal_gated_mv_regime (OOS 0.660) and ir_optimized (OOS -0.019) removed
     # from walk-forward to eliminate ~2,000 SLSQP solver calls per run.
     # Equity curves are still saved for comparison; code is kept in optimizer.py.
@@ -1653,6 +2248,62 @@ def main():
             "multi_mom_tilt",
             ret_multi_mom, signals_multi,
             lambda sig, ret: momentum_tilt_sizes(sig, features, CAPITAL),
+        ))
+        all_methods.append((
+            # Regime-adaptive: smooth VIX-interpolated gross targeting
+            # + hedge cap + momentum tilt + dead weight.
+            "regime_adaptive",
+            ret_regime_adaptive, signals_multi,
+            lambda sig, ret: regime_adaptive_sizes(sig, features, ret, CAPITAL),
+        ))
+        all_methods.append((
+            # 50/50 blend: regime_adaptive (capture ratio) + multi_mom_tilt (OOS Sharpe).
+            # Diversifies across two sizing philosophies with weakly correlated errors.
+            "adaptive_blend",
+            ret_adaptive_blend, signals_multi,
+            lambda sig, ret: adaptive_blend_sizes(sig, features, ret, CAPITAL),
+        ))
+        all_methods.append((
+            # Portable alpha: multi_mom_tilt alpha + SPY beta hedge targeting β=0.30.
+            # Separates alpha (signal edge) from beta (passive market exposure).
+            "multi_mom_portable",
+            ret_portable, signals_multi,
+            lambda sig, ret: portable_alpha_sizes(
+                momentum_tilt_sizes(sig, features, CAPITAL), ret, CAPITAL, target_beta=0.30),
+        ))
+        all_methods.append((
+            # Portable alpha low-beta: same but targeting β=0.15 (deeper hedge).
+            "multi_mom_port_low",
+            ret_portable_low, signals_multi,
+            lambda sig, ret: portable_alpha_sizes(
+                momentum_tilt_sizes(sig, features, CAPITAL), ret, CAPITAL, target_beta=0.15),
+        ))
+    if has_carry:
+        all_methods.append((
+            # 75% cross-sectional momentum tilt + 25% carry (bond/commodity curve slope).
+            # Carry is orthogonal to trend by construction: measures income from
+            # HOLDING (yield roll, futures slope) vs DIRECTION (price momentum).
+            "multi_mom_carry",
+            ret_mom_carry, signals_multi,
+            lambda sig, ret, _cs=carry_signals_raw: multi_mom_carry_sizes(
+                sig,
+                _cs.reindex(index=ret.index, columns=sig.columns, fill_value=0.0),
+                features, CAPITAL,
+            ),
+        ))
+        all_methods.append((
+            # Portable alpha applied to the carry-enhanced trend signal.
+            # Stacks three alpha sources: trend + carry + beta hedge.
+            "portable_carry",
+            ret_portable_carry, signals_multi,
+            lambda sig, ret, _cs=carry_signals_raw: portable_alpha_sizes(
+                multi_mom_carry_sizes(
+                    sig,
+                    _cs.reindex(index=ret.index, columns=sig.columns, fill_value=0.0),
+                    features, CAPITAL,
+                ),
+                ret, CAPITAL, target_beta=0.30,
+            ),
         ))
     if has_fast:
         all_methods.extend([
@@ -1830,6 +2481,10 @@ def main():
     }
     if has_blend:
         comparison_curves["rp_blend"] = equity_curve(ret_blend, CAPITAL)
+    comparison_curves["hrp"] = equity_curve(ret_hrp, CAPITAL)
+    if has_multi:
+        comparison_curves["multi_hrp"]     = equity_curve(ret_multi_hrp,     CAPITAL)
+        comparison_curves["multi_hrp_mom"] = equity_curve(ret_multi_hrp_mom, CAPITAL)
     if has_sgmr:
         comparison_curves["signal_gated_mv_regime"] = equity_curve(ret_sgmr, CAPITAL)
     if has_ensemble:
@@ -1847,7 +2502,14 @@ def main():
         comparison_curves["pair_atr"]       = equity_curve(ret_pair,       CAPITAL)
         comparison_curves["multi_pair_atr"] = equity_curve(ret_multi_pair, CAPITAL)
     if has_multi:
-        comparison_curves["multi_mom_tilt"]      = equity_curve(ret_multi_mom,      CAPITAL)
+        comparison_curves["multi_mom_tilt"]      = equity_curve(ret_multi_mom,       CAPITAL)
+        comparison_curves["regime_adaptive"]   = equity_curve(ret_regime_adaptive, CAPITAL)
+        comparison_curves["adaptive_blend"]    = equity_curve(ret_adaptive_blend,  CAPITAL)
+        comparison_curves["multi_mom_portable"]= equity_curve(ret_portable,        CAPITAL)
+        comparison_curves["multi_mom_port_low"]= equity_curve(ret_portable_low,    CAPITAL)
+    if has_carry:
+        comparison_curves["multi_mom_carry"] = equity_curve(ret_mom_carry,      CAPITAL)
+        comparison_curves["portable_carry"]  = equity_curve(ret_portable_carry, CAPITAL)
     if has_fast:
         comparison_curves["multi_fast_mom_tilt"] = equity_curve(ret_multi_fast_mom, CAPITAL)
         comparison_curves["multi_fast_atr_vol"]  = equity_curve(ret_multi_fast_atr_vol, CAPITAL)

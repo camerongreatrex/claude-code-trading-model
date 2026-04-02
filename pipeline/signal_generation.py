@@ -1256,6 +1256,26 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     # Consumed by portfolio.py to scale position sizes.
     out["insider_size_mult"] = 1.0
 
+    # ── Carry signal (orthogonal alpha — bond/commodity curve slope) ─────
+    # carry_signal.py runs AFTER signal_generation in the pipeline, so
+    # carry_signals.parquet may not exist on the very first run.
+    # On subsequent runs the file is present and the column is populated.
+    # Equity tickers always receive 0 (carry requires fundamental data).
+    _carry_path = SIGNAL_DIR / "carry_signals.parquet"
+    if _carry_path.exists():
+        try:
+            _carry_df = pd.read_parquet(_carry_path)
+            if ticker in _carry_df.columns:
+                out["signal_carry"] = (
+                    _carry_df[ticker].reindex(out.index).ffill().fillna(0.0)
+                )
+            else:
+                out["signal_carry"] = 0.0
+        except Exception:
+            out["signal_carry"] = 0.0
+    else:
+        out["signal_carry"] = 0.0
+
     return out.dropna()
 
 # -----------------------------------------------------------------------------
@@ -1395,6 +1415,15 @@ def main():
     fast_overlay.to_parquet(SIGNAL_DIR  / "fast_overlay_signals.parquet")
     multi_fast.to_parquet(SIGNAL_DIR    / "multi_fast_signals.parquet")
     print(f"Signal matrices saved: {regime.shape}")
+
+    # Save carry signal matrix if carry was loaded into any ticker
+    _carry_cols = {t: s["signal_carry"]
+                   for t, s in all_signals.items()
+                   if "signal_carry" in s.columns}
+    if _carry_cols:
+        _carry_matrix = pd.DataFrame(_carry_cols).dropna()
+        _carry_matrix.to_parquet(SIGNAL_DIR / "carry_signals_matrix.parquet")
+        print(f"  Carry signal matrix saved: {_carry_matrix.shape}")
 
     # Print fast overlay stats for the 5 targeted ETFs
     print("\n  Fast MA20/50 overlay — active fraction vs slow MA50/200:")

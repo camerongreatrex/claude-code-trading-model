@@ -76,9 +76,12 @@ from live_signals import get_live_signals
 from paper_trader import (
     load_state, load_trades, load_history, catchup,
     get_intraday_curve, end_of_day_update, INITIAL_CAPITAL as PT_INITIAL_CAPITAL,
+    compute_live_portfolio_metrics, get_production_method, correct_history_baseline,
+    STRATEGIES,
 )
 from pipeline.data_pipeline import ASSET_CLASS
-from scheduler import check_kill_switch, ORDERS_FILE
+from pipeline.signal_generation import RSI_ENTRY_THRESH, ATR_TRAILING_MULT, MIN_HOLD_DAYS
+from scheduler import check_kill_switch, ORDERS_FILE, KILL_SWITCH_DD
 from ui.styles import CSS, _layout, PALETTE, LABELS
 from ui.charts import (
     metrics, metrics_table,
@@ -94,6 +97,32 @@ from ui.data_loaders import (
     load_correlation_diagnostic, load_regime_correlation, load_dead_weight,
 )
 from ui.styles import get_color, get_label
+from pipeline.backtester import profit_factor as _calc_profit_factor
+
+# ── OOS method-selection thresholds ───────────────────────────────────────────
+# These three constants govern which backtest method is shown in the header
+# and used for monthly returns / portfolio-level metrics.
+#
+# OOS_MIN_SHARPE   — minimum out-of-sample Sharpe a method must achieve to be
+#                    eligible.  Below this we consider the strategy unreliable.
+# OOS_MAX_NEG_GAP  — how much higher OOS Sharpe can be vs IS Sharpe before we
+#                    become suspicious (lucky OOS period, not generalizable edge).
+#                    Negative means OOS > IS.  -0.05 = allow at most 5% inflation.
+# OOS_MAX_POS_GAP  — how much lower OOS Sharpe can be vs IS Sharpe (ordinary
+#                    overfitting decay) before we reject the method.
+OOS_MIN_SHARPE  = 0.9
+OOS_MAX_NEG_GAP = -0.05   # OOS Sharpe ≤ IS Sharpe + 0.05  (OOS can't be much better than IS)
+OOS_MAX_POS_GAP =  0.50   # OOS Sharpe ≥ IS Sharpe − 0.50  (allow up to 50% IS-to-OOS decay)
+
+# ── Signal-column → human description ─────────────────────────────────────────
+# Used by the dashboard header and strategy caption to describe the active
+# signal type without hardcoding strings.
+_SIGNAL_DESCRIPTIONS = {
+    "signal_regime"  : "MA crossover",
+    "signal_multi"   : "MA crossover + momentum breakout + dip-buy",
+    "signal_fast"    : "Fast MA crossover",
+    "composite"      : "Composite IC-weighted signal",
+}
 
 # ── Page configuration ────────────────────────────────────────────────────────
 st.set_page_config(
@@ -113,6 +142,12 @@ st.markdown(CSS, unsafe_allow_html=True)
 def _startup_catchup() -> int:
     """Replay missed trading days on first dashboard load (once per hour)."""
     return catchup()
+
+
+@st.cache_resource(ttl=86400, show_spinner=False)
+def _startup_correct_history():
+    """Fix init-day pricing anomaly in history.csv (runs at most once per day)."""
+    correct_history_baseline()
 
 
 # ── Main layout ───────────────────────────────────────────────────────────────
@@ -141,6 +176,7 @@ def main():
     if n_caught_up and "_catchup_done" not in st.session_state:
         st.cache_data.clear()
         st.session_state["_catchup_done"] = True
+    _startup_correct_history()
 
     # Load all data first so n_assets is available before header renders
     df_port       = load_portfolio_curves()
@@ -152,7 +188,22 @@ def main():
     fred          = load_fred_features()
     n_assets      = len(ticker_curves) if ticker_curves else 20
 
-    # Header
+    # Header — resolve active paper-trading strategy for dynamic description
+    _hdr_state    = load_state()
+    _hdr_strat_k  = _hdr_state.get("strategy", "") if _hdr_state else ""
+    _hdr_strat_cfg = STRATEGIES.get(_hdr_strat_k, {})
+    _hdr_sig_col   = _hdr_strat_cfg.get("signal_col", "signal_multi")
+    _hdr_sig_desc  = _SIGNAL_DESCRIPTIONS.get(_hdr_sig_col, _hdr_sig_col)
+    _hdr_tilt      = _hdr_strat_cfg.get("mom_tilt", False)
+    _hdr_macro     = _hdr_strat_cfg.get("macro", False)
+    _hdr_extras    = []
+    if _hdr_tilt:  _hdr_extras.append("cross-sectional momentum tilt")
+    if _hdr_macro: _hdr_extras.append("macro VIX/yield-curve filter")
+    _hdr_extras_str = ("  ·  " + "  ·  ".join(_hdr_extras)) if _hdr_extras else ""
+    _hdr_live_strat = (
+        f"  ·  Live: <b>{_hdr_strat_k}</b>" if _hdr_strat_k else ""
+    )
+
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.markdown("## 📈 Strategy Performance Dashboard")
@@ -160,8 +211,10 @@ def main():
             f"<span style='color:#666;font-size:.82rem'>"
             f"Multi-asset systematic strategy · 2015–2025 · {n_assets} assets "
             f"(incl. survivorship anchors GE/INTC/VZ) · "
-            f"Multi-signal: MA crossover + momentum breakout + dip-buy · "
-            f"Two-sided bonds &amp; commodities · Cross-sectional momentum tilt"
+            f"Signal: {_hdr_sig_desc} · "
+            f"Two-sided bonds &amp; commodities"
+            f"{_hdr_extras_str}"
+            f"{_hdr_live_strat}"
             f"</span>",
             unsafe_allow_html=True,
         )
@@ -171,27 +224,22 @@ def main():
         return
 
     # ── Top metrics ──────────────────────────────────────────────────────────
-    # Select production method via two-stage gap-filtered OOS Sharpe.
-    # Stage 1: filter to OOS Sharpe > 0.9 AND IS-OOS gap in [-0.20, +0.50]
-    # Stage 2: among qualifying methods, pick highest OOS Sharpe
-    # Fallback: if no method passes gap filter, use highest OOS Sharpe
-    _prod_method = "equal_weight"
-    if not oos_sel.empty and "oos_sharpe" in oos_sel.columns and "method" in oos_sel.columns:
-        _filtered = pd.DataFrame()
-        if "is_sharpe" in oos_sel.columns:
-            _gaps = oos_sel["is_sharpe"] - oos_sel["oos_sharpe"]
-            _mask = (oos_sel["oos_sharpe"] > 0.9) & (_gaps >= -0.20) & (_gaps <= 0.50)
-            _filtered = oos_sel[_mask]
-        if not _filtered.empty:
-            _best_idx = _filtered["oos_sharpe"].idxmax()
-        else:
-            _best_idx = oos_sel["oos_sharpe"].idxmax()
-        _best_m   = oos_sel.loc[_best_idx, "method"]
-        # Map oos_selection method name → df_port column name (spaces → underscores)
-        _best_col = _best_m.replace(" ", "_").replace("-", "_")
-        if _best_col in df_port.columns:
-            _prod_method = _best_col
-    _prod_label = get_label(_prod_method)
+    # Production method selected by get_production_method() — single source of
+    # truth shared with paper_trader.py so every tab shows the same method.
+    _prod_method, _prod_label = get_production_method()
+    # Derive raw oos_selection method name for active-Sharpe lookup
+    # (oos_sel "method" column may use spaces; _prod_method uses underscores)
+    _prod_oos_key = _prod_method
+    if not oos_sel.empty and "method" in oos_sel.columns:
+        _oos_match = oos_sel[
+            oos_sel["method"].str.replace(" ", "_").str.replace("-", "_") == _prod_method
+        ]
+        if not _oos_match.empty:
+            _prod_oos_key = _oos_match.iloc[0]["method"]
+    # Guard: method must exist in portfolio curves; fall back to equal_weight
+    if _prod_method not in df_port.columns:
+        _prod_method = "equal_weight"
+        _prod_label  = get_label(_prod_method)
 
     st.markdown(f'<div class="section-head">{_prod_label} vs buy &amp; hold</div>',
                 unsafe_allow_html=True)
@@ -201,7 +249,17 @@ def main():
     m_eq    = metrics(eq_ret)
     m_bnh   = metrics(bnh_ret)
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    # Profit factor from daily returns (gross winners / gross losers)
+    _top_pf = _calc_profit_factor(eq_ret) if not eq_ret.empty else float("inf")
+
+    # Active Sharpe: pull OOS active Sharpe for the production method from oos_selection
+    _top_act_sharpe = None
+    if not oos_sel.empty and "oos_act_sharpe" in oos_sel.columns and "method" in oos_sel.columns:
+        _act_row = oos_sel[oos_sel["method"] == _prod_oos_key]
+        if not _act_row.empty:
+            _top_act_sharpe = float(_act_row["oos_act_sharpe"].iloc[0])
+
+    c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(9)
     def delta_str(val, ref, pct=True):
         """
         Format the strategy-vs-benchmark delta for a Streamlit st.metric delta arg.
@@ -256,22 +314,48 @@ def main():
                         help="Percentage of active trading days where the strategy had a "
                              "positive return. Even a 50% win rate can be very profitable "
                              "if winning days are larger than losing days (see Profit Factor).")
+    with c7: st.metric("Profit Factor", f"{_top_pf:.2f}" if _top_pf < 100 else "∞",
+                        help="Gross profit ÷ gross loss on daily returns. "
+                             ">1.5 is good, >2.0 is exceptional. "
+                             "Independent of win rate — measures the quality of winners vs losers.")
+    with c8: st.metric("Active Sharpe",
+                        f"{_top_act_sharpe:.2f}" if _top_act_sharpe is not None else "—",
+                        help="OOS Sharpe of excess returns vs buy & hold benchmark. "
+                             "Measures skill above passive indexing — higher is better.")
+    # VaR: lower is better (smaller daily loss exposure) → delta_color="inverse": green = strategy VaR < B&H VaR
+    with c9: st.metric("VaR 95% (1d)", f"{m_eq.get('var_95', 0)*100:.2f}%",
+                        delta=delta_str(m_eq.get('var_95', 0), m_bnh.get('var_95', 0)), delta_color="inverse",
+                        help="Historical 1-day 95% Value at Risk — the daily loss threshold exceeded "
+                             "only 5% of trading days. E.g. 1.50% means on 95% of days the strategy "
+                             "lost less than 1.50%. Lower is better. "
+                             "Arrow shows vs buy & hold: green ↓ = strategy has smaller daily tail risk than B&H.")
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "  📊  Equity Curves",
-        "  🔍  Alpha Decomposition",
-        "  🎲  Monte Carlo",
-        "  🔁  Walk-Forward",
-        "  🌍  Macro Overlay",
-        "  📡  Live Signals",
-        "  📈  vs S&P 500",
+    tab_port, tab_sig, tab_sp, tab_bt, tab_val, tab_risk = st.tabs([
+        "  📈  Portfolio",
+        "  📡  Signals",
+        "  📊  vs S&P 500",
+        "  🔬  Backtest",
+        "  🔍  Validation",
+        "  ⚠️  Risk",
     ])
 
-    # ── Tab 1: Equity curves + drawdown + summary table ──────────────────────
-    with tab1:
-        # Compute top 5 methods by final equity value
-        _non_bh  = [c for c in df_port.columns if c != "buy_hold"]
+    # Create sub-tabs within Validation (Walk-Forward first, then Alpha Decomp)
+    # and Risk (Monte Carlo first, then Macro Overlay).
+    # Sub-tabs must be defined before content is written to them so Streamlit
+    # preserves the desired display order regardless of code execution order.
+    with tab_val:
+        v_wf, v_alpha = st.tabs(["  🔁  Walk-Forward", "  🔍  Alpha Decomposition"])
+    with tab_risk:
+        r_mc, r_macro = st.tabs(["  🎲  Monte Carlo", "  🌍  Macro Overlay"])
+
+    # ── Backtest: Equity curves + drawdown + summary table ──────────────────────
+    # Experimental strategies excluded from auto-selection (high beta, not production-ready)
+    _EXCLUDE_DEFAULT = {"half_kelly"}
+
+    with tab_bt:
+        # Compute top 5 methods by final equity value, excluding experimental strategies
+        _non_bh  = [c for c in df_port.columns if c != "buy_hold" and c not in _EXCLUDE_DEFAULT]
         _top5    = sorted(_non_bh, key=lambda c: df_port[c].iloc[-1] if not df_port[c].empty else 0,
                           reverse=True)[:5]
         _default = _top5 + (["buy_hold"] if "buy_hold" in df_port.columns else [])
@@ -299,15 +383,17 @@ def main():
             use_container_width=True, hide_index=True,
         )
 
-        # Monthly returns heatmap
+        # Monthly returns heatmap — uses the auto-selected best OOS production method
         st.markdown("")
-        st.markdown('<div class="section-head">Monthly returns — equal weight strategy</div>',
+        st.markdown(f'<div class="section-head">Monthly returns — {_prod_label}</div>',
                     unsafe_allow_html=True)
-        if not eq_ret.empty:
-            st.plotly_chart(chart_monthly_heatmap(eq_ret), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
+        _monthly_ret = (df_port[_prod_method].pct_change().dropna()
+                        if _prod_method in df_port.columns else eq_ret)
+        if not _monthly_ret.empty:
+            st.plotly_chart(chart_monthly_heatmap(_monthly_ret), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
-    # ── Tab 2: Alpha Decomposition ───────────────────────────────────────────
-    with tab2:
+    # ── Validation / Alpha Decomposition ────────────────────────────────────────
+    with v_alpha:
         st.markdown("### Alpha Decomposition")
         _corr_diag   = load_correlation_diagnostic()
         _regime_corr = load_regime_correlation()
@@ -370,7 +456,8 @@ def main():
             _bcol, _acol = st.columns(2)
             _top3_methods = None
             if not df_port.empty:
-                _non_bh_cols = [c for c in df_port.columns if c != "buy_hold"]
+                _non_bh_cols = [c for c in df_port.columns
+                                if c != "buy_hold" and c not in _EXCLUDE_DEFAULT]
                 _top3_methods = sorted(_non_bh_cols,
                                        key=lambda c: df_port[c].iloc[-1] if not df_port[c].empty else 0,
                                        reverse=True)[:3]
@@ -389,64 +476,15 @@ def main():
                 else:
                     st.info("Insufficient data for active return chart (need ≥60 days).")
 
-            # ── Section C: IS vs OOS table from oos_selection ───────────────
-            if not _oos_alpha.empty:
-                st.markdown("")
-                st.markdown('<div class="section-head">IS vs OOS method comparison</div>',
-                            unsafe_allow_html=True)
-
-                _disp_cols = {
-                    "method"        : "Method",
-                    "is_sharpe"     : "IS Sharpe",
-                    "oos_sharpe"    : "OOS Sharpe",
-                    "is_act_sharpe" : "IS Active Sharpe",
-                    "oos_act_sharpe": "OOS Active Sharpe",
-                }
-                _disp_oos = _oos_alpha.rename(columns={k: v for k, v in _disp_cols.items()
-                                                        if k in _oos_alpha.columns})
-                _fmt_cols  = {v: "{:.3f}" for k, v in _disp_cols.items()
-                              if k != "method" and v in _disp_oos.columns}
-
-                if "OOS Sharpe" in _disp_oos.columns:
-                    _best_oos_sharpe_method = _disp_oos.loc[_disp_oos["OOS Sharpe"].idxmax(), "Method"] \
-                        if "Method" in _disp_oos.columns else ""
-                    _best_act_sharpe_method = ""
-                    if "OOS Active Sharpe" in _disp_oos.columns:
-                        _best_act_sharpe_method = _disp_oos.loc[
-                            _disp_oos["OOS Active Sharpe"].idxmax(), "Method"
-                        ] if "Method" in _disp_oos.columns else ""
-                    # Identify min IS-OOS gap for OOS > 0.8
-                    _yellow_method = ""
-                    if "IS Sharpe" in _disp_oos.columns and "OOS Sharpe" in _disp_oos.columns \
-                            and "Method" in _disp_oos.columns:
-                        _oos_gt08 = _disp_oos[_disp_oos["OOS Sharpe"] > 0.8].copy()
-                        if not _oos_gt08.empty:
-                            _oos_gt08 = _oos_gt08.copy()
-                            _oos_gt08["_gap"] = (_oos_gt08["IS Sharpe"] - _oos_gt08["OOS Sharpe"]).abs()
-                            _yellow_method = _oos_gt08.loc[_oos_gt08["_gap"].idxmin(), "Method"]
-
-                    def _style_oos_table(row):
-                        styles = [""] * len(row)
-                        if "Method" in row.index:
-                            m = row["Method"]
-                            if m == _best_oos_sharpe_method:
-                                styles = ["background-color:#0d2b0d"] * len(row)
-                            elif m == _best_act_sharpe_method:
-                                styles = ["background-color:#0a1a2e"] * len(row)
-                            elif m == _yellow_method:
-                                styles = ["background-color:#2b2200"] * len(row)
-                        return styles
-
-                    st.dataframe(
-                        _disp_oos.style.apply(_style_oos_table, axis=1).format(_fmt_cols),
-                        use_container_width=True, hide_index=True,
-                    )
-                    st.caption(
-                        "Green = best OOS Sharpe · Blue = best OOS Active Sharpe · "
-                        "Yellow = smallest IS-OOS gap (OOS > 0.8)"
-                    )
-                else:
-                    st.dataframe(_disp_oos, use_container_width=True, hide_index=True)
+            # ── Section C: IS vs OOS reference ──────────────────────────────
+            st.markdown("")
+            st.markdown(
+                "<span style='color:#888;font-size:.82rem'>"
+                "Full IS vs OOS Sharpe comparison table is in the "
+                "<b>Walk-Forward</b> tab."
+                "</span>",
+                unsafe_allow_html=True,
+            )
 
             # ── Section D: Dead weight chart ─────────────────────────────────
             if not _df_dw.empty:
@@ -471,8 +509,8 @@ def main():
                     "Low/negative correlation = better diversification in the regime."
                 )
 
-    # ── Tab 3: Monte Carlo ───────────────────────────────────────────────────
-    with tab3:
+    # ── Risk / Monte Carlo ───────────────────────────────────────────────────────
+    with r_mc:
         st.markdown(
             "<span style='color:#888;font-size:.82rem'>"
             "Block-bootstrap resampling of historical daily returns — preserves the "
@@ -538,8 +576,8 @@ def main():
                                       "A measure of upside potential under block-bootstrap "
                                       "resampling of the observed return stream.")
 
-    # ── Tab 4: Walk-forward + per-asset ──────────────────────────────────────
-    with tab4:
+    # ── Validation / Walk-Forward ────────────────────────────────────────────────
+    with v_wf:
         st.markdown(
             "<span style='color:#888;font-size:.82rem'>"
             "<b>Walk-forward validation</b>: train on 3 years, test on the next 1 year (rolling). "
@@ -650,12 +688,12 @@ def main():
             st.markdown(
                 f"<span style='color:#50fa7b;font-size:.82rem'>"
                 f"✓ Production method: <b>{_prod_label}</b> — selected by highest OOS Sharpe "
-                f"among methods with IS-OOS gap in [−0.20, +0.50]</span>",
+                f"among methods with IS-OOS gap in [{OOS_MAX_NEG_GAP:+.2f}, +{OOS_MAX_POS_GAP:.2f}]</span>",
                 unsafe_allow_html=True,
             )
 
-    # ── Tab 5: Macro overlay ─────────────────────────────────────────────────
-    with tab5:
+    # ── Risk / Macro Overlay ─────────────────────────────────────────────────────
+    with r_macro:
         if macro.empty:
             st.warning("Macro data not found. Run `python macro_features.py`.")
         else:
@@ -719,21 +757,19 @@ def main():
                     else:
                         st.metric("Mfg Production", "N/A", help="Run fred_features.py to populate.")
 
-    # ── Tab 6: Paper Trading & Live Signals ──────────────────────────────────
-    with tab6:
+    # ── Portfolio: Paper Trading + vs S&P 500 ────────────────────────────────
+    with tab_port:
 
         @st.fragment(run_every=5)
-        def _live_section():
+        def _portfolio_fragment():
             """
-            Streamlit fragment: the full "Paper Trading & Live Signals" tab content.
+            Streamlit fragment: the full "Paper Trading" tab content.
 
             Auto-refreshes every 5 seconds via run_every=5.  The fragment boundary
             means only this section re-runs on each tick — the rest of the dashboard
             (other tabs) is not re-evaluated, keeping the page responsive.
 
-            Renders two main sections:
-
-              1. Paper Portfolio
+            Renders the Paper Portfolio section:
                  - Header row with market open/closed indicator and manual buttons
                    (Refresh Now, Run EOD Update — EOD button disabled during market hours)
                  - Portfolio Overview metrics: live value, total return, realized P&L,
@@ -743,12 +779,6 @@ def main():
                  - Open positions table (current price, unrealized P&L per ticker)
                  - Recent trades log (last 20 trades)
                  - Kill switch status and tomorrow's order sheet
-
-              2. Live Signals
-                 - MA crossover signal state for all universe tickers (cached 5 min)
-                 - Summary metrics: long count, flat count, gross exposure, avg RSI
-                 - MA spread bar chart
-                 - Full universe signal table with colour coding
 
             uirevision="paper_portfolio" on the chart ensures Plotly preserves the
             user's zoom/pan state across every 5-second data refresh.
@@ -792,20 +822,9 @@ def main():
                                 st.error(f"EOD update failed: {_e}")
 
             # ── Paper Portfolio ───────────────────────────────────────────────
-            pt_state   = load_state()
-            pt_history = load_history()
-            pt_trades  = load_trades()
-
-            # ── Fee totals (from trades.csv) ─────────────────────────────
-            total_fees = 0.0
-            buy_fees   = 0.0
-            sell_fees  = 0.0
-            if not pt_trades.empty and "commission" in pt_trades.columns:
-                total_fees = pt_trades["commission"].sum()
-                buy_fees   = pt_trades.loc[pt_trades["action"] == "BUY", "commission"].sum()
-                sell_fees  = pt_trades.loc[pt_trades["action"] == "SELL", "commission"].sum()
-
-            if not pt_state:
+            # Single call — loads state, history, trades, intraday data internally
+            _pm = compute_live_portfolio_metrics()
+            if not _pm:
                 st.info(
                     "Paper trading not yet initialised.  Run this command once to start:\n\n"
                     "```\npython paper_trader.py init\n```\n\n"
@@ -813,81 +832,33 @@ def main():
                     "```\npython paper_trader.py run\n```"
                 )
             else:
-                cash  = pt_state["cash"]
-                n_pos = len(pt_state.get("positions", {}))
+                pv                   = _pm["pv"]
+                cash                 = _pm["cash"]
+                n_pos                = _pm["n_positions"]
+                prev_pv              = _pm["prev_pv"]
+                daily_ret            = _pm["daily_ret_pct"]
+                total_ret            = _pm["total_ret_pct"]
+                daily_pnl_usd        = _pm["daily_pnl_usd"]
+                tot_invested         = _pm["tot_invested"]
+                tot_cur_val          = _pm["tot_cur_val"]
+                tot_unreal           = _pm["tot_unreal"]
+                tot_chg_pct          = _pm["tot_chg_pct"]
+                today_unrealized     = _pm["today_unrealized"]
+                today_unrealized_pct = _pm["today_unrealized_pct"]
+                today_realized       = _pm["today_realized"]
+                all_realized         = _pm["all_realized"]
+                realized_gains       = _pm["realized_gains"]
+                realized_losses      = _pm["realized_losses"]
+                total_fees           = _pm["total_fees"]
+                buy_fees             = _pm["buy_fees"]
+                sell_fees            = _pm["sell_fees"]
+                intraday_df          = _pm["intraday_df"]
+                live_prices          = _pm["live_prices"]
 
-                # TradingView-style equity chart (intraday live)
-                intraday_df, live_prices, spy_curve, _spy_pct = get_intraday_curve()
-
-                # prev_pv = previous trading day's close (entry baseline for intraday
-                # daily-return calculation and the "Entry" reference line on the chart).
-                # If EOD already ran today, state["portfolio_value"] is today's close —
-                # we need the second-to-last history row instead.
-                _today_et_str = now.strftime('%Y-%m-%d')
-                if (pt_state.get("last_eod_date") == _today_et_str
-                        and not pt_history.empty and len(pt_history) >= 2):
-                    prev_pv = float(pt_history.sort_values("date").iloc[-2]["portfolio_value"])
-                else:
-                    prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
-
-                # ── Open position market values (from fresh per-ticker prices) ─
-                # When the market is closed live_prices will be empty — fall back
-                # to last EOD close stored in state rather than entry prices,
-                # otherwise every position shows 0% change overnight.
-                tot_invested = sum(pos["cost_basis"] for pos in pt_state.get("positions", {}).values())
-                _eod_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
-                if live_prices:
-                    tot_cur_val = sum(
-                        pos["shares"] * (live_prices.get(t) or pos.get("last_close") or pos["entry_price"])
-                        for t, pos in pt_state.get("positions", {}).items()
-                    )
-                else:
-                    # Market closed — use last EOD close per position, or aggregate EOD value
-                    _has_closes = any(p.get("last_close") for p in pt_state.get("positions", {}).values())
-                    if _has_closes:
-                        tot_cur_val = sum(
-                            pos["shares"] * (pos.get("last_close") or pos["entry_price"])
-                            for pos in pt_state.get("positions", {}).values()
-                        )
-                    else:
-                        tot_cur_val = _eod_pv - cash
-                tot_unreal   = tot_cur_val - tot_invested
-                tot_chg_pct  = (tot_cur_val / tot_invested - 1) * 100 if tot_invested else 0.0
-
-                # pv from live per-ticker prices (consistent with positions table;
-                # avoids the intraday OHLC sum having stale zeros at 5-min boundaries)
-                pv        = (tot_cur_val + cash) if live_prices else _eod_pv
-                daily_ret = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
-                total_ret = (pv / PT_INITIAL_CAPITAL - 1) * 100
-                daily_pnl_usd = pv - prev_pv
-
-                # ── Realized P&L from closed trades ──────────────────────────
-                today_str_filter = now.strftime('%Y-%m-%d')
-                if not pt_trades.empty and "pnl" in pt_trades.columns:
-                    sells = pt_trades[
-                        (pt_trades["action"] == "SELL") &
-                        pt_trades["pnl"].notna() &
-                        (pt_trades["pnl"].astype(str).str.strip() != "")
-                    ]
-                    all_realized   = pd.to_numeric(sells["pnl"], errors="coerce").fillna(0).sum()
-                    today_sells    = sells[sells["date"].dt.strftime('%Y-%m-%d') == today_str_filter]
-                    today_realized = pd.to_numeric(today_sells["pnl"], errors="coerce").fillna(0).sum()
-                else:
-                    all_realized   = 0.0
-                    today_realized = 0.0
-
-                # today_unrealized dollar = change vs prev close position value
-                # today_unrealized_pct uses cost_basis denominator (tot_invested)
-                # so it matches the positions table unrealized % exactly.
-                # Use yesterday's cash (not today's) to avoid mixing days when
-                # trades executed today changed the cash balance.
-                prev_cash = float(pt_history["cash"].iloc[-1]) if (
-                    not pt_history.empty and "cash" in pt_history.columns
-                ) else cash
-                prev_positions_val   = prev_pv - prev_cash
-                today_unrealized     = tot_cur_val - prev_positions_val
-                today_unrealized_pct = (today_unrealized / prev_positions_val * 100
-                                        if prev_positions_val else 0.0)
+                # Still need raw state/trades/history for non-metric display
+                pt_state   = load_state()
+                pt_trades  = load_trades()
+                pt_history = load_history()
 
                 # ── GROUP 1: Portfolio Overview ───────────────────────────────
                 st.markdown('<div class="section-head">Portfolio Overview</div>', unsafe_allow_html=True)
@@ -930,18 +901,6 @@ def main():
                     )
 
                 # ── GROUP 2b: Capital Flow (where did the money go?) ────────
-                # Splits realised gains, losses, unrealized, and fees so the
-                # user sees exactly where every dollar went.
-                realized_gains  = 0.0
-                realized_losses = 0.0
-                if not pt_trades.empty and "pnl" in pt_trades.columns:
-                    _sells_pnl = pd.to_numeric(
-                        pt_trades.loc[pt_trades["action"] == "SELL", "pnl"],
-                        errors="coerce",
-                    ).fillna(0)
-                    realized_gains  = float(_sells_pnl[_sells_pnl > 0].sum())
-                    realized_losses = float(_sells_pnl[_sells_pnl < 0].sum())
-
                 st.markdown('<div class="section-head">Capital Flow</div>',
                             unsafe_allow_html=True)
                 wf1, wf2, wf3, wf4 = st.columns(4)
@@ -958,22 +917,6 @@ def main():
                 with wf4:
                     st.metric("Unrealized P&L", f"${tot_unreal:+,.0f}",
                               help="Open position value minus cost basis.")
-                # Reconciliation: pnl already includes sell commissions,
-                # so only subtract buy fees to avoid double-counting.
-                _reconciled = PT_INITIAL_CAPITAL + realized_gains + realized_losses + tot_unreal - buy_fees
-                _parts = [f"\\$100,000 start"]
-                if realized_gains:
-                    _parts.append(f"+ \\${realized_gains:,.0f} gains")
-                if realized_losses:
-                    _parts.append(f"− \\${abs(realized_losses):,.0f} losses")
-                if tot_unreal >= 0:
-                    _parts.append(f"+ \\${tot_unreal:,.0f} unrealized")
-                else:
-                    _parts.append(f"− \\${abs(tot_unreal):,.0f} unrealized")
-                if buy_fees:
-                    _parts.append(f"− \\${buy_fees:,.0f} entry fees")
-                _parts.append(f"= \\${_reconciled:,.0f}")
-                st.caption("  ".join(_parts))
 
                 # ── Equity chart ──────────────────────────────────────────────
                 # Timeframe selector — resample 5-min candles to user choice
@@ -989,8 +932,7 @@ def main():
 
                 st.plotly_chart(
                     chart_paper_portfolio(pt_history, _chart_intra, pt_trades,
-                                          now=now, entry_value=prev_pv,
-                                          spy_curve=spy_curve),
+                                          now=now, entry_value=prev_pv),
                     theme=None, use_container_width=True,
                     config={
                         "scrollZoom": True,
@@ -1001,7 +943,9 @@ def main():
                 )
 
                 # ── GROUP 3: Open Positions ───────────────────────────────────
-                if pt_state.get("positions"):
+                _long_positions = {t: p for t, p in pt_state.get("positions", {}).items()
+                                   if t != "_SPY_HEDGE"}
+                if _long_positions:
                     st.markdown('<div class="section-head">Open Positions</div>',
                                 unsafe_allow_html=True)
 
@@ -1030,6 +974,8 @@ def main():
 
                     pos_rows = []
                     for ticker, pos in pt_state["positions"].items():
+                        if ticker == "_SPY_HEDGE":
+                            continue  # shown separately below
                         cur = (live_prices.get(ticker)
                                or pos.get("last_close")
                                or pos["entry_price"])
@@ -1062,6 +1008,38 @@ def main():
                                  "Unreal P&L": "${:+,.2f}"}),
                         use_container_width=True, hide_index=True,
                     )
+
+                    # ── Beta Hedge (portable-alpha strategies only) ───────────
+                    _hp = pt_state["positions"].get("_SPY_HEDGE")
+                    if _hp:
+                        st.markdown('<div class="section-head">Beta Hedge</div>',
+                                    unsafe_allow_html=True)
+                        _spy_cur = (live_prices.get("SPY")
+                                    or _hp.get("last_close")
+                                    or _hp["entry_price"])
+                        _hedge_cur_val  = float(_hp["shares"]) * float(_spy_cur)  # negative
+                        _hedge_notional = float(_hp["cost_basis"])
+                        # P&L = notional_shorted - cover_cost = notional + hedge_cur_val
+                        # (hedge_cur_val is negative; if SPY fell, abs cover < notional → profit)
+                        _hedge_pnl = _hedge_notional + _hedge_cur_val
+                        _tgt_beta = _hp.get("hedge_target_beta", "—")
+                        _cur_beta = _hp.get("hedge_current_beta", "—")
+                        _hc1, _hc2, _hc3, _hc4 = st.columns(4)
+                        with _hc1:
+                            st.metric("Hedge Notional", f"${_hedge_notional:,.0f}",
+                                      help="Dollar value of the synthetic SPY short.")
+                        with _hc2:
+                            st.metric("Hedge Mkt Value", f"${_hedge_cur_val:,.0f}",
+                                      help="Current mark-to-market of the short (negative = SPY rose).")
+                        with _hc3:
+                            st.metric("Hedge P&L", f"${_hedge_pnl:+,.0f}",
+                                      delta_color="normal",
+                                      help="P&L on the short: positive when SPY fell (hedge protected).")
+                        with _hc4:
+                            st.metric("Portfolio β", f"{_cur_beta}",
+                                      delta=f"target {_tgt_beta}",
+                                      delta_color="off",
+                                      help="Measured 63-day rolling beta vs SPY.")
 
 
                 # ── Recent trades ─────────────────────────────────────────────
@@ -1115,11 +1093,11 @@ def main():
                                     _holds = (_sell_dates[_common] - _buy_dates[_common]).dt.days
                                     avg_hold = _holds.mean()
                             except Exception:
-                                pass
+                                avg_hold = None
 
                         st.markdown('<div class="section-head">Trade Analytics</div>',
                                     unsafe_allow_html=True)
-                        ta1, ta2, ta3, ta4, ta5, ta6 = st.columns(6)
+                        ta1, ta2, ta3, ta4, ta5, ta6, ta7 = st.columns(7)
                         with ta1:
                             st.metric("Win Rate", f"{win_rate:.0f}%",
                                       help=f"{len(wins)} wins / {len(sells_only)} closed trades")
@@ -1136,6 +1114,10 @@ def main():
                             st.metric("Best Trade", f"${largest_win:+,.0f}")
                         with ta6:
                             st.metric("Worst Trade", f"${largest_loss:+,.0f}")
+                        with ta7:
+                            _avg_hold_str = f"{avg_hold:.1f}d" if avg_hold is not None else "—"
+                            st.metric("Avg Hold", _avg_hold_str,
+                                      help="Average days between first BUY and first SELL for each ticker.")
 
                 # ── GROUP 6: Drawdown + Rolling Sharpe + Allocation ────────────
                 if not pt_history.empty and len(pt_history) >= 3:
@@ -1199,11 +1181,13 @@ def main():
                                             config={"scrollZoom": True, "displayModeBar": False})
 
                 # ── GROUP 7: Asset Class Allocation ────────────────────────────
-                if pt_state.get("positions"):
+                if _long_positions:
                     st.markdown('<div class="section-head">Allocation by Asset Class</div>',
                                 unsafe_allow_html=True)
                     _alloc_rows = []
                     for _t, _p in pt_state["positions"].items():
+                        if _t == "_SPY_HEDGE":
+                            continue  # exclude synthetic short from allocation pie
                         _cur_price = (live_prices.get(_t)
                                       or _p.get("last_close")
                                       or _p["entry_price"])
@@ -1247,14 +1231,21 @@ def main():
                         )
 
                 # ── Strategy info + risk state ─────────────────────────────────
-                _strat_name = pt_state.get("strategy", "unknown")
+                _strat_name  = pt_state.get("strategy", "unknown")
+                _strat_cfg_d = STRATEGIES.get(_strat_name, {})
+                _sig_desc    = _SIGNAL_DESCRIPTIONS.get(
+                    _strat_cfg_d.get("signal_col", ""), _strat_cfg_d.get("signal_col", "—")
+                )
                 _rp_date = pt_state.get("last_rp_date", "—")
                 st.caption(
-                    f"Strategy: **{_strat_name}**  ·  "
+                    f"Strategy: **{_strat_name}**  ·  Signal: {_sig_desc}  ·  "
                     f"Init: {pt_state.get('initialized_date','?')}  ·  "
                     f"Last EOD: {pt_state.get('last_eod_date','?')}  ·  "
                     f"RP weights: {_rp_date}  ·  "
-                    "Filters: RSI<70  ·  3x ATR stop  ·  5-day hold  ·  15% kill switch"
+                    f"Filters: RSI<{RSI_ENTRY_THRESH}  ·  "
+                    f"{ATR_TRAILING_MULT:g}× ATR stop  ·  "
+                    f"{MIN_HOLD_DAYS}-day hold  ·  "
+                    f"{KILL_SWITCH_DD*100:.0f}% kill switch"
                 )
 
                 # ── Kill switch + order sheet ─────────────────────────────────
@@ -1293,9 +1284,18 @@ def main():
                         "or `python paper_trader.py run` after 4:45 PM ET."
                     )
 
+        _portfolio_fragment()
 
-            # ── Live Signals ──────────────────────────────────────────────────
-            st.divider()
+    # ── Signals: Live universe signal state ──────────────────────────────────
+    with tab_sig:
+
+        @st.fragment(run_every=60)
+        def _signals_fragment():
+            """
+            Streamlit fragment: live MA-crossover signal state for all universe tickers.
+            Auto-refreshes every 60 seconds. Signal data is cached for 5 minutes,
+            so the actual yfinance fetch runs at most once per 5-minute window.
+            """
             st.markdown("### Universe Signal State")
             st.markdown(
                 "<span style='color:#888;font-size:.82rem'>"
@@ -1382,10 +1382,10 @@ def main():
                     use_container_width=True, hide_index=True,
                 )
 
-        _live_section()
+        _signals_fragment()
 
-    # ── Tab 7: vs S&P 500 ────────────────────────────────────────────────────
-    with tab7:
+    # ── vs S&P 500 ───────────────────────────────────────────────────────────
+    with tab_sp:
 
         @st.cache_data(ttl=300, show_spinner=False)
         def _spy_history(start_date: str):
@@ -1430,56 +1430,35 @@ def main():
 
             Refreshes automatically as a Streamlit fragment (auto_refresh=True).
             """
-            now_et = pd.Timestamp.now(tz='America/New_York').replace(tzinfo=None)
-
-            pt_state   = load_state()
-            pt_history = load_history()
-
-            if not pt_state:
+            # Single call — loads everything internally, same as the Paper Trading tab
+            _pm_sp = compute_live_portfolio_metrics()
+            if not _pm_sp:
                 st.info("Paper trading not initialised. Run `python paper_trader.py init` first.")
                 return
+
+            now_et        = _pm_sp["now"]
+            pv            = _pm_sp["pv"]
+            prev_pv       = _pm_sp["prev_pv"]
+            cash          = _pm_sp["cash"]
+            port_today_pct = _pm_sp["daily_ret_pct"]
+            spy_today_pct  = _pm_sp["spy_today_pct"]
+            alpha_today    = _pm_sp["alpha_today"]
+            spy_intraday   = _pm_sp["spy_curve"]
+            spy_pct_from_prev = _pm_sp["spy_pct_from_prev"]
+            beating        = alpha_today > 0
+
+            pt_history = load_history()  # needed for historical alpha / comparison charts
+
+            # Last intraday bar timestamp — shows user how fresh the data is
+            _last_bar_str = ""
+            if hasattr(spy_intraday, "empty") and not spy_intraday.empty:
+                _last_bar = spy_intraday.index[-1]
+                _last_bar_str = (pd.Timestamp(_last_bar).strftime("%H:%M")
+                                 if hasattr(_last_bar, "strftime") else str(_last_bar)[-5:])
 
             # ── Intraday (live) comparison ────────────────────────────────────
             st.markdown('<div class="section-head">Overall vs S&P 500</div>',
                         unsafe_allow_html=True)
-
-            intraday_df, live_prices, spy_intraday, spy_pct_from_prev = get_intraday_curve()
-
-            cash    = pt_state["cash"]
-            # If EOD already ran today, state["portfolio_value"] is today's
-            # close — use second-to-last history row as yesterday's baseline.
-            _today_et_str_sp = now_et.strftime('%Y-%m-%d')
-            if (pt_state.get("last_eod_date") == _today_et_str_sp
-                    and not pt_history.empty and len(pt_history) >= 2):
-                prev_pv = float(pt_history.sort_values("date").iloc[-2]["portfolio_value"])
-            else:
-                prev_pv = pt_state.get("portfolio_value", PT_INITIAL_CAPITAL)
-            tot_invested = sum(pos["cost_basis"] for pos in pt_state.get("positions", {}).values())
-            tot_cur_val = sum(
-                pos["shares"] * (live_prices.get(t) or pos.get("last_close") or pos["entry_price"])
-                for t, pos in pt_state.get("positions", {}).items()
-            )
-            pv = (tot_cur_val + cash) if live_prices else pt_state.get("portfolio_value", prev_pv)
-
-            # Portfolio today % — measured from yesterday's EOD value (same baseline
-            # as SPY's close-to-close metric) so chart and alpha metric agree.
-            port_today_pct = (pv / prev_pv - 1) * 100 if prev_pv else 0.0
-
-            # SPY % from yesterday's close.
-            # spy_pct_from_prev is None when the daily fetch failed — fall back to
-            # intraday-only calculation (misses the open gap but is always available).
-            if spy_pct_from_prev is not None:
-                spy_today_pct = spy_pct_from_prev
-            elif not spy_intraday.empty:
-                spy_today_pct = (float(spy_intraday.iloc[-1]) / float(spy_intraday.iloc[0]) - 1) * 100
-            else:
-                spy_today_pct = 0.0
-
-            # Last intraday bar timestamp — shows user how fresh the data is
-            _last_bar_str = ""
-            if not spy_intraday.empty:
-                _last_bar = spy_intraday.index[-1]
-                _last_bar_str = pd.Timestamp(_last_bar).strftime("%H:%M") if hasattr(_last_bar, "strftime") else str(_last_bar)[-5:]
 
             alpha_today = port_today_pct - spy_today_pct
             beating     = alpha_today > 0
@@ -1536,7 +1515,7 @@ def main():
                             _bar_colors = ['#50fa7b' if a >= 0 else '#ff5555'
                                            for a in _bar_alpha.values]
                             fig_alpha.add_trace(go.Bar(
-                                x=_bar_alpha.index, y=_bar_alpha.values,
+                                x=_bar_alpha.index, y=_bar_alpha.values.astype(float),
                                 marker_color=_bar_colors,
                                 hovertemplate=(
                                     "<b>%{x|%b %d}</b><br>"
@@ -1554,6 +1533,7 @@ def main():
                             fig_alpha.update_layout(**_layout(
                                 height=300, uirevision="vs_spy_daily_alpha",
                                 dragmode="pan",
+                                hovermode="closest",
                                 title=dict(
                                     text="Daily Alpha vs S&P 500 (Portfolio Return − Index Return)",
                                     font=dict(size=12),
