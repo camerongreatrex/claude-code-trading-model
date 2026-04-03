@@ -2014,6 +2014,14 @@ def correct_history_baseline():
     hist.loc[0, "portfolio_value"] = round(corrected_pv, 2)
     hist.to_csv(HISTORY_FILE, index=False)
 
+    # Also sync state.json so the next EOD update computes daily_ret from the
+    # corrected baseline rather than the original $100k init value.
+    state_data = load_state()
+    if state_data and abs(float(state_data.get("portfolio_value", 0)) / INITIAL_CAPITAL - 1) < 0.005:
+        state_data["portfolio_value"] = round(corrected_pv, 2)
+        save_state(state_data)
+        print(f"  [history correction] state.json portfolio_value also updated to ${corrected_pv:,.2f}")
+
 
 # ── Status ─────────────────────────────────────────────────────────────────────
 

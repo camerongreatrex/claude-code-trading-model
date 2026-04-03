@@ -1591,40 +1591,26 @@ def main():
                     hist_full = hist_full[_valid]
                     spy_close_aligned = spy_close_aligned[_valid]
 
-                    # Force inception row to $100k (display only — history.csv unchanged).
-                    # The init-day PV reflects post-commission value using prior-day prices;
-                    # economically day-zero is always $100k.  All subsequent returns are
-                    # computed from this anchor, so pct_change() and port_norm are correct.
-                    if not hist_full.empty:
-                        hist_full = hist_full.copy()
-                        hist_full.iloc[0] = PT_INITIAL_CAPITAL
-
                     if hist_full.empty or spy_close_aligned.empty:
                         st.warning("No aligned portfolio/market data available for this period.")
                         return
 
-                    # Normalize portfolio to $100k at inception (already forced above).
-                    _port_scale = PT_INITIAL_CAPITAL / hist_full.iloc[0] if hist_full.iloc[0] else 1
-                    port_norm = hist_full * _port_scale
-
-                    # Normalize SPY to the trading day BEFORE inception so the economic
-                    # baseline matches: the portfolio was priced at prev-day closes on
-                    # init-day, so SPY must anchor to that same prev-day close.
                     _inception_date = hist_full.index[0]
-                    _spy_prev_dates = spy_closes[spy_closes.index < _inception_date]
-                    if not _spy_prev_dates.empty:
-                        _spy_anchor = float(_spy_prev_dates.iloc[-1])
-                    else:
-                        _spy_anchor = float(spy_close_aligned.iloc[0])  # fallback
-                    _spy_scale = PT_INITIAL_CAPITAL / _spy_anchor if _spy_anchor else 1
-                    spy_norm  = spy_close_aligned * _spy_scale
 
-                    # Daily returns
+                    # Both series normalized to exactly $100k at inception close.
+                    # No overnight gaps, no pre-market adjustments — clean $100k start.
+                    _port_scale = PT_INITIAL_CAPITAL / hist_full.iloc[0] if hist_full.iloc[0] else 1
+                    port_norm   = hist_full * _port_scale
+
+                    _spy_scale = PT_INITIAL_CAPITAL / spy_close_aligned.iloc[0] if spy_close_aligned.iloc[0] else 1
+                    spy_norm   = spy_close_aligned * _spy_scale
+
+                    # Daily returns (inception day = 0.00% baseline for both)
                     port_ret = hist_full.pct_change().dropna() * 100
                     spy_ret  = spy_close_aligned.pct_change().dropna() * 100
                     common   = port_ret.index.intersection(spy_ret.index)
 
-                    # Summary
+                    # Summary totals from inception close to latest
                     port_total  = (hist_full.iloc[-1] / hist_full.iloc[0] - 1) * 100
                     spy_total   = (spy_close_aligned.iloc[-1] / spy_close_aligned.iloc[0] - 1) * 100
                     total_alpha = port_total - spy_total
@@ -1699,9 +1685,9 @@ def main():
                     for d in reversed(list(hist_full.index)):
                         pr = float(port_ret[d]) if d in port_ret.index else 0.0
                         sr = float(spy_ret[d])  if d in spy_ret.index  else 0.0
-                        if d == _inception_date:  # day-zero: both series start at $100k
+                        if d == _inception_date:  # baseline day — both start at $100k
                             pr, sr = 0.0, 0.0
-                        pv_d = float(hist_full[d])
+                        pv_d = float(port_norm[d])  # normalized dollar value (starts at $100k)
                         sv_d = float(spy_norm[d]) if d in spy_norm.index else 0.0
                         tbl_rows.append({
                             "Date"         : d.strftime("%Y-%m-%d"),
