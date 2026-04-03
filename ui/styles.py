@@ -123,6 +123,8 @@ PALETTE = {
     "multi_mom_port_low"    : "#0284c7",
     "multi_mom_carry"       : "#a3e635",   # lime
     "portable_carry"        : "#facc15",   # yellow
+    "dbmf"                  : "#06b6d4",   # cyan-500  — managed futures
+    "wtmf"                  : "#0e7490",   # cyan-700  — managed futures (conservative)
 }
 # LABELS maps the same keys to human-readable legend/table strings.
 LABELS = {

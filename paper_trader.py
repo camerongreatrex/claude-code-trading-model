@@ -1712,14 +1712,15 @@ def get_intraday_curve() -> tuple:
             # Build spy_curve anchored to the close-to-close baseline.
             # last bar = prev_pv × (1 + spy_pct_from_prev/100) guarantees
             # chart visual and outperforming/underperforming metric always agree.
-            gspc_last = float(gspc_today.iloc[-1])
-            if spy_pct_from_prev is not None and prev_pv_state > 0 and gspc_last > 0:
-                spy_target = (1 + spy_pct_from_prev / 100) * prev_pv_state
-                spy_curve  = gspc_today * (spy_target / gspc_last)
-            elif gspc_last > 0:
-                # Fallback when daily fetch fails: intraday-only (no overnight gap)
-                portfolio_open = float(result["close"].iloc[0]) if not result.empty else prev_pv_state
-                spy_curve = gspc_today / float(gspc_today.iloc[0]) * portfolio_open
+            if not gspc_today.empty:
+                gspc_last = float(gspc_today.iloc[-1])
+                if spy_pct_from_prev is not None and prev_pv_state > 0 and gspc_last > 0:
+                    spy_target = (1 + spy_pct_from_prev / 100) * prev_pv_state
+                    spy_curve  = gspc_today * (spy_target / gspc_last)
+                elif gspc_last > 0:
+                    # Fallback when daily fetch fails: intraday-only (no overnight gap)
+                    portfolio_open = float(result["close"].iloc[0]) if not result.empty else prev_pv_state
+                    spy_curve = gspc_today / float(gspc_today.iloc[0]) * portfolio_open
 
     return result, last_prices, spy_curve, spy_pct_from_prev
 

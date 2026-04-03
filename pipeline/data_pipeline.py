@@ -39,6 +39,13 @@ Phase 4 additions (EFA, VWO, HYG, TIP, DBC, UUP, VNQ):
   - UUP: USD dollar index — inverse to EM/commodities, distinct FX driver
   - VNQ: REITs — rental income driver distinct from XLU utility regulated revenue
 
+Phase 6 additions (DBMF, WTMF) — managed futures (structurally different return driver):
+  - CTA trend-following across commodities, rates, FX, equities — zero overlap with MA equity signals
+  - DBMF: bear_stress corr +0.102; $3.3B AUM; replicates top 20 CTA funds via Dynamic Beta Engine
+  - WTMF: bear_stress corr +0.138; more conservative; lower max DD (-13.2%); history from 2011
+  - Both classified "commodity" to get two-sided MA50/200 + commodity regime routing (correct for trend-followers)
+  - CTA (inception 2022) skipped until 2027 — insufficient walk-forward OOS windows
+
 Phase 5 additions (BWX, DBA, FXE, FXY) — verified stress diversifiers:
   - Selected after testing 8 candidates; 4 removed because bear_stress corr > 0.60
     (EWJ 0.854, EWZ 0.708, FXI 0.633, EMB 0.638 — false friends that co-move in crises)
@@ -154,6 +161,15 @@ TICKERS = {
                                # bear_stress corr 0.048 (near zero)
     "FXY" : "commodity",       # Yen/USD — safe-haven carry unwind; NEGATIVE corr to SPY in stress
                                # (-0.318 bear_stress) — genuine portfolio hedge
+
+    # --- Phase 6: Managed futures (structurally different return driver) ---
+    # CTA trend-following across commodities, rates, currencies, equities.
+    # Zero overlap with the existing MA-crossover equity signal — this is
+    # a fundamentally different strategy embedded as an asset allocation.
+    "DBMF": "commodity",       # iMGP DBi Managed Futures — replicates top 20 CTA hedge funds;
+                               # bear_stress corr +0.102; inception May 2019 (~7 years)
+    "WTMF": "commodity",       # WisdomTree Managed Futures — conservative CTA replication;
+                               # bear_stress corr +0.138; lower DD (-13.2%) than DBMF; full history from 2011
 }
 
 # Equity-like assets that can use momentum + mean reversion regime switching
@@ -328,6 +344,9 @@ def main():
         "DBA" : "Agriculture ETF — weather, crop supply; ~0.05 corr to S&P in all regimes",
         "FXE" : "Euro/USD — ECB/Fed divergence; bear_stress corr 0.048 (near zero)",
         "FXY" : "Yen/USD — carry unwind safe-haven; bear_stress corr −0.318 (negative hedge)",
+        # phase 6 managed futures additions
+        "DBMF": "iMGP DBi Managed Futures — replicates top 20 CTA hedge funds; bear_stress corr +0.102",
+        "WTMF": "WisdomTree Managed Futures — conservative CTA replication; bear_stress corr +0.138; lower DD",
     }
 
     for ticker in TICKER_LIST:

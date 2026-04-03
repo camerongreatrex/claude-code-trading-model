@@ -79,7 +79,7 @@ from paper_trader import (
     compute_live_portfolio_metrics, get_production_method, correct_history_baseline,
     STRATEGIES,
 )
-from pipeline.data_pipeline import ASSET_CLASS
+from pipeline.data_pipeline import ASSET_CLASS, TICKER_LIST
 from pipeline.signal_generation import RSI_ENTRY_THRESH, ATR_TRAILING_MULT, MIN_HOLD_DAYS
 from scheduler import check_kill_switch, ORDERS_FILE, KILL_SWITCH_DD
 from ui.styles import CSS, _layout, PALETTE, LABELS
@@ -188,20 +188,20 @@ def main():
     fred          = load_fred_features()
     n_assets      = len(ticker_curves) if ticker_curves else 20
 
-    # Header — resolve active paper-trading strategy for dynamic description
-    _hdr_state    = load_state()
-    _hdr_strat_k  = _hdr_state.get("strategy", "") if _hdr_state else ""
-    _hdr_strat_cfg = STRATEGIES.get(_hdr_strat_k, {})
-    _hdr_sig_col   = _hdr_strat_cfg.get("signal_col", "signal_multi")
-    _hdr_sig_desc  = _SIGNAL_DESCRIPTIONS.get(_hdr_sig_col, _hdr_sig_col)
-    _hdr_tilt      = _hdr_strat_cfg.get("mom_tilt", False)
-    _hdr_macro     = _hdr_strat_cfg.get("macro", False)
-    _hdr_extras    = []
-    if _hdr_tilt:  _hdr_extras.append("cross-sectional momentum tilt")
-    if _hdr_macro: _hdr_extras.append("macro VIX/yield-curve filter")
-    _hdr_extras_str = ("  ·  " + "  ·  ".join(_hdr_extras)) if _hdr_extras else ""
-    _hdr_live_strat = (
-        f"  ·  Live: <b>{_hdr_strat_k}</b>" if _hdr_strat_k else ""
+    # Header — resolve active paper-trading strategy for display
+    _hdr_state   = load_state()
+    _hdr_strat_k = _hdr_state.get("strategy", "") if _hdr_state else ""
+
+    # Look up OOS Sharpe for the live strategy
+    _hdr_oos_info = ""
+    if _hdr_strat_k and not oos_sel.empty and "method" in oos_sel.columns and "oos_sharpe" in oos_sel.columns:
+        _hdr_m = oos_sel[
+            oos_sel["method"].str.replace(" ", "_").str.replace("-", "_") == _hdr_strat_k
+        ]
+        if not _hdr_m.empty:
+            _hdr_oos_info = f" · OOS Sharpe: {float(_hdr_m['oos_sharpe'].iloc[0]):.3f}"
+    _hdr_strat_display = (
+        _hdr_strat_k.replace("_", " ").title() if _hdr_strat_k else "Not initialised"
     )
 
     col_h1, col_h2 = st.columns([3, 1])
@@ -209,12 +209,8 @@ def main():
         st.markdown("## 📈 Strategy Performance Dashboard")
         st.markdown(
             f"<span style='color:#666;font-size:.82rem'>"
-            f"Multi-asset systematic strategy · 2015–2025 · {n_assets} assets "
-            f"(incl. survivorship anchors GE/INTC/VZ) · "
-            f"Signal: {_hdr_sig_desc} · "
-            f"Two-sided bonds &amp; commodities"
-            f"{_hdr_extras_str}"
-            f"{_hdr_live_strat}"
+            f"Multi-asset systematic strategy · {len(TICKER_LIST)} assets · 2015–2025 · "
+            f"Live: <b>{_hdr_strat_display}</b>{_hdr_oos_info}"
             f"</span>",
             unsafe_allow_html=True,
         )
@@ -224,11 +220,19 @@ def main():
         return
 
     # ── Top metrics ──────────────────────────────────────────────────────────
-    # Production method selected by get_production_method() — single source of
-    # truth shared with paper_trader.py so every tab shows the same method.
-    _prod_method, _prod_label = get_production_method()
+    # Show the LIVE strategy's backtest metrics, not the "best" OOS method.
+    # The paper trader is running _hdr_strat_k — that's what you care about.
+    # Fallback to best OOS method only when no paper trading state exists.
+    if _hdr_strat_k and _hdr_strat_k in df_port.columns:
+        _prod_method = _hdr_strat_k
+        _prod_label  = get_label(_prod_method)
+    else:
+        _prod_method, _prod_label = get_production_method()
+    # Guard: method must exist in portfolio curves
+    if _prod_method not in df_port.columns:
+        _prod_method = "equal_weight"
+        _prod_label  = get_label(_prod_method)
     # Derive raw oos_selection method name for active-Sharpe lookup
-    # (oos_sel "method" column may use spaces; _prod_method uses underscores)
     _prod_oos_key = _prod_method
     if not oos_sel.empty and "method" in oos_sel.columns:
         _oos_match = oos_sel[
@@ -236,10 +240,6 @@ def main():
         ]
         if not _oos_match.empty:
             _prod_oos_key = _oos_match.iloc[0]["method"]
-    # Guard: method must exist in portfolio curves; fall back to equal_weight
-    if _prod_method not in df_port.columns:
-        _prod_method = "equal_weight"
-        _prod_label  = get_label(_prod_method)
 
     st.markdown(f'<div class="section-head">{_prod_label} vs buy &amp; hold</div>',
                 unsafe_allow_html=True)
@@ -1591,10 +1591,32 @@ def main():
                     hist_full = hist_full[_valid]
                     spy_close_aligned = spy_close_aligned[_valid]
 
-                    # Normalize both to $100k at inception
+                    # Force inception row to $100k (display only — history.csv unchanged).
+                    # The init-day PV reflects post-commission value using prior-day prices;
+                    # economically day-zero is always $100k.  All subsequent returns are
+                    # computed from this anchor, so pct_change() and port_norm are correct.
+                    if not hist_full.empty:
+                        hist_full = hist_full.copy()
+                        hist_full.iloc[0] = PT_INITIAL_CAPITAL
+
+                    if hist_full.empty or spy_close_aligned.empty:
+                        st.warning("No aligned portfolio/market data available for this period.")
+                        return
+
+                    # Normalize portfolio to $100k at inception (already forced above).
                     _port_scale = PT_INITIAL_CAPITAL / hist_full.iloc[0] if hist_full.iloc[0] else 1
-                    _spy_scale  = PT_INITIAL_CAPITAL / spy_close_aligned.iloc[0] if spy_close_aligned.iloc[0] else 1
                     port_norm = hist_full * _port_scale
+
+                    # Normalize SPY to the trading day BEFORE inception so the economic
+                    # baseline matches: the portfolio was priced at prev-day closes on
+                    # init-day, so SPY must anchor to that same prev-day close.
+                    _inception_date = hist_full.index[0]
+                    _spy_prev_dates = spy_closes[spy_closes.index < _inception_date]
+                    if not _spy_prev_dates.empty:
+                        _spy_anchor = float(_spy_prev_dates.iloc[-1])
+                    else:
+                        _spy_anchor = float(spy_close_aligned.iloc[0])  # fallback
+                    _spy_scale = PT_INITIAL_CAPITAL / _spy_anchor if _spy_anchor else 1
                     spy_norm  = spy_close_aligned * _spy_scale
 
                     # Daily returns
@@ -1677,6 +1699,8 @@ def main():
                     for d in reversed(list(hist_full.index)):
                         pr = float(port_ret[d]) if d in port_ret.index else 0.0
                         sr = float(spy_ret[d])  if d in spy_ret.index  else 0.0
+                        if d == _inception_date:  # day-zero: both series start at $100k
+                            pr, sr = 0.0, 0.0
                         pv_d = float(hist_full[d])
                         sv_d = float(spy_norm[d]) if d in spy_norm.index else 0.0
                         tbl_rows.append({
