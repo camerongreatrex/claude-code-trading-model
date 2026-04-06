@@ -49,7 +49,7 @@ from pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 from pipeline.feature_engineering import engineer
 from pipeline.signal_generation import generate, load_macro
 from pipeline.portfolio import atr_sizes, apply_macro_multiplier, CAPITAL, RISK_PER_TRADE, MAX_POSITION_PCT
-from pipeline.risk_model import estimate_covariance, risk_parity_weights, portfolio_risk
+from pipeline.risk_model import estimate_covariance, risk_parity_weights
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = float(CAPITAL)          # same as portfolio.py ($100k)
@@ -57,10 +57,21 @@ COMMISSION_PCT  = 0.0005                  # 0.05% per side — matches backtest
 ET_ZONE         = ZoneInfo("America/New_York")
 
 # ── Strategy configuration ────────────────────────────────────────────────────
-# Maps backtest method name → paper trading behaviour.
-#   signal_col : which generate() output column drives entry/exit
-#   sizing     : "atr" (risk-normalised) or "equal" (capital / n_longs)
+# Maps backtest method name → live paper trading behaviour.
+#
+#   signal_col : which generate() output column drives entry/exit signals
+#   sizing     : "atr" (ATR risk-normalised), "equal" (capital / n_longs),
+#                "rp" (risk-parity), "adaptive" / "adaptive_blend" (gross-exposure
+#                scaling), "portable" / "portable_carry" (alpha + beta hedge),
+#                "carry_blend" (momentum + carry curve slope)
 #   mom_tilt   : apply ±30% cross-sectional 63-day momentum tilt to sizing
+#   pca_scale  : scale positions by first-PC loading (correlation regime)
+#   dd_control : reduce exposure when portfolio drawdown exceeds threshold
+#   macro      : apply VIX-derived macro multiplier to sizing
+#
+# Live approximation note: "adaptive", "portable", and "carry_blend" sizing modes
+# use simplified live proxies. Full regime-conditional covariance and beta-hedge
+# computation require historical return fetches that are impractical at EOD.
 STRATEGIES = {
     # ── Regime-signal strategies ──────────────────────────────────────────────
     "equal_weight":         {"signal_col": "signal_regime", "sizing": "equal",  "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
@@ -77,36 +88,23 @@ STRATEGIES = {
     "multi_mom_tilt":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
     "multi_fast_atr":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     "multi_fast_mom_tilt":  {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    # Live approximation: ATR + mom tilt + macro (VIX scalar).  Full regime-
-    # conditional gross-exposure scaling and hedge cap require historical returns
-    # at runtime — not implemented for paper trading.
-    "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
-    # Average of adaptive + plain ATR+mom_tilt: approximates 50/50 blend offline.
-    "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend", "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
+    "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},   # live proxy: ATR + mom_tilt + macro
+    "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend", "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},   # live proxy: 50/50 adaptive + ATR+mom
     # ── Risk-parity strategies ────────────────────────────────────────────────
     "risk_parity":          {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     "rp_macro":             {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
-    # Note: rp_regime_aware live sizing uses standard RP + macro multiplier as
-    # approximation. Full regime-conditional covariance requires historical
-    # return fetch at runtime — not implemented for paper trading.
-    "rp_regime_aware":      {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
-    # rp_blend: 60% rp_regime_aware + 40% multi_mom_tilt. Live sizing uses
-    # ATR + mom_tilt + macro as approximation (see rp_regime_aware note above).
-    "rp_blend":             {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
+    "rp_regime_aware":      {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},           # live proxy: standard RP + macro multiplier
+    "rp_blend":             {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},           # backtest: 60% rp_regime_aware + 40% multi_mom_tilt
     "multi_rp":             {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     "multi_rp_mom":         {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    # ── Full-stack composite (all overlays) ───────────────────────────────────
+    # ── Full-stack composite (all overlays active) ────────────────────────────
     "multi_rp_full":        {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": True,  "pca_scale": True,  "dd_control": True,  "macro": True},
     "multi_atr_full":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": True,  "dd_control": True,  "macro": True},
-    # Portable alpha: live sizing uses multi_mom_tilt (beta hedge requires
-    # portfolio-level beta computation — not yet implemented for per-ticker live mode).
-    "multi_mom_portable":   {"signal_col": "signal_multi",  "sizing": "portable",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_mom_port_low":   {"signal_col": "signal_multi",  "sizing": "portable",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    # Carry blend: 75% momentum-tilt ATR + 25% carry (bond/commodity curve slope).
-    # Live: carry signal read from signal_carry column in generate() output.
-    "multi_mom_carry":      {"signal_col": "signal_multi",  "sizing": "carry_blend",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    # Portable + carry: stacks trend + carry alpha + beta hedge.
-    "portable_carry":       {"signal_col": "signal_multi",  "sizing": "portable_carry", "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    # ── Portable-alpha / carry strategies ────────────────────────────────────
+    "multi_mom_portable":   {"signal_col": "signal_multi",  "sizing": "portable",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},  # live proxy: multi_mom_tilt
+    "multi_mom_port_low":   {"signal_col": "signal_multi",  "sizing": "portable",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},  # live proxy: multi_mom_tilt (low beta)
+    "multi_mom_carry":      {"signal_col": "signal_multi",  "sizing": "carry_blend",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},  # 75% ATR + 25% carry curve slope
+    "portable_carry":       {"signal_col": "signal_multi",  "sizing": "portable_carry", "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},  # trend + carry alpha + beta hedge
 }
 
 # Portable-alpha strategies and their target betas for the live hedge
@@ -1712,15 +1710,22 @@ def get_intraday_curve() -> tuple:
             # Build spy_curve anchored to the close-to-close baseline.
             # last bar = prev_pv × (1 + spy_pct_from_prev/100) guarantees
             # chart visual and outperforming/underperforming metric always agree.
-            if not gspc_today.empty:
-                gspc_last = float(gspc_today.iloc[-1])
-                if spy_pct_from_prev is not None and prev_pv_state > 0 and gspc_last > 0:
-                    spy_target = (1 + spy_pct_from_prev / 100) * prev_pv_state
-                    spy_curve  = gspc_today * (spy_target / gspc_last)
-                elif gspc_last > 0:
-                    # Fallback when daily fetch fails: intraday-only (no overnight gap)
-                    portfolio_open = float(result["close"].iloc[0]) if not result.empty else prev_pv_state
-                    spy_curve = gspc_today / float(gspc_today.iloc[0]) * portfolio_open
+            # Guard with len() in addition to .empty — on market holidays the
+            # period="5d" fetch can return prior days' data that passes the
+            # .empty check but yields an empty result after today's date filter,
+            # causing an IndexError from iloc[-1] on some pandas builds.
+            if len(gspc_today) > 0:
+                try:
+                    gspc_last = float(gspc_today.iloc[-1])
+                    if spy_pct_from_prev is not None and prev_pv_state > 0 and gspc_last > 0:
+                        spy_target = (1 + spy_pct_from_prev / 100) * prev_pv_state
+                        spy_curve  = gspc_today * (spy_target / gspc_last)
+                    elif gspc_last > 0:
+                        # Fallback when daily fetch fails: intraday-only (no overnight gap)
+                        portfolio_open = float(result["close"].iloc[0]) if not result.empty else prev_pv_state
+                        spy_curve = gspc_today / float(gspc_today.iloc[0]) * portfolio_open
+                except (IndexError, TypeError, ValueError):
+                    pass  # market closed / holiday — spy_curve stays empty
 
     return result, last_prices, spy_curve, spy_pct_from_prev
 
@@ -1842,7 +1847,7 @@ def compute_live_portfolio_metrics() -> dict:
     today_unrealized_pct = (today_unrealized / prev_positions_val * 100
                             if prev_positions_val else 0.0)
 
-    # ── Realized P&L and fees ─────────────────────────────────────────────────
+    # ── Realized P&L and fees ────────────────────────────────────────────────
     all_realized   = 0.0
     today_realized = 0.0
     realized_gains = 0.0
@@ -1882,6 +1887,12 @@ def compute_live_portfolio_metrics() -> dict:
     else:
         spy_today_pct = 0.0
 
+    # ── Inception return: pv vs first history entry ───────────────────────────
+    _inception_pv = (float(history.sort_values("date").iloc[0]["portfolio_value"])
+                     if not history.empty else INITIAL_CAPITAL)
+    inception_ret_pct = (pv / _inception_pv - 1) * 100 if _inception_pv > 0 else 0.0
+    inception_ret_usd = pv - _inception_pv
+
     return dict(
         # Portfolio state
         pv             = pv,
@@ -1894,6 +1905,9 @@ def compute_live_portfolio_metrics() -> dict:
         daily_pnl_usd  = pv - prev_pv,
         daily_ret_pct  = daily_ret_pct,
         total_ret_pct  = (pv / INITIAL_CAPITAL - 1) * 100,
+        inception_pv          = _inception_pv,
+        inception_ret_pct     = inception_ret_pct,
+        inception_ret_usd     = inception_ret_usd,
         # Position metrics
         tot_invested   = tot_invested,
         tot_cur_val    = tot_cur_val,

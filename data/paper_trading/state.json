@@ -103,6 +103,10 @@
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
   "last_eod_date": "2026-04-03",
+<<<<<<< Updated upstream
   "portfolio_value": 101096.00982221008,
+=======
+  "portfolio_value": 101096.0098222101,
+>>>>>>> Stashed changes
   "strategy": "multi_mom_tilt"
 }

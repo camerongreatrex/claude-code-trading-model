@@ -82,7 +82,8 @@ from paper_trader import (
 from pipeline.data_pipeline import ASSET_CLASS, TICKER_LIST
 from pipeline.signal_generation import RSI_ENTRY_THRESH, ATR_TRAILING_MULT, MIN_HOLD_DAYS
 from scheduler import check_kill_switch, ORDERS_FILE, KILL_SWITCH_DD
-from ui.styles import CSS, _layout, PALETTE, LABELS
+from pipeline.backtester import profit_factor as _calc_profit_factor
+from ui.styles import CSS, _layout, PALETTE, LABELS, get_color, get_label
 from ui.charts import (
     metrics, metrics_table,
     chart_equity, chart_drawdown, chart_monte_carlo, chart_mc_histogram,
@@ -96,8 +97,6 @@ from ui.data_loaders import (
     run_monte_carlo,
     load_correlation_diagnostic, load_regime_correlation, load_dead_weight,
 )
-from ui.styles import get_color, get_label
-from pipeline.backtester import profit_factor as _calc_profit_factor
 
 # ── OOS method-selection thresholds ───────────────────────────────────────────
 # These three constants govern which backtest method is shown in the header
@@ -836,9 +835,6 @@ def main():
                 cash                 = _pm["cash"]
                 n_pos                = _pm["n_positions"]
                 prev_pv              = _pm["prev_pv"]
-                daily_ret            = _pm["daily_ret_pct"]
-                total_ret            = _pm["total_ret_pct"]
-                daily_pnl_usd        = _pm["daily_pnl_usd"]
                 tot_invested         = _pm["tot_invested"]
                 tot_cur_val          = _pm["tot_cur_val"]
                 tot_unreal           = _pm["tot_unreal"]
@@ -861,18 +857,30 @@ def main():
                 pt_history = load_history()
 
                 # ── GROUP 1: Portfolio Overview ───────────────────────────────
+                # Two return bases exist because the history starts March 23 but capital
+                # was deployed March 20. inception_ret_pct is vs March 23 (matches vs-S&P).
+                # Capital Flow uses $100k cost basis (where the math is exact).
+                _incep_ret_pct = _pm.get("inception_ret_pct", _pm["total_ret_pct"])
+                _incep_ret_usd = _pm.get("inception_ret_usd", pv - PT_INITIAL_CAPITAL)
+                _cap_ret_pct   = _pm["total_ret_pct"]          # vs $100k deployed
+                _cap_ret_usd   = pv - PT_INITIAL_CAPITAL
                 st.markdown('<div class="section-head">Portfolio Overview</div>', unsafe_allow_html=True)
                 pm1, pm2, pm3, pm4, pm5, pm6 = st.columns(6)
                 with pm1:
                     st.metric("Portfolio Value", f"${pv:,.0f}",
-                              help="Live value: cash + all open positions marked to last 5-min bar.")
+                              help="Live value: cash + market value of all open positions.")
                 with pm2:
-                    _total_pnl = pv - PT_INITIAL_CAPITAL
-                    st.metric("Total Return", f"{total_ret:+.2f}% (${_total_pnl:+,.0f})",
-                              help="Overall % return vs $100k starting capital since inception.")
+                    st.metric("Total Return", f"{_incep_ret_pct:+.2f}% (${_incep_ret_usd:+,.0f})",
+                              help=f"Return on your $100k deployed capital (March 20): "
+                                   f"{_cap_ret_pct:+.2f}% (${_cap_ret_usd:+,.0f}). "
+                                   f"Reconciles with Capital Flow below: "
+                                   f"Realized + Unrealized − Entry Fees = "
+                                   f"${realized_gains + realized_losses + tot_unreal - buy_fees:+,.0f}. "
+                                   f"(Since March 23 inception: {_incep_ret_pct:+.2f}% — "
+                                   f"higher because March 20 was a down day at entry.)")
                 with pm3:
                     st.metric("Realized P&L", f"${all_realized:+,.0f}",
-                              help="Locked-in profit/loss from closed trades only.")
+                              help="Locked-in P&L from all closed trades, net of sell commissions.")
                 with pm4:
                     st.metric("Cash", f"${cash:,.0f}",
                               help="Uninvested cash after all trades and commissions.")
@@ -900,25 +908,52 @@ def main():
                         help="P&L from positions actually closed today. Zero if no trades were executed today.",
                     )
 
-                # ── GROUP 2b: Capital Flow (where did the money go?) ────────
-                st.markdown('<div class="section-head">Capital Flow</div>',
+                # ── GROUP 2b: Capital Flow ────────────────────────────────────
+                # Identity: $100k + Realized P&L + Unrealized P&L − Entry Fees = Portfolio Value
+                # (cost basis is March 20 buy prices → this always reconciles exactly)
+                _cf_check = (PT_INITIAL_CAPITAL + realized_gains + realized_losses
+                             + tot_unreal - buy_fees)
+                st.markdown('<div class="section-head">Capital Flow (from $100k deployed)</div>',
                             unsafe_allow_html=True)
-                wf1, wf2, wf3, wf4 = st.columns(4)
+                wf1, wf2, wf3, wf4, wf5 = st.columns(5)
                 with wf1:
-                    st.metric("Starting Capital", f"${PT_INITIAL_CAPITAL:,.0f}")
+                    st.metric("Capital Deployed", f"${PT_INITIAL_CAPITAL:,.0f}",
+                              help="$100k deployed on March 20 (cost basis date). "
+                                   "All P&L figures below measure from this base.")
                 with wf2:
                     st.metric("Realized Gains", f"${realized_gains:+,.0f}",
                               delta_color="normal",
-                              help="Sum of positive P&L from closed trades.")
+                              help="Sum of positive P&L from closed trades, net of sell commissions.")
                 with wf3:
                     st.metric("Realized Losses", f"${realized_losses:+,.0f}",
                               delta_color="normal",
-                              help="Sum of negative P&L from closed trades.")
+                              help="Sum of negative P&L from closed trades, net of sell commissions.")
                 with wf4:
                     st.metric("Unrealized P&L", f"${tot_unreal:+,.0f}",
-                              help="Open position value minus cost basis.")
+                              help="Open positions: current market value minus original cost basis.")
+                with wf5:
+                    st.metric("Entry Fees", f"-${buy_fees:,.2f}",
+                              help="Buy-side commissions (0.05% per entry). Shown negative — paid from cash. "
+                                   "Sell commissions are already deducted inside Realized P&L. "
+                                   f"Check: ${PT_INITIAL_CAPITAL:,.0f} "
+                                   f"{realized_gains:+,.0f} {realized_losses:+,.0f} "
+                                   f"{tot_unreal:+,.0f} − ${buy_fees:,.2f} = ${_cf_check:,.0f}")
 
                 # ── Equity chart ──────────────────────────────────────────────
+                # Normalize history + intraday to start at $100k at inception
+                # (same baseline as the vs-S&P chart). Candle shapes unchanged —
+                # only the y-axis shifts. Metrics below stay in real dollars.
+                _chart_scale = 1.0
+                if not pt_history.empty:
+                    _first_pv = float(pt_history.iloc[0]["portfolio_value"])
+                    if _first_pv > 0:
+                        _chart_scale = PT_INITIAL_CAPITAL / _first_pv
+                _pt_hist_norm = pt_history.copy()
+                if _chart_scale != 1.0 and not _pt_hist_norm.empty:
+                    _pt_hist_norm = _pt_hist_norm.assign(
+                        portfolio_value=(_pt_hist_norm["portfolio_value"] * _chart_scale).round(2)
+                    )
+
                 # Timeframe selector — resample 5-min candles to user choice
                 _tf_options = {"5m": "5T", "15m": "15T", "1H": "1h", "4H": "4h"}
                 _tf = st.radio("Timeframe", list(_tf_options.keys()),
@@ -929,10 +964,15 @@ def main():
                     _chart_intra = intraday_df.resample(_rule).agg({
                         "open": "first", "high": "max", "low": "min", "close": "last"
                     }).dropna()
+                if _chart_scale != 1.0 and not _chart_intra.empty:
+                    _chart_intra = _chart_intra.copy()
+                    for _c in ["open", "high", "low", "close"]:
+                        if _c in _chart_intra.columns:
+                            _chart_intra[_c] = (_chart_intra[_c] * _chart_scale).round(2)
 
                 st.plotly_chart(
-                    chart_paper_portfolio(pt_history, _chart_intra, pt_trades,
-                                          now=now, entry_value=prev_pv),
+                    chart_paper_portfolio(_pt_hist_norm, _chart_intra, pt_trades,
+                                          now=now, entry_value=round(prev_pv * _chart_scale, 2)),
                     theme=None, use_container_width=True,
                     config={
                         "scrollZoom": True,
@@ -1436,16 +1476,12 @@ def main():
                 st.info("Paper trading not initialised. Run `python paper_trader.py init` first.")
                 return
 
-            now_et        = _pm_sp["now"]
-            pv            = _pm_sp["pv"]
-            prev_pv       = _pm_sp["prev_pv"]
-            cash          = _pm_sp["cash"]
+            now_et         = _pm_sp["now"]
+            pv             = _pm_sp["pv"]
             port_today_pct = _pm_sp["daily_ret_pct"]
             spy_today_pct  = _pm_sp["spy_today_pct"]
             alpha_today    = _pm_sp["alpha_today"]
             spy_intraday   = _pm_sp["spy_curve"]
-            spy_pct_from_prev = _pm_sp["spy_pct_from_prev"]
-            beating        = alpha_today > 0
 
             pt_history = load_history()  # needed for historical alpha / comparison charts
 
@@ -1460,15 +1496,10 @@ def main():
             st.markdown('<div class="section-head">Overall vs S&P 500</div>',
                         unsafe_allow_html=True)
 
-            alpha_today = port_today_pct - spy_today_pct
-            beating     = alpha_today > 0
-
             c1, c2, c3, c4 = st.columns(4)
-            # Portfolio Today: higher is better → delta_color="normal" (default green for positive)
             with c1:
                 st.metric("Portfolio Today", f"{port_today_pct:+.2f}%",
                           help="Portfolio's intraday % change vs yesterday's close.")
-            # S&P 500 Today: informational, no delta colouring needed
             with c2:
                 _spy_help = (
                     "^GSPC (S&P 500 index) % change from yesterday's close — "
@@ -1482,7 +1513,7 @@ def main():
                           help="Portfolio return minus S&P return today. Positive = beating the index.")
             with c4:
                 st.metric("Portfolio Value", f"${pv:,.0f}",
-                          help="Live portfolio value (positions × latest 5-min bar + cash).")
+                          help="Live portfolio value (cash + open position market value).")
 
             # Daily alpha bar chart — all trading days including today
             _alpha_chart_shown = False

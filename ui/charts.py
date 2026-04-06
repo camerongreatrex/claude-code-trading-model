@@ -794,6 +794,11 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
     # ── Historical daily candlesticks (for dates NOT covered by intraday) ───
     if not history_df.empty:
         history_df = history_df.copy()
+        # Drop market-holiday rows where portfolio value didn't change (e.g. Good Friday).
+        # shift(1) is NaN for the first row so it is always kept.
+        history_df = history_df[
+            history_df["portfolio_value"].ne(history_df["portfolio_value"].shift(1))
+        ].reset_index(drop=True)
         history_df["_ds"] = history_df["date"].dt.strftime('%Y-%m-%d')
         history_df = history_df[~history_df["_ds"].isin(_intra_dates)]
         if not history_df.empty:

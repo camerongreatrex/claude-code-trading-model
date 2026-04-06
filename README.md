@@ -1,37 +1,55 @@
 # Algorithmic Trading System
 
-A systematic multi-asset strategy trading 37 tickers across equities, bonds, commodities, and sector ETFs. Uses a multi-signal approach combining MA crossover (golden cross), momentum breakout (Donchian), and dip-buy filters, with two-sided signals for bonds and commodities, ATR position sizing, and cross-sectional momentum tilt. Walk-forward validated out-of-sample with best OOS Sharpe of 1.156 (Multi Mom Tilt). Fully automated: the scheduler runs the daily pipeline at market close, catches up missed days when your PC restarts, and a Streamlit dashboard shows live portfolio, signal state, and alpha decomposition analytics.
+A systematic multi-asset paper trading system running against 37 tickers across equities, bonds, commodities, and sector ETFs. Uses a multi-signal approach (MA crossover, Donchian breakout, dip-buy filter) with ATR position sizing, cross-sectional momentum tilt, and macro regime filtering. Walk-forward validated out-of-sample — best OOS Sharpe 1.156 (Multi Mom Tilt). Fully automated end-of-day execution via scheduler or GitHub Actions, with a live Streamlit dashboard for portfolio monitoring, signal inspection, and alpha analytics.
+
+---
+
+## Contents
+
+1. [Quick Start](#quick-start)
+2. [Daily Operation](#daily-operation)
+3. [Paper Portfolio](#paper-portfolio)
+4. [Pipeline Commands](#pipeline-commands)
+5. [Architecture](#architecture)
+6. [Strategy Details](#strategy-details)
+7. [Key Results](#key-results)
+8. [Diagnostic Tools](#diagnostic-tools)
+9. [GitHub Actions](#github-actions)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Quick Start
 
-**1. Clone and install dependencies**
+**1. Clone and install**
 ```bash
-git clone <repo-url> && cd Algorithmic-Trading-2
+git clone https://github.com/camerongreatrex/Algorithmic-Trading-Model.git
+cd Algorithmic-Trading-2
 pip install -r requirements.txt
 ```
 
-**2. Run the full pipeline once** (downloads data, engineers features, generates signals, runs backtests — takes ~5–10 min)
+> **Note:** `data/macro/macro_features.parquet` is gitignored. The first pipeline run downloads it automatically (~30 sec). Without it, the VIX gate and macro sizing multiplier are inactive — the core signals still work.
+
+**2. Run the full pipeline** — downloads data, engineers features, generates signals, runs backtests (~5–10 min on first run)
 ```bash
 python run.py
 ```
 
-**3. Initialize the paper portfolio** (enters all current LONG signals at today's prices)
+**3. Initialize the paper portfolio** — enters all current LONG signals at today's closing prices
 ```bash
 python paper_trader.py init
 ```
 
-**4. Start the scheduler** (leave this terminal open — it runs the daily EOD update automatically)
+**4. Start the scheduler** in one terminal (leave it running)
 ```bash
 python scheduler.py
 ```
 
-**5. Open the dashboard** (in a second terminal)
+**5. Open the dashboard** in a second terminal
 ```bash
 streamlit run dashboard.py
 ```
-Opens at http://localhost:8501.
+Opens at `http://localhost:8501`.
 
 ---
 
@@ -39,137 +57,238 @@ Opens at http://localhost:8501.
 
 **Do nothing.** The scheduler handles everything automatically:
 
-- It sleeps in a loop, checking the clock every 30 seconds.
-- At **4:45 PM ET** on weekdays it fetches live prices, evaluates signals, executes paper trades, and saves the updated portfolio state.
-- A heartbeat prints to the terminal every 30 minutes so you can verify it's alive.
+- Sleeps in a loop, checking the clock every 30 seconds
+- At **4:45 PM ET** on weekdays: fetches live prices, evaluates signals, executes paper trades, saves state
+- Heartbeat printed to terminal every 30 minutes to confirm it's alive
+- **Missed days are caught up automatically** on scheduler startup and on dashboard load
 
 ### Two terminals
 
 | Terminal | Command | Purpose |
 |---|---|---|
-| 1 | `python scheduler.py` | Runs the EOD pipeline on schedule. Leave it running. |
-| 2 | `streamlit run dashboard.py` | Live dashboard with charts, positions, signals. |
+| 1 | `python scheduler.py` | EOD pipeline on schedule. Leave running. |
+| 2 | `streamlit run dashboard.py` | Live dashboard — charts, positions, signals. |
 
-### What happens when you close your laptop and reopen it
+### Catch-up on restart
 
-The catch-up system detects missed trading days automatically:
+When you reopen your laptop after time off:
 
-1. On scheduler startup, `catchup()` compares `last_eod_date` in `state.json` against today (ET).
-2. Any weekdays strictly between the last processed date and today are replayed in order using historical yfinance data.
-3. The current day is **not** replayed — it hasn't closed yet. The normal 4:45 PM run handles it.
-4. The dashboard also calls `catchup()` on first load (cached for 1 hour) so charts are up-to-date even if the scheduler hasn't started yet.
+1. Scheduler starts → `catchup()` compares `last_eod_date` in `state.json` against today (ET)
+2. Any weekdays strictly between the last processed date and today are replayed using yfinance historical data
+3. Today is **not** replayed until 4:45 PM (market hasn't closed yet)
+4. Dashboard also runs `catchup()` on first load (cached 1 hour)
 
-**Example**: PC off Thursday through Sunday → Monday 9 AM startup → catch-up replays Thursday and Friday → scheduler waits for Monday's 4:45 PM close.
+**Example:** PC off Thursday night through Sunday → Monday 9 AM → catch-up replays Friday → scheduler waits for Monday's 4:45 PM close.
 
 ---
 
-## GitHub Actions Backup
+## Paper Portfolio
+
+### Start fresh
+
+```bash
+rm data/paper_trading/state.json
+rm data/paper_trading/history.csv
+rm data/paper_trading/trades.csv
+python paper_trader.py init
+python scheduler.py
+```
+
+### State files
+
+| File | Contents |
+|---|---|
+| `data/paper_trading/state.json` | Cash balance, open positions (shares, cost basis, last close), last EOD date |
+| `data/paper_trading/trades.csv` | Append-only trade log — every BUY and SELL with price, value, commission, P&L |
+| `data/paper_trading/history.csv` | Daily snapshot: date, portfolio value, cash, invested, n_positions, daily return |
+| `data/paper_trading/orders_tomorrow.json` | Next-day expected orders (generated by scheduler for review) |
+
+### P&L accounting
+
+All dollar figures on the dashboard derive from these three files. The accounting identity is:
+
+```
+Portfolio Value = $100k initial capital
+               + Realized Gains (from closed trades, net of sell commissions)
+               + Realized Losses (from closed trades, net of sell commissions)
+               + Unrealized P&L (open positions: market value − cost basis)
+               − Entry Fees (buy-side commissions, 0.05% per entry)
+```
+
+- **Total Return %** is measured from the **first history entry** (inception date) — consistent with the vs-S&P tab
+- **Capital Flow** metrics use the original $100k cost basis and always add up to Portfolio Value
+- Sell commissions are embedded inside Realized P&L (deducted from net proceeds before P&L is computed)
+
+### Manual operations
+
+```bash
+# Check current status
+python paper_trader.py status
+
+# Force an EOD update for today (if scheduler missed it)
+python paper_trader.py eod
+
+# Switch active strategy (takes effect next EOD)
+python paper_trader.py set_strategy multi_mom_tilt
+```
+
+---
+
+## Pipeline Commands
+
+| Command | What it does | Time |
+|---|---|---|
+| `python run.py` | Full rebuild: download → features → research → macro → signals → backtest → portfolio | ~5–10 min |
+| `python run.py signals` | Skip data download, re-run from feature engineering onward | ~2–3 min |
+| `python run.py backtest` | Re-run backtester + portfolio only | ~30 sec |
+| `python run.py portfolio` | Portfolio sizing stage only | seconds |
+| `python run.py macro` | Re-run from macro features onward | ~1 min |
+
+---
+
+## Architecture
+
+### Data flow
+
+```
+data_pipeline → feature_engineering → macro_features → signal_generation → backtester → portfolio
+                                                                               ↓
+                                                                        paper_trader (live)
+```
+
+### Module reference
+
+| Module | Purpose |
+|---|---|
+| `pipeline/data_pipeline.py` | Downloads and cleans OHLCV data from yfinance for all tickers |
+| `pipeline/feature_engineering.py` | Computes technical indicators: ATR, RSI, MACD, ADX, Bollinger, OBV, etc. |
+| `pipeline/macro_features.py` | Fetches VIX and yield curve for macro regime filtering |
+| `pipeline/signal_generation.py` | Multi-signal generation (MA crossover, Donchian, dip-buy) with asset-class routing |
+| `pipeline/backtester.py` | Full historical backtests with transaction costs (0.05% per side) |
+| `pipeline/portfolio.py` | ATR + PCA + macro position sizing; walk-forward OOS validation |
+| `pipeline/risk_model.py` | PCA risk decomposition, risk-parity weights, covariance estimation |
+| `pipeline/carry_signal.py` | Bond and commodity carry signals from yield/futures curve slope |
+| `pipeline/fred_features.py` | Macro factor engineering from FRED data (credit spreads, yield curve, etc.) |
+| `pipeline/feature_research.py` | Information coefficient (IC) analysis for feature selection |
+| `pipeline/sensitivity.py` | MA window parameter sensitivity sweeps |
+| `pipeline/regime_analysis.py` | Macro regime classification and conditional performance statistics |
+| `pipeline/correlation_diagnostic.py` | Signal correlation analysis, dead-weight scoring, regime correlation tables |
+| `pipeline/capture_diagnostic.py` | Up/down capture ratio analysis across strategies and regimes |
+| `pipeline/integrity_audit.py` | Data quality checks: gaps, stale prices, feature NaNs |
+| `paper_trader.py` | Live paper trading engine: position sizing, buy/sell execution, catch-up replay |
+| `scheduler.py` | Automated 4:45 PM ET daily runner with kill switch and next-day order preview |
+| `live_signals.py` | Real-time signal computation from yfinance for the intraday dashboard |
+| `dashboard.py` | Streamlit dashboard: equity curves, positions, signals, Monte Carlo, vs-S&P |
+| `run.py` | Pipeline orchestrator — runs each stage as a subprocess in sequence |
+| `ui/styles.py` | CSS, colour palette, strategy display labels |
+| `ui/charts.py` | All Plotly chart builders used by the dashboard |
+| `ui/data_loaders.py` | Cached data loaders for the dashboard |
+
+---
+
+## Strategy Details
+
+### Universe (37 tickers)
+
+| Category | Tickers |
+|---|---|
+| Broad equity | SPY, IWM, EEM, EFA, VWO, EWZ, EWJ, FXI, CCJ |
+| Bonds | TLT, HYG, TIP, BWX, EMB |
+| Commodities / FX | GLD, DBC, UUP, DBA, FXE, FXY |
+| Sector ETFs | XLE, XLU, XLF, VNQ, XLC, XLI, XLK, XLP, XLV |
+| Individual stocks | JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA, AAPL |
+| Survivorship anchors | GE, INTC, VZ |
+
+### Signal logic
+
+- **Entry signal**: MA50 > MA200 (golden cross) for equities; MA100/300 for sectors; Donchian 20-day breakout + dip-buy confirmation
+- **Direction**: Long-only for equities and sectors; two-sided (±1) for bonds and commodities — paper trading keeps flat on short signals
+- **Entry filter**: RSI-14 < 70 (skip overbought)
+- **Exit**: 3× ATR trailing stop, tightening after profit target hit; or death cross (MA50 < MA200)
+- **Min hold**: 5 trading days (prevents whipsaw on noisy signals)
+
+### Sizing overlays (applied in order)
+
+1. **ATR base size**: `dollar_risk = portfolio_value × RISK_PER_TRADE` → `shares = dollar_risk / ATR`
+2. **Momentum tilt** (if enabled): ±30% tilt towards highest 63-day cross-sectional momentum rank
+3. **PCA scale** (if enabled): scale by first-PC loading to reduce correlated exposure
+4. **Drawdown control** (if enabled): reduce gross exposure proportionally when drawdown > threshold
+5. **Macro multiplier** (if enabled): VIX z-score > 2.5 blocks entries; inverted yield curve reduces sizing
+
+### Strategy modes
+
+The paper trader supports 28 strategy configurations. The active strategy is auto-selected from walk-forward OOS results (highest OOS Sharpe with IS→OOS gap < 0.50). Current default: `multi_mom_tilt`.
+
+---
+
+## Key Results (Out-of-Sample Walk-Forward, 2015–2025)
+
+| Method | OOS Sharpe | OOS Active Sharpe | IS Sharpe | Max DD |
+|---|---|---|---|---|
+| **Multi Mom Tilt ★** | **1.156** | **0.789** | 1.187 | −17.2% |
+| Multi Equal Weight | 1.147 | 0.798 | 1.165 | −16.8% |
+| Multi Fast ATR | 1.137 | 0.800 | 1.167 | −16.5% |
+| Equal Weight | 1.126 | 0.768 | 1.152 | −17.9% |
+| Buy & Hold (benchmark) | ~0.65 | — | ~0.65 | −33.3% |
+
+Walk-forward: 3-year train / 1-year test rolling windows. All Sharpe ratios are out-of-sample (never seen during optimisation). Best method: **Multi Mom Tilt** — highest OOS Sharpe (1.156) with minimal IS→OOS degradation.
+
+---
+
+## Diagnostic Tools
+
+These scripts run standalone (`python pipeline/<script>.py`) and produce charts/tables for deeper analysis. They do not affect live trading.
+
+| Script | Purpose |
+|---|---|
+| `pipeline/sensitivity.py` | Parameter sensitivity: sweeps MA windows (10–300) to map the Sharpe surface |
+| `pipeline/regime_analysis.py` | Classifies macro regimes (expansion/contraction/crisis) and shows conditional Sharpe per regime |
+| `pipeline/correlation_diagnostic.py` | Pairwise signal correlation heatmaps, dead-weight ticker scoring |
+| `pipeline/capture_diagnostic.py` | Up-market and down-market capture ratios vs S&P 500 |
+| `pipeline/integrity_audit.py` | Data quality audit: price gaps, stale bars, NaN counts in features |
+
+---
+
+## GitHub Actions
 
 The workflow `.github/workflows/eod.yml` runs the EOD update on GitHub's servers as a backup when your PC is off.
 
 ### How it works
 
-- Two cron schedules (20:45 and 21:45 UTC) ensure it fires at ~4:45 PM ET regardless of daylight saving time.
-- It runs `catchup()` then `end_of_day_update()` from a clean checkout.
-- Updated `state.json`, `history.csv`, and `trades.csv` are committed and pushed back to the repo.
-- A duplicate-day guard prevents double processing if both cron times fire on the same day.
+- Two cron schedules (20:45 and 21:45 UTC) cover both standard time and daylight saving
+- Runs `catchup()` then `end_of_day_update()` from a clean checkout
+- Commits updated `state.json`, `history.csv`, and `trades.csv` back to the repo
+- Duplicate-day guard prevents double processing if both cron times fire on the same day
 
 ### How to enable
 
-Just push to GitHub — the workflow runs on schedule automatically. No secrets or API keys needed (yfinance is free).
+Push to GitHub — the workflow runs on schedule automatically. No secrets or API keys needed (yfinance is free).
 
-### How to verify it ran
+### Limitation
 
-Check the **Actions** tab in your GitHub repo. Each run shows logs with the tickers processed and portfolio value.
-
-### Limitations
-
-- `data/macro/macro_features.parquet` is gitignored, so the VIX gate and macro multiplier are inactive in the GH Actions run. The core MA-crossover signal still works correctly.
-- If a `git push` fails due to a merge conflict (you pushed at the same time), the Actions run will fail visibly in the Actions tab. Re-run manually or let the next day's run pick it up.
+`data/macro/macro_features.parquet` is gitignored, so the VIX gate and macro multiplier are inactive in GH Actions runs. The core signal (MA crossover) runs correctly. Re-run `python run.py macro` locally after any macro data refresh.
 
 ---
 
-## Reset the Paper Portfolio
+## Troubleshooting
 
-**1.** Delete the state and history files:
-```bash
-rm data/paper_trading/state.json
-rm data/paper_trading/history.csv
-rm data/paper_trading/trades.csv
-```
+### Dashboard shows "Paper trading not yet initialised"
+Run `python paper_trader.py init` to create the initial portfolio state.
 
-**2.** Re-initialize (enters all current LONG signals):
-```bash
-python paper_trader.py init
-```
+### Catch-up replays wrong prices
+Catch-up uses yfinance adjusted closes for historical dates. If yfinance has a bad day, re-run: `python paper_trader.py eod` for today, or delete `data/paper_trading/history.csv` rows for the bad date and re-run.
 
-**3.** Start the scheduler:
-```bash
-python scheduler.py
-```
+### Portfolio value and P&L don't add up
+The accounting identity: `Portfolio Value = $100k + Realized Gains + Realized Losses + Unrealized P&L − Entry Fees`. If numbers still seem off, the likely cause is a stale `state.json` cache in Streamlit — hard-refresh the browser or restart the dashboard.
 
-The scheduler will process the next EOD at 4:45 PM ET. The dashboard picks up the new state automatically.
+### Strategy not updating after `set_strategy`
+The new strategy takes effect on the **next** EOD run. It will not retroactively change open positions.
 
----
+### yfinance rate-limiting / empty data
+yfinance free tier occasionally returns empty data. The system logs warnings and falls back to last known prices. If it persists, wait a few minutes and retry.
 
-## Pipeline Shortcuts
+### `data/macro/macro_features.parquet` missing
+Run `python run.py macro` to regenerate it. This is normal on a fresh clone or after gitignore clears it.
 
-| Command | What it does |
-|---|---|
-| `python run.py` | Full rebuild: download → features → research → macro → signals → backtest → portfolio (~5–10 min) |
-| `python run.py signals` | Skip data download, re-run from feature engineering onward |
-| `python run.py backtest` | Re-run backtester + portfolio only (seconds) |
-| `python run.py portfolio` | Run portfolio stage only (seconds) |
-| `python run.py macro` | Re-run from macro features onward |
-
----
-
-## Architecture Overview
-
-| Module | Purpose |
-|---|---|
-| `pipeline/data_pipeline.py` | Downloads and cleans OHLCV data from yfinance for 37 tickers |
-| `pipeline/feature_engineering.py` | Computes technical features (ATR, RSI, MACD, ADX, Bollinger, OBV, etc.) |
-| `pipeline/feature_research.py` | Calculates information coefficients (IC) for feature selection |
-| `pipeline/macro_features.py` | Fetches VIX and yield curve data for macro regime filtering |
-| `pipeline/signal_generation.py` | Generates MA-crossover signals with asset-class routing and post-processors |
-| `pipeline/backtester.py` | Runs full historical backtests with transaction costs |
-| `pipeline/portfolio.py` | ATR + PCA + macro position sizing, walk-forward OOS selection |
-| `pipeline/risk_model.py` | PCA-based risk decomposition and correlation analysis |
-| `pipeline/sensitivity.py` | Parameter sensitivity sweeps for MA crossover windows |
-| `pipeline/regime_analysis.py` | Macro regime classification and conditional performance stats |
-| `pipeline/correlation_diagnostic.py` | Signal correlation analysis, dead-weight scoring, regime correlation tables |
-| `paper_trader.py` | Live paper trading execution engine (buy/sell/catch-up) |
-| `scheduler.py` | Automated 4:45 PM ET daily runner with kill switch and order sheet |
-| `live_signals.py` | Real-time signal computation from yfinance for the dashboard |
-| `dashboard.py` | Streamlit dashboard: equity curves, Monte Carlo, live signals, paper trading |
-| `run.py` | Pipeline orchestrator — runs each stage as a subprocess in sequence |
-
----
-
-## Strategy Summary
-
-- **Universe**: 37 tickers — broad equity (SPY, IWM, EEM, EFA, VWO, EWZ, EWJ, FXI, CCJ), bonds (TLT, HYG, TIP, BWX, EMB), commodities (GLD, DBC, UUP, DBA, FXE, FXY), sectors (XLE, XLU, XLF, VNQ, XLC, XLI, XLK, XLP, XLV), stocks (JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA, AAPL), survivorship anchors (GE, INTC, VZ)
-- **Multi-signal**: MA crossover (golden cross MA50/200, MA100/300 for sectors) + Donchian momentum breakout (20-day high) + dip-buy filter
-- **Two-sided**: bonds and commodities receive short (−1) signals as well as long (+1); paper trading execution keeps bonds/commodities flat on short signals
-- **Cross-sectional momentum tilt**: position weights tilted towards highest 63-day momentum rank
-- **Position sizing**: ATR-normalized (risk per trade / ATR × price), capped at max position %
-- **Entry filter**: RSI-14 < 70 (skip overbought entries)
-- **Exit**: 3× ATR trailing stop with tightening after profit target, or death cross
-- **Min hold**: 5 trading days to prevent whipsaw
-- **Macro overlay**: VIX z-score > 2.5 blocks all signals; inverted yield curve reduces sizing
-- **Validation**: 3-year train / 1-year test rolling walk-forward
-
----
-
-## Key Results (Out-of-Sample Walk-Forward)
-
-| Method | OOS Sharpe | OOS Active Sharpe | IS Sharpe |
-|---|---|---|---|
-| **Multi Mom Tilt ★** | **1.156** | **0.789** | 1.187 |
-| Multi Equal Weight | 1.147 | 0.798 | 1.165 |
-| Multi Fast ATR | 1.137 | 0.800 | 1.167 |
-| Equal Weight | 1.126 | 0.768 | 1.152 |
-| Buy & Hold (benchmark) | ~0.65 | — | ~0.65 |
-
-Best method: **Multi Mom Tilt** — highest OOS Sharpe (1.156) with minimal IS→OOS degradation (IS: 1.187). All results are out-of-sample (walk-forward validated, not curve-fit).
+### GitHub Actions run failed
+Check the **Actions** tab in GitHub for the error. Most common cause: `git push` conflict (you pushed locally at the same time). Re-run the workflow manually from the Actions tab.
