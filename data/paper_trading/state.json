@@ -6,103 +6,103 @@
       "entry_price": 247.6300048828125,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 251.2899932861328
+      "last_close": 252.36000061035156
     },
     "EEM": {
       "shares": 80.1639657180141,
       "entry_price": 57.619998931884766,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 56.59000015258789
+      "last_close": 57.11000061035156
     },
     "VWO": {
       "shares": 85.52208410652838,
       "entry_price": 54.0099983215332,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 53.81999969482422
+      "last_close": 54.0099983215332
     },
     "GLD": {
       "shares": 10.83240913528799,
       "entry_price": 426.4100036621094,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 429.4100036621094
+      "last_close": 427.6499938964844
     },
     "UUP": {
       "shares": 167.478159239492,
       "entry_price": 27.579999923706055,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 27.860000610351562
+      "last_close": 27.829999923706055
     },
     "JNJ": {
       "shares": 19.440435607713034,
       "entry_price": 237.60000610351562,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 243.0399932861328
+      "last_close": 240.97000122070312
     },
     "XOM": {
       "shares": 29.204903338998918,
       "entry_price": 158.16000366210938,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 160.69000244140625
+      "last_close": 163.3699951171875
     },
     "NEE": {
       "shares": 49.98428131154328,
       "entry_price": 92.41000366210938,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 93.1500015258789
+      "last_close": 92.7300033569336
     },
     "GS": {
       "shares": 5.706050177946411,
       "entry_price": 809.5,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 863.0399780273438
+      "last_close": 866.0499877929688
     },
     "COST": {
       "shares": 4.73855380724143,
       "entry_price": 974.780029296875,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 1014.9600219726562
+      "last_close": 1018.5499877929688
     },
     "INTC": {
       "shares": 100.02268489655951,
       "entry_price": 46.18000030517578,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 50.380001068115234
+      "last_close": 50.779998779296875
     },
     "VZ": {
       "shares": 93.35181208125884,
       "entry_price": 49.47999954223633,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 49.400001525878906
+      "last_close": 49.150001525878906
     },
     "EFA": {
       "shares": 206.4131952110358,
       "entry_price": 95.83999633789062,
       "entry_date": "2026-03-24",
       "cost_basis": 19782.639873117972,
-      "last_close": 98.0
+      "last_close": 98.48999786376953
     },
     "NVDA": {
       "shares": 82.19441562742274,
       "entry_price": 167.52000427246094,
       "entry_date": "2026-03-27",
       "cost_basis": 13769.208857078287,
-      "last_close": 177.38999938964844
+      "last_close": 177.63999938964844
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
-  "last_eod_date": "2026-04-03",
-  "portfolio_value": 101096.0098222101,
+  "last_eod_date": "2026-04-06",
+  "portfolio_value": 101339.39556933947,
   "strategy": "portable_carry"
 }
