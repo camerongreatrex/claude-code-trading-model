@@ -133,16 +133,16 @@ LABELS = {
     "atr_pca_macro"         : "ATR + PCA + Macro",
     "eq_dd_control"         : "Equal Wt + DD Control",
     "vol_target"            : "Vol Target",
-    "buy_hold"              : "Buy & Hold",
+    "buy_hold"              : "Buy & Hold (100% invested)",
     "multi_equal_weight"    : "Multi Equal Weight",
     "multi_atr_pure"        : "Multi ATR",
     "multi_atr_macro"       : "Multi ATR + Macro",
     "multi_fast_atr"        : "Multi Fast ATR",
     "fast_atr"              : "Fast ATR",
-    "multi_mom_tilt"        : "Multi Mom Tilt ★",
-    "multi_fast_mom_tilt"   : "Multi Fast Mom Tilt",
+    "multi_mom_tilt"        : "Momentum Tilt",
+    "multi_fast_mom_tilt"   : "Fast Momentum Tilt",
     "multi_fast_atr_vol"    : "Multi Fast ATR + Vol",
-    "multi_fast_mom_vol"    : "Multi Fast Mom + Vol",
+    "multi_fast_mom_vol"    : "Fast Momentum + Vol",
     "pair_atr"              : "Pair ATR",
     "multi_pair_atr"        : "Multi Pair ATR",
     "rp_macro"              : "Risk Parity + Macro",
@@ -157,19 +157,55 @@ LABELS = {
     "rp_regime_dw"          : "RP Regime + DW",
     "rp_regime_vix_dw"      : "RP Regime + VIX + DW",
     "rp_blend"              : "RP Blend",
-    "signal_gated_mv_regime": "Signal-Gated MV Regime",
+    "signal_gated_mv_regime": "Signal-Gated MV",
     "ir_optimized"          : "IR Optimized",
     "ensemble_atr_pca_macro": "Ensemble ATR+PCA+Macro",
     "hrp"                   : "HRP",
     "multi_hrp"             : "Multi HRP",
-    "multi_hrp_mom"         : "Multi HRP + Mom ★",
-    "regime_adaptive"       : "Regime Adaptive ★★",
-    "adaptive_blend"        : "Adaptive Blend ★★★",
-    "multi_mom_portable"    : "Portable Alpha (β=0.30)",
-    "multi_mom_port_low"    : "Portable Alpha (β=0.15)",
-    "multi_mom_carry"       : "Multi Mom + Carry",
-    "portable_carry"        : "Portable + Carry",
+    "multi_hrp_mom"         : "Multi HRP + Mom",
+    "regime_adaptive"       : "Regime Adaptive",
+    "adaptive_blend"        : "Adaptive Blend",
+    "multi_mom_portable"    : "Portable Alpha",
+    "multi_mom_port_low"    : "Portable Alpha (Low Beta)",
+    "multi_mom_carry"       : "Momentum + Carry",
+    "portable_carry"        : "Portable Carry",
 }
+
+# ── Dashboard display tiers ───────────────────────────────────────────────────
+# TIER_SHOW: Shown by default on all charts. These are the production candidates
+#            and the benchmark. Maximum 8 lines for readability.
+# TIER_AVAILABLE: Hidden by default but selectable via multiselect dropdown.
+#                 Useful research variants the user might want to compare.
+# Everything else: hidden from dashboard entirely (still computed by portfolio.py
+#                  for research purposes).
+
+TIER_SHOW = {
+    "portable_carry",       # Best OOS (1.527) — trend + carry + beta hedge
+    "multi_mom_tilt",       # Proven live method — trend + momentum tilt
+    "multi_mom_portable",   # Portable alpha — trend + beta hedge (no carry)
+    "multi_mom_carry",      # Trend + carry (no hedge)
+    "adaptive_blend",       # Regime-adaptive blend
+    "rp_regime_aware",      # Best risk-parity variant
+    "buy_hold",             # Benchmark — always shown
+}
+
+TIER_AVAILABLE = {
+    "multi_equal_weight",
+    "multi_atr_pure",
+    "rp_blend",
+    "regime_adaptive",
+    "multi_mom_port_low",
+    "equal_weight",
+    "rp_regime_dw",
+}
+
+# Everything NOT in TIER_SHOW or TIER_AVAILABLE is hidden from the dashboard.
+# This includes: half_kelly, ir_optimized, composite_vol_target, vol_target,
+# signal_gated_mv_regime, ensemble_atr_pca_macro, atr_sized, atr_pca,
+# atr_pca_macro, eq_dd_control, fast_atr, multi_fast_atr, multi_fast_mom_tilt,
+# multi_fast_atr_vol, multi_fast_mom_vol, pair_atr, multi_pair_atr, rp_macro,
+# risk_parity, rp_regime_vix, rp_regime_vix_dw, multi_atr_macro, hrp,
+# multi_hrp, multi_hrp_mom, and any other method not listed above.
 
 
 def get_color(method_key: str) -> str:

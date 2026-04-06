@@ -491,6 +491,24 @@ def compute_live_signals() -> dict:
         except Exception as e:
             print(f"ERROR {e}")
 
+    # After the main ticker loop, load carry signals for carry-blend sizing modes.
+    # generate() reads carry_signals.parquet when building the offline signal parquet,
+    # but compute_live_signals() doesn't go through the offline pipeline — it calls
+    # generate() directly on live data.  The carry column in generate()'s output is
+    # populated from the parquet, but here we need to inject it into the results dict
+    # so _compute_position_size() can read sig.get("signal_carry") for portable_carry.
+    _carry_path = Path("data/signals/carry_signals.parquet")
+    if _carry_path.exists():
+        try:
+            _carry_df = pd.read_parquet(_carry_path)
+            for _cticker in results:
+                if _cticker in _carry_df.columns:
+                    _recent = _carry_df[_cticker].dropna()
+                    if not _recent.empty:
+                        results[_cticker]["signal_carry"] = float(_recent.iloc[-1])
+        except Exception as _e:
+            print(f"  [carry] Could not load carry signals: {_e}")
+
     return results
 
 

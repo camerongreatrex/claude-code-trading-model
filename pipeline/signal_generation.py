@@ -581,7 +581,8 @@ def apply_min_hold_filter(signal: pd.Series, min_hold: int = None) -> pd.Series:
 def apply_trailing_stop_signal(signal: pd.Series,
                                 close: pd.Series,
                                 atr: pd.Series,
-                                atr_mult: float = None) -> pd.Series:
+                                atr_mult: float = None,
+                                macro: pd.DataFrame = None) -> pd.Series:
     """
     Close a long position if price falls ATR_TRAILING_MULT × ATR below the
     trailing high since entry, with profit-target stop tightening.
@@ -603,6 +604,14 @@ def apply_trailing_stop_signal(signal: pd.Series,
         Both constants (5× threshold, 1.5× tightened stop) are published,
         not fitted to this data.
 
+    VIX-adaptive stop tightening (when macro is provided):
+        In bull_stress (VIX 20–25): tighten to 2.5× ATR (trail_mult × 0.83).
+        In elevated stress (VIX > 25): tighten to 2.0× ATR (trail_mult × 0.67,
+        min 1.5×).  Locks in more profit during VIX 20–30 transitions to bear.
+        VIX breakpoints (20, 25) are CBOE published regime boundaries — not
+        fitted to this dataset.  Only applies to the trailing stop multiplier;
+        the profit-target tighten (ATR_TIGHTEN_MULT) is unchanged.
+
     Fallback: if ATR data is unavailable, uses a fixed 20% below the
     trailing high.
 
@@ -613,6 +622,8 @@ def apply_trailing_stop_signal(signal: pd.Series,
         atr_mult: Override for trailing stop ATR multiplier. Defaults to
                   ATR_TRAILING_MULT (3.0). Pass atr_mult=2.0 for the faster
                   MA20/50 overlay where tighter stops suit the shorter timeframe.
+        macro:    Optional macro DataFrame with 'vix' column.  When provided,
+                  enables VIX-adaptive stop tightening in elevated-VIX regimes.
 
     Returns:
         Filtered signal Series.  Same index and dtype (int) as input.
@@ -624,10 +635,28 @@ def apply_trailing_stop_signal(signal: pd.Series,
     trail_low    = 0.0
     entry_price  = 0.0
 
+    # VIX-adaptive stop: precompute aligned VIX series if macro is provided
+    vix_series = None
+    if macro is not None and not macro.empty and "vix" in macro.columns:
+        vix_series = macro["vix"].reindex(signal.index).ffill().fillna(20.0)
+
     for i in range(len(result)):
         price       = float(close.iloc[i])
         current_atr = float(atr.iloc[i]) if not pd.isna(atr.iloc[i]) else None
         val         = int(result.iloc[i])
+
+        # VIX-adaptive trailing stop multiplier (only affects the trailing stop,
+        # not the profit-target tighten which stays at ATR_TIGHTEN_MULT = 1.5×).
+        if vix_series is not None:
+            current_vix = float(vix_series.iloc[i])
+            if current_vix > 25:
+                effective_mult = max(trail_mult * 0.67, 1.5)  # ≈ 2.0× at 3.0 base
+            elif current_vix > 20:
+                effective_mult = trail_mult * 0.83              # ≈ 2.5× at 3.0 base
+            else:
+                effective_mult = trail_mult
+        else:
+            effective_mult = trail_mult
 
         if position_dir == 0:
             if val != 0:
@@ -644,7 +673,7 @@ def apply_trailing_stop_signal(signal: pd.Series,
                 if (price - entry_price) > ATR_TIGHTEN_THRESHOLD * current_atr:
                     stop_mult = ATR_TIGHTEN_MULT
                 else:
-                    stop_mult = trail_mult
+                    stop_mult = effective_mult
                 stop = trail_high - stop_mult * current_atr
             else:
                 stop = trail_high * 0.80
@@ -669,7 +698,7 @@ def apply_trailing_stop_signal(signal: pd.Series,
                 if (entry_price - price) > ATR_TIGHTEN_THRESHOLD * current_atr:
                     stop_mult = ATR_TIGHTEN_MULT
                 else:
-                    stop_mult = trail_mult
+                    stop_mult = effective_mult
                 stop = trail_low + stop_mult * current_atr
             else:
                 stop = trail_low * 1.20
@@ -1090,6 +1119,120 @@ def oversold_bounce_signal(df: pd.DataFrame, regime_signal: pd.Series) -> pd.Ser
     return apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
 
 
+# ── Cross-asset entry timing cache and helpers ────────────────────────────────
+
+_CROSS_ASSET_CACHE = None
+
+
+def _load_cross_asset() -> pd.DataFrame:
+    """
+    Load cross_asset_features.parquet once and cache at module level.
+
+    generate() is called per-ticker (37 tickers), so caching avoids
+    reading the same parquet 37 times per pipeline run.
+    """
+    global _CROSS_ASSET_CACHE
+    if _CROSS_ASSET_CACHE is not None:
+        return _CROSS_ASSET_CACHE
+    _ca_path = Path("data/signals/cross_asset_features.parquet")
+    if _ca_path.exists():
+        try:
+            _CROSS_ASSET_CACHE = pd.read_parquet(_ca_path)
+            _CROSS_ASSET_CACHE.index = pd.to_datetime(_CROSS_ASSET_CACHE.index)
+        except Exception:
+            _CROSS_ASSET_CACHE = pd.DataFrame()
+    else:
+        _CROSS_ASSET_CACHE = pd.DataFrame()
+    return _CROSS_ASSET_CACHE
+
+
+def cross_asset_entry_boost(df: pd.DataFrame, regime_signal: pd.Series,
+                             cross_asset_df: pd.DataFrame = None) -> pd.Series:
+    """
+    Improve bull_calm entry timing by detecting favourable cross-asset conditions.
+
+    Entry conditions (ALL required):
+      (a) regime_signal == 0 but MA50 is within 1% of MA200 from below
+          (about to cross — pre-position before the golden cross fires)
+      (b) Cross-asset environment is supportive:
+          - tlt_spy_divergence < 0  (bonds underperforming stocks = risk-on)
+          - bond_equity_beta  < -0.1 (normal negative correlation = no crisis)
+          - hy_ig_ratio_zscore > -1.0 (credit not stressed)
+
+    Once entered, held until regime_signal confirms (MA50 crosses MA200)
+    or 10 days pass without confirmation (timeout — false pre-signal).
+
+    This is a pure ENTRY timing signal: it adds earlier entries in bull_calm
+    uptrends and never overrides exits.  The position is handed off to the
+    main regime signal once the golden cross confirms.
+
+    References:
+      Entry pre-positioning: Asness et al. (2013) "Value and Momentum Everywhere".
+      TLT/SPY divergence as risk-on proxy: Ilmanen (2011) "Expected Returns".
+      Bond-equity beta sign flip during crises: Baele et al. (2010).
+
+    Args:
+        df:             Feature DataFrame with 'Close' column.
+        regime_signal:  The raw MA50/200 trend signal (1 = golden cross active).
+        cross_asset_df: Cross-asset features DataFrame.  If None or empty,
+                        returns an all-zero Series (graceful degradation).
+
+    Returns:
+        Series of {0, 1} aligned to df.index.  1 = pre-position long.
+    """
+    if cross_asset_df is None or cross_asset_df.empty:
+        return pd.Series(0, index=df.index, dtype=int)
+
+    # Align cross-asset features to this ticker's index
+    ca = cross_asset_df.reindex(df.index).ffill()
+
+    # Required columns — return zero signal if any missing
+    needed = ["tlt_spy_divergence", "bond_equity_beta", "hy_ig_ratio_zscore"]
+    if not all(c in ca.columns for c in needed):
+        return pd.Series(0, index=df.index, dtype=int)
+
+    ma50  = df["Close"].rolling(50).mean()
+    ma200 = df["Close"].rolling(200).mean()
+
+    # "Almost golden cross": MA50 is within 1% of MA200 from below
+    ma_gap   = (ma50 / ma200 - 1)
+    near_cross = (ma_gap > -0.01) & (ma_gap < 0)
+
+    # Cross-asset risk-on environment
+    risk_on = (
+        (ca["tlt_spy_divergence"] < 0) &
+        (ca["bond_equity_beta"]   < -0.1) &
+        (ca["hy_ig_ratio_zscore"] > -1.0)
+    )
+
+    entry = near_cross & risk_on & (regime_signal == 0)
+
+    result      = pd.Series(0, index=df.index, dtype=int)
+    in_pos      = False
+    days_waiting = 0
+
+    for i in range(len(result)):
+        if not in_pos:
+            if entry.iloc[i]:
+                in_pos        = True
+                days_waiting  = 1
+                result.iloc[i] = 1
+        else:
+            if regime_signal.iloc[i] == 1:
+                # Golden cross confirmed — hand off to main signal
+                in_pos        = False
+                result.iloc[i] = 0   # main signal takes over
+            elif days_waiting >= 10:
+                # Timeout — cross didn't confirm
+                in_pos        = False
+                result.iloc[i] = 0
+            else:
+                days_waiting  += 1
+                result.iloc[i] = 1
+
+    return result
+
+
 def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame:
     """
     Master signal generator — routes each ticker to the correct logic and
@@ -1166,7 +1309,7 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         # ── Principled signal improvements (not curve-fitted) ───────────────
         signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
         signal_r = apply_min_hold_filter(signal_r)
-        signal_r = apply_trailing_stop_signal(signal_r, df["Close"], df["atr_14"])
+        signal_r = apply_trailing_stop_signal(signal_r, df["Close"], df["atr_14"], macro=macro)
         signal_r = apply_time_decay_exit(signal_r, df["Close"])
         signal_r = signal_r * regime_gate  # re-apply gate after post-processing
 
@@ -1213,6 +1356,17 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         signal_multi = pd.concat(
             [signal_r, breakout_sig, bounce_sig], axis=1
         ).max(axis=1).astype(int)
+
+        # Cross-asset early entry: pre-position when MA50 is approaching MA200
+        # from below and cross-asset conditions signal a risk-on environment.
+        # Only active for equity/sector/stock — same asset classes where the
+        # MA50/200 golden-cross generates the base signal.
+        _ca_df = _load_cross_asset()
+        if not _ca_df.empty:
+            ca_boost     = cross_asset_entry_boost(df, raw_ma_regime, _ca_df)
+            signal_multi = pd.concat(
+                [signal_multi, ca_boost], axis=1
+            ).max(axis=1).astype(int)
     else:
         signal_multi = signal_r   # bonds/commodities: no change
 

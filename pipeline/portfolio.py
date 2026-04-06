@@ -721,10 +721,52 @@ def rp_regime_aware_sizes(
     tickers    = [t for t in signals.columns if t in returns.columns]
     n_rows     = len(signals)
 
-    # ── Precompute RP weights at each rebalance date (regime-conditional) ─
-    rp_weight_df = pd.DataFrame(np.nan, index=signals.index, columns=tickers)
+    # ── Precompute RP weights with adaptive rebalance triggers ────────────
+    # Three triggers (any one is sufficient to rebalance):
+    #   1. Scheduled: every rebalance_freq (21) days — the original cadence.
+    #   2. Regime change: current_regime != last_regime — the new regime's
+    #      conditional covariance should replace the old one immediately.
+    #   3. Correlation shift: avg pairwise correlation changes by > 5% over
+    #      the trailing 21 days (checked every 5 days to limit computation).
+    #      5% ≈ 1 std-dev of monthly pairwise correlation changes in a
+    #      diversified equity portfolio — not fitted to this dataset.
+    rp_weight_df   = pd.DataFrame(np.nan, index=signals.index, columns=tickers)
+    CORR_CHANGE_THRESH = 0.05  # trigger if avg pairwise corr shifts by > 5%
 
-    for i in range(cov_window, n_rows, rebalance_freq):
+    last_rebal_i  = -rebalance_freq   # force first rebalance at cov_window
+    last_regime   = None
+    last_avg_corr = None
+
+    for i in range(cov_window, n_rows):
+        days_since_rebal = i - last_rebal_i
+        current_regime   = regimes.iloc[i]
+
+        needs_rebal = False
+
+        # Trigger 1: scheduled rebalance (every 21 days)
+        if days_since_rebal >= rebalance_freq:
+            needs_rebal = True
+
+        # Trigger 2: regime changed since last rebalance
+        if current_regime != last_regime and last_regime is not None:
+            needs_rebal = True
+
+        # Trigger 3: correlation shift (check every 5 days, not every bar)
+        if days_since_rebal >= 5 and not needs_rebal:
+            ret_recent = returns.iloc[max(0, i - 21):i][tickers].dropna(axis=1)
+            if len(ret_recent) >= 15 and ret_recent.shape[1] >= 3:
+                corr_mat = ret_recent.corr()
+                upper    = np.triu(np.ones(corr_mat.shape, dtype=bool), k=1)
+                avg_corr = float(corr_mat.values[upper].mean())
+                if last_avg_corr is not None and abs(avg_corr - last_avg_corr) > CORR_CHANGE_THRESH:
+                    needs_rebal   = True
+                    last_avg_corr = avg_corr
+                elif last_avg_corr is None:
+                    last_avg_corr = avg_corr
+
+        if not needs_rebal:
+            continue
+
         ret_history = returns.iloc[:i][tickers]
         ret_history = ret_history.dropna(
             thresh=int(min(len(ret_history), cov_window) * 0.90), axis=1
@@ -732,8 +774,6 @@ def rp_regime_aware_sizes(
         available = ret_history.columns.tolist()
 
         if len(available) >= 2 and len(ret_history) >= 20:
-            current_regime = regimes.iloc[i]
-
             if current_regime in ("bull_calm", "bull_stress",
                                   "bear_calm", "bear_stress"):
                 regime_hist = regimes.iloc[:i]
@@ -751,6 +791,17 @@ def rp_regime_aware_sizes(
             w_rp = risk_parity_weights(cov_mat)
             for j, t in enumerate(available):
                 rp_weight_df.iloc[i, rp_weight_df.columns.get_loc(t)] = w_rp[j]
+
+            last_rebal_i  = i
+            last_regime   = current_regime
+
+            # Update correlation baseline after a scheduled or regime-change rebalance
+            if last_avg_corr is None:
+                ret_recent_check = returns.iloc[max(0, i - 21):i][tickers].dropna(axis=1)
+                if len(ret_recent_check) >= 15 and ret_recent_check.shape[1] >= 3:
+                    corr_check = ret_recent_check.corr()
+                    upper_check = np.triu(np.ones(corr_check.shape, dtype=bool), k=1)
+                    last_avg_corr = float(corr_check.values[upper_check].mean())
 
     # Forward-fill weights between rebalance dates
     rp_weight_df = rp_weight_df.ffill()

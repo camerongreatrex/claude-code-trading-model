@@ -83,10 +83,10 @@ from pipeline.data_pipeline import ASSET_CLASS, TICKER_LIST
 from pipeline.signal_generation import RSI_ENTRY_THRESH, ATR_TRAILING_MULT, MIN_HOLD_DAYS
 from scheduler import check_kill_switch, ORDERS_FILE, KILL_SWITCH_DD
 from pipeline.backtester import profit_factor as _calc_profit_factor
-from ui.styles import CSS, _layout, PALETTE, LABELS, get_color, get_label
+from ui.styles import CSS, _layout, PALETTE, LABELS, get_color, get_label, TIER_SHOW, TIER_AVAILABLE
 from ui.charts import (
     metrics, metrics_table,
-    chart_equity, chart_drawdown, chart_monte_carlo, chart_mc_histogram,
+    chart_equity, chart_equity_risk_adjusted, chart_drawdown, chart_monte_carlo, chart_mc_histogram,
     chart_walk_forward, chart_asset_sharpe, chart_macro_overlay,
     chart_monthly_heatmap, chart_ma_spread, chart_paper_portfolio,
     chart_beta_rolling, chart_active_return, chart_dead_weight,
@@ -240,7 +240,16 @@ def main():
         if not _oos_match.empty:
             _prod_oos_key = _oos_match.iloc[0]["method"]
 
-    st.markdown(f'<div class="section-head">{_prod_label} vs buy &amp; hold</div>',
+    # Pull OOS metrics for the production method from oos_selection.parquet
+    _oos_row = None
+    if not oos_sel.empty and "method" in oos_sel.columns:
+        _oos_row_match = oos_sel[
+            oos_sel["method"].str.replace(" ", "_").str.replace("-", "_") == _prod_method
+        ]
+        if not _oos_row_match.empty:
+            _oos_row = _oos_row_match.iloc[0]
+
+    st.markdown(f'<div class="section-head">{_prod_label} — out-of-sample validated performance</div>',
                 unsafe_allow_html=True)
 
     eq_ret  = df_port[_prod_method].pct_change().dropna() if _prod_method in df_port.columns else pd.Series(dtype=float)
@@ -283,12 +292,14 @@ def main():
                         help="Compound Annual Growth Rate (CAGR) — the yearly return if capital "
                              "was invested for the full backtest period. Arrow shows vs buy & hold: "
                              "green ↑ = strategy beats B&H, red ↓ = B&H won.")
-    # Sharpe: higher is better → delta_color="normal": green = strategy Sharpe > B&H Sharpe
-    with c2: st.metric("Sharpe Ratio", f"{m_eq['sharpe']:.2f}",
-                        delta=delta_str(m_eq['sharpe'], m_bnh['sharpe'], pct=False),
-                        help="Return ÷ volatility — how much return you earned per unit of risk. "
-                             ">1.0 is good, >2.0 is exceptional, <0 means you lost money. "
-                             "Arrow shows vs buy & hold: green ↑ = better risk-adjusted return than B&H.")
+    # Sharpe: show OOS Sharpe from walk-forward if available, else IS Sharpe
+    _disp_sharpe = float(_oos_row["oos_sharpe"]) if _oos_row is not None and "oos_sharpe" in _oos_row.index else m_eq['sharpe']
+    with c2: st.metric("Sharpe Ratio", f"{_disp_sharpe:.2f}",
+                        delta=delta_str(_disp_sharpe, m_bnh['sharpe'], pct=False),
+                        help="Out-of-sample Sharpe from walk-forward validation (3yr train / 1yr test). "
+                             "This is the risk-adjusted return on data the strategy never saw during development. "
+                             ">1.0 is good, >2.0 is exceptional. "
+                             "Arrow shows vs buy & hold IS Sharpe.")
     # Volatility: lower is better → delta_color="inverse": green = strategy vol < B&H vol
     with c3: st.metric("Volatility",   f"{m_eq['vol']*100:.1f}%",
                         delta=delta_str(m_eq['vol'], m_bnh['vol']), delta_color="inverse",
@@ -319,8 +330,10 @@ def main():
                              "Independent of win rate — measures the quality of winners vs losers.")
     with c8: st.metric("Active Sharpe",
                         f"{_top_act_sharpe:.2f}" if _top_act_sharpe is not None else "—",
-                        help="OOS Sharpe of excess returns vs buy & hold benchmark. "
-                             "Measures skill above passive indexing — higher is better.")
+                        help="OOS Sharpe of excess returns vs buy & hold — measures genuine skill "
+                             "above passive indexing on unseen data. "
+                             "Computed on walk-forward test windows (genuinely out-of-sample). "
+                             "Higher is better; >0.5 = meaningful alpha.")
     # VaR: lower is better (smaller daily loss exposure) → delta_color="inverse": green = strategy VaR < B&H VaR
     with c9: st.metric("VaR 95% (1d)", f"{m_eq.get('var_95', 0)*100:.2f}%",
                         delta=delta_str(m_eq.get('var_95', 0), m_bnh.get('var_95', 0)), delta_color="inverse",
@@ -328,6 +341,12 @@ def main():
                              "only 5% of trading days. E.g. 1.50% means on 95% of days the strategy "
                              "lost less than 1.50%. Lower is better. "
                              "Arrow shows vs buy & hold: green ↓ = strategy has smaller daily tail risk than B&H.")
+
+    st.caption(
+        "Sharpe and Active Sharpe use out-of-sample walk-forward results (tested on unseen data). "
+        "Ann. Return and Vol use the full 10-year backtest. The strategy holds ~60% invested on average — "
+        "lower absolute return than 100%-invested Buy & Hold, but half the volatility and a third of the drawdown."
+    )
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
     tab_port, tab_sig, tab_sp, tab_bt, tab_val, tab_risk = st.tabs([
@@ -353,13 +372,20 @@ def main():
     _EXCLUDE_DEFAULT = {"half_kelly"}
 
     with tab_bt:
-        # Compute top 5 methods by final equity value, excluding experimental strategies
-        _non_bh  = [c for c in df_port.columns if c != "buy_hold" and c not in _EXCLUDE_DEFAULT]
-        _top5    = sorted(_non_bh, key=lambda c: df_port[c].iloc[-1] if not df_port[c].empty else 0,
-                          reverse=True)[:5]
-        _default = _top5 + (["buy_hold"] if "buy_hold" in df_port.columns else [])
-        _options = list(df_port.columns)
+        _visible_methods = TIER_SHOW | TIER_AVAILABLE
+        _options = [c for c in df_port.columns if c in _visible_methods]
+        _default = [c for c in df_port.columns if c in TIER_SHOW]
         _option_labels = {c: get_label(c) for c in _options}
+
+        _eq_view = st.radio(
+            "Comparison mode",
+            ["Actual dollars (unlevered)", "Risk-adjusted (equal volatility)"],
+            index=0, horizontal=True,
+            help="'Actual dollars' shows real unlevered returns — Buy & Hold is higher because "
+                 "it holds 100% invested while strategies hold ~60% for crash protection. "
+                 "'Risk-adjusted' scales all strategies to the same volatility so you can see "
+                 "which ones generate more return per unit of risk taken."
+        )
         _selected_cols = st.multiselect(
             "Methods to display",
             options=_options,
@@ -368,12 +394,31 @@ def main():
         )
         if not _selected_cols:
             _selected_cols = _default
-        st.plotly_chart(chart_equity(df_port, columns=_selected_cols), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
+
+        if _eq_view.startswith("Actual"):
+            st.plotly_chart(
+                chart_equity(df_port, columns=_selected_cols),
+                theme=None, use_container_width=True,
+                config={"scrollZoom": True, "displayModeBar": True},
+            )
+        else:
+            st.plotly_chart(
+                chart_equity_risk_adjusted(df_port, columns=_selected_cols),
+                theme=None, use_container_width=True,
+                config={"scrollZoom": True, "displayModeBar": True},
+            )
+
+        st.caption(
+            "Active strategies hold ~60% invested on average — the other ~40% sits in cash "
+            "as crash protection. This is why Buy & Hold shows higher absolute returns in bull "
+            "markets. Switch to 'Risk-adjusted' to see the fair comparison at equal volatility."
+        )
+
         st.plotly_chart(chart_drawdown(df_port, columns=_selected_cols), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
         st.markdown('<div class="section-head">All portfolio methods — summary</div>',
                     unsafe_allow_html=True)
-        tbl = metrics_table(df_port)
+        tbl = metrics_table(df_port, oos_sel=oos_sel)
         st.dataframe(
             tbl.style.map(
                 lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
@@ -382,12 +427,16 @@ def main():
             use_container_width=True, hide_index=True,
         )
 
-        # Monthly returns heatmap — uses the auto-selected best OOS production method
+        # Monthly returns heatmap — OOS period only (after 3-year warm-up)
         st.markdown("")
-        st.markdown(f'<div class="section-head">Monthly returns — {_prod_label}</div>',
+        st.markdown(f'<div class="section-head">Monthly returns — {_prod_label} (OOS period only)</div>',
                     unsafe_allow_html=True)
         _monthly_ret = (df_port[_prod_method].pct_change().dropna()
                         if _prod_method in df_port.columns else eq_ret)
+        # Show only the OOS period (after 3-year warm-up) so monthly returns
+        # reflect the forward-looking performance, not the training period
+        if len(_monthly_ret) > 756:
+            _monthly_ret = _monthly_ret.iloc[756:]
         if not _monthly_ret.empty:
             st.plotly_chart(chart_monthly_heatmap(_monthly_ret), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
@@ -646,20 +695,26 @@ def main():
                 "is_act_sharpe" : "IS Active Sharpe",
                 "oos_act_sharpe": "OOS Active Sharpe",
             }
-            display_oos = oos_sel.rename(columns={k: v for k, v in _wf_col_map.items()
-                                                   if k in oos_sel.columns})
+            # Filter walk-forward table to visible tiers only
+            _oos_visible = TIER_SHOW | TIER_AVAILABLE
+            _oos_filtered = oos_sel[
+                oos_sel["method"].str.replace(" ", "_").str.replace("-", "_").isin(_oos_visible)
+            ].copy()
+            display_oos = _oos_filtered.rename(columns={k: v for k, v in _wf_col_map.items()
+                                                        if k in _oos_filtered.columns})
             _wf_fmt = {v: "{:.3f}" for k, v in _wf_col_map.items()
                        if k != "method" and v in display_oos.columns}
-            # Determine highlight methods
-            _wf_best_oos = oos_sel.loc[oos_sel["oos_sharpe"].idxmax(), "method"] \
-                if "oos_sharpe" in oos_sel.columns else ""
+            # Determine highlight methods (based on filtered set so highlights match visible rows)
+            _wf_best_oos = _oos_filtered.loc[_oos_filtered["oos_sharpe"].idxmax(), "method"] \
+                if "oos_sharpe" in _oos_filtered.columns and not _oos_filtered.empty else ""
             _wf_best_act = ""
-            if "oos_act_sharpe" in oos_sel.columns and "method" in oos_sel.columns:
-                _wf_best_act = oos_sel.loc[oos_sel["oos_act_sharpe"].idxmax(), "method"]
+            if "oos_act_sharpe" in _oos_filtered.columns and "method" in _oos_filtered.columns \
+                    and not _oos_filtered.empty:
+                _wf_best_act = _oos_filtered.loc[_oos_filtered["oos_act_sharpe"].idxmax(), "method"]
             _wf_yellow = ""
-            if "is_sharpe" in oos_sel.columns and "oos_sharpe" in oos_sel.columns \
-                    and "method" in oos_sel.columns:
-                _wf_gt08 = oos_sel[oos_sel["oos_sharpe"] > 0.8].copy()
+            if "is_sharpe" in _oos_filtered.columns and "oos_sharpe" in _oos_filtered.columns \
+                    and "method" in _oos_filtered.columns and not _oos_filtered.empty:
+                _wf_gt08 = _oos_filtered[_oos_filtered["oos_sharpe"] > 0.8].copy()
                 if not _wf_gt08.empty:
                     _wf_gt08["_gap"] = (_wf_gt08["is_sharpe"] - _wf_gt08["oos_sharpe"]).abs()
                     _wf_yellow = _wf_gt08.loc[_wf_gt08["_gap"].idxmin(), "method"]
@@ -684,10 +739,30 @@ def main():
                 "Green = best OOS Sharpe · Blue = best OOS Active Sharpe · "
                 "Yellow = smallest IS-OOS gap (OOS > 0.8)"
             )
+            # Build production method OOS annotation from oos_sel
+            _prod_oos_sh  = "—"
+            _prod_oos_act = "—"
+            _prod_gap_str = "—"
+            if not oos_sel.empty and "method" in oos_sel.columns:
+                _pm = oos_sel[
+                    oos_sel["method"].str.replace(" ", "_").str.replace("-", "_") == _prod_method
+                ]
+                if not _pm.empty:
+                    if "oos_sharpe" in _pm.columns:
+                        _prod_oos_sh = f"{float(_pm['oos_sharpe'].iloc[0]):.3f}"
+                    if "oos_act_sharpe" in _pm.columns:
+                        _prod_oos_act = f"{float(_pm['oos_act_sharpe'].iloc[0]):.3f}"
+                    if "is_sharpe" in _pm.columns and "oos_sharpe" in _pm.columns:
+                        _prod_gap = float(_pm['is_sharpe'].iloc[0]) - float(_pm['oos_sharpe'].iloc[0])
+                        _prod_gap_str = f"{_prod_gap:+.3f}"
             st.markdown(
                 f"<span style='color:#50fa7b;font-size:.82rem'>"
-                f"✓ Production method: <b>{_prod_label}</b> — selected by highest OOS Sharpe "
-                f"among methods with IS-OOS gap in [{OOS_MAX_NEG_GAP:+.2f}, +{OOS_MAX_POS_GAP:.2f}]</span>",
+                f"✓ Production method: <b>{_prod_label}</b> — "
+                f"OOS Sharpe <b>{_prod_oos_sh}</b> · "
+                f"OOS Active Sharpe <b>{_prod_oos_act}</b> · "
+                f"IS-OOS gap {_prod_gap_str} · "
+                f"selected from IS-OOS gap range [{OOS_MAX_NEG_GAP:+.2f}, +{OOS_MAX_POS_GAP:.2f}]"
+                f"</span>",
                 unsafe_allow_html=True,
             )
 

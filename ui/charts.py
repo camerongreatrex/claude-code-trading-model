@@ -55,7 +55,7 @@ def metrics(ret: pd.Series) -> dict:
 
 
 # ── Summary table ─────────────────────────────────────────────────────────────
-def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
+def metrics_table(df_port: pd.DataFrame, oos_sel: pd.DataFrame = None) -> pd.DataFrame:
     """
     Build a human-readable summary statistics table for all sizing methods.
 
@@ -65,20 +65,39 @@ def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
     applied via Streamlit's .style.map().
 
     Args:
-        df_port: Portfolio curves DataFrame (same as load_portfolio_curves()).
+        df_port:  Portfolio curves DataFrame (same as load_portfolio_curves()).
+        oos_sel:  Optional OOS selection DataFrame from oos_selection.parquet.
+                  If provided, an "OOS Sharpe" column is added right after "Method".
 
     Returns:
-        DataFrame with columns [Method, Ann. Return, Volatility, Sharpe,
-        Max DD, Calmar, Win Rate, VaR 95%].  One row per sizing method present in df_port.
+        DataFrame with columns [Method, OOS Sharpe (if available), Ann. Return,
+        Volatility, Sharpe, Max DD, Calmar, Win Rate, VaR 95%].
+        One row per sizing method present in df_port.
     """
+    from ui.styles import TIER_SHOW, TIER_AVAILABLE
+    _visible = TIER_SHOW | TIER_AVAILABLE
+
     rows = []
     for col in df_port.columns:
+        if col not in _visible:
+            continue
         ret = df_port[col].pct_change().dropna()
         m   = metrics(ret)
         if not m:
             continue
+        # Look up OOS Sharpe for this method
+        oos_sharpe_str = "—"
+        if oos_sel is not None and not oos_sel.empty and "method" in oos_sel.columns:
+            _oos_m = oos_sel[
+                oos_sel["method"].str.replace(" ", "_").str.replace("-", "_") == col
+            ]
+            if _oos_m.empty:
+                _oos_m = oos_sel[oos_sel["method"] == col.replace("_", " ")]
+            if not _oos_m.empty and "oos_sharpe" in _oos_m.columns:
+                oos_sharpe_str = f"{float(_oos_m['oos_sharpe'].iloc[0]):.2f}"
         rows.append({
             "Method"      : get_label(col),
+            "OOS Sharpe"  : oos_sharpe_str,
             "Ann. Return" : f"{m['ann_r']*100:+.1f}%",
             "Volatility"  : f"{m['vol']*100:.1f}%",
             "Sharpe"      : f"{m['sharpe']:.2f}",
@@ -87,7 +106,15 @@ def metrics_table(df_port: pd.DataFrame) -> pd.DataFrame:
             "Win Rate"    : f"{m['win_rate']*100:.0f}%",
             "VaR 95%"     : f"{m['var_95']*100:.2f}%",
         })
-    return pd.DataFrame(rows)
+    result = pd.DataFrame(rows)
+    # Sort by OOS Sharpe descending (best strategies at top)
+    if not result.empty and "OOS Sharpe" in result.columns:
+        result["_sort"] = result["OOS Sharpe"].apply(
+            lambda x: float(x) if x != "—" else -999
+        )
+        result = result.sort_values("_sort", ascending=False).drop(columns=["_sort"])
+        result = result.reset_index(drop=True)
+    return result
 
 
 # ── Chart builders ────────────────────────────────────────────────────────────
@@ -122,24 +149,125 @@ def chart_equity(df: pd.DataFrame, height: int = 420,
         dash  = "dot" if col == "buy_hold" else "solid"
         color = get_color(col)
         label = get_label(col)
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df[col], name=label,
-            line=dict(color=color, width=1.8, dash=dash),
-            hovertemplate=(
+        if col == "buy_hold":
+            hovertemplate = (
+                "<b>Buy & Hold (100% invested)</b><br>"
+                "$%{y:,.0f}<br>"
+                "<i>Fully invested every day — higher return but 2× the volatility<br>"
+                "and 3× the drawdown of the active strategies.</i>"
+                "<extra></extra>"
+            )
+        else:
+            hovertemplate = (
                 f"<b>{label}</b><br>"
                 "$%{y:,.0f}<br>"
                 "<i>Total portfolio value on this date (started at $100k).<br>"
                 "A rising line means the strategy is making money.</i>"
                 "<extra></extra>"
-            ),
+            )
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df[col], name=label,
+            line=dict(color=color, width=1.8, dash=dash),
+            hovertemplate=hovertemplate,
         ))
+    # Add OOS region indicator: grey tint for training warm-up, faint green for OOS
+    if len(df) > 756:  # 3 years of trading days → first OOS window starts after that
+        oos_start = df.index[756]
+        fig.add_vrect(
+            x0=df.index[0], x1=oos_start,
+            fillcolor="rgba(100,100,100,0.08)",
+            line_width=0,
+            annotation_text="Training",
+            annotation_position="top left",
+            annotation_font_color="#555",
+            annotation_font_size=10,
+        )
+        fig.add_vrect(
+            x0=oos_start, x1=df.index[-1],
+            fillcolor="rgba(80,250,123,0.03)",
+            line_width=0,
+            annotation_text="Walk-Forward OOS Region",
+            annotation_position="top left",
+            annotation_font_color="#50fa7b",
+            annotation_font_size=10,
+        )
     fig.update_layout(**_layout(
         height=height,
         dragmode="pan",
         uirevision="backtest_equity",
-        title=dict(text="Portfolio Equity Curves — $100 k starting capital",
-                   font=dict(size=13)),
+        title=dict(
+            text="Portfolio Growth — $100k start  ·  Strategies hold ~60% invested, B&H holds 100%",
+            font=dict(size=13),
+        ),
         yaxis=dict(title="Value ($)", fixedrange=False),
+        xaxis=dict(fixedrange=False),
+    ))
+    return fig
+
+
+def chart_equity_risk_adjusted(df: pd.DataFrame, height: int = 420,
+                               columns: list = None) -> go.Figure:
+    """
+    Equity curves scaled so every strategy has 10% annualized volatility.
+
+    This is the fair comparison: at equal risk, the strategy with higher
+    Sharpe ratio produces higher return. Buy & Hold (Sharpe ~0.75) will
+    appear BELOW strategies with Sharpe > 0.75.
+
+    This is how institutional investors compare strategies — they normalize
+    for risk first, then compare returns. A hedge fund running at 10% vol
+    with Sharpe 1.5 earns 15% annualized; the S&P at 10% vol with Sharpe
+    0.75 earns only 7.5%.
+    """
+    if columns is None:
+        columns = list(df.columns)
+
+    TARGET_VOL = 0.10
+    fig = go.Figure()
+
+    for col in columns:
+        if col not in df.columns:
+            continue
+        ret = df[col].pct_change().dropna()
+        if ret.empty:
+            continue
+        realized_vol = ret.std() * np.sqrt(252)
+        if realized_vol <= 0.001:
+            continue
+
+        scale_factor = TARGET_VOL / realized_vol
+        scaled_ret = ret * scale_factor
+        scaled_equity = 100_000 * (1 + scaled_ret).cumprod()
+
+        dash = "dot" if col == "buy_hold" else "solid"
+        color = get_color(col)
+        label = get_label(col)
+
+        fig.add_trace(go.Scatter(
+            x=scaled_equity.index, y=scaled_equity.values,
+            name=f"{label} ({realized_vol*100:.0f}%→10%)",
+            line=dict(color=color, width=1.8, dash=dash),
+            hovertemplate=(
+                f"<b>{label}</b><br>"
+                f"$%{{y:,.0f}} (scaled to 10% vol)<br>"
+                f"<i>Original vol: {realized_vol*100:.1f}% · Scale: {scale_factor:.2f}×<br>"
+                "At equal volatility, higher line = better risk-adjusted return.</i>"
+                "<extra></extra>"
+            ),
+        ))
+
+    fig.add_hline(y=100_000, line_color="#444", line_dash="dot", line_width=1)
+
+    fig.update_layout(**_layout(
+        height=height,
+        dragmode="pan",
+        uirevision="equity_risk_adj",
+        title=dict(
+            text="Risk-Adjusted Growth — all strategies normalized to 10% volatility",
+            font=dict(size=13),
+        ),
+        yaxis=dict(title="Value ($) at 10% vol", tickprefix="$", tickformat=",.0f",
+                   fixedrange=False),
         xaxis=dict(fixedrange=False),
     ))
     return fig
