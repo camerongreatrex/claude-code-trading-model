@@ -62,6 +62,7 @@ DIAGNOSTICS = {
     "diagnostic": "pipeline.correlation_diagnostic",  # regime / beta / dead-weight analysis
     "capture"   : "pipeline.capture_diagnostic",      # upside/downside capture decomposition
     "audit"     : "pipeline.integrity_audit",         # look-ahead / WF / sensitivity / cost checks
+    "screen"    : "pipeline.universe_screen",         # liquidity + correlation screen for new tickers
 }
 
 

@@ -73,45 +73,32 @@ ET_ZONE         = ZoneInfo("America/New_York")
 # use simplified live proxies. Full regime-conditional covariance and beta-hedge
 # computation require historical return fetches that are impractical at EOD.
 STRATEGIES = {
-    # ── Regime-signal strategies ──────────────────────────────────────────────
-    "equal_weight":         {"signal_col": "signal_regime", "sizing": "equal",  "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "atr_sized":            {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "atr_pca":              {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": True,  "dd_control": False, "macro": False},
-    "atr_pca_macro":        {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": True,  "dd_control": False, "macro": True},
-    "equal_wt_dd_control":  {"signal_col": "signal_regime", "sizing": "equal",  "mom_tilt": False, "pca_scale": False, "dd_control": True,  "macro": False},
-    "regime_vol_target":    {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "fast_atr":             {"signal_col": "signal_regime", "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    # ── Multi-signal strategies ───────────────────────────────────────────────
-    "multi_equal_weight":   {"signal_col": "signal_multi",  "sizing": "equal",  "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_atr_pure":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_atr_macro":      {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
-    "multi_mom_tilt":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_fast_atr":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_fast_mom_tilt":  {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},   # live proxy: ATR + mom_tilt + macro
-    "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend", "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},   # live proxy: 50/50 adaptive + ATR+mom
+    # ── Baseline strategies ───────────────────────────────────────────────────
+    "equal_weight":         {"signal_col": "signal_regime", "sizing": "equal",           "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_equal_weight":   {"signal_col": "signal_multi",  "sizing": "equal",           "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_atr_pure":       {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_atr_macro":      {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
+    # ── Production candidates ─────────────────────────────────────────────────
+    "multi_mom_tilt":       {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
+    "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend",  "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
     # ── Risk-parity strategies ────────────────────────────────────────────────
-    "risk_parity":          {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "rp_macro":             {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
-    "rp_regime_aware":      {"signal_col": "signal_regime", "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},           # live proxy: standard RP + macro multiplier
-    "rp_blend":             {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},           # backtest: 60% rp_regime_aware + 40% multi_mom_tilt
-    "multi_rp":             {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_rp_mom":         {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    # ── Full-stack composite (all overlays active) ────────────────────────────
-    "multi_rp_full":        {"signal_col": "signal_multi",  "sizing": "rp",     "mom_tilt": True,  "pca_scale": True,  "dd_control": True,  "macro": True},
-    "multi_atr_full":       {"signal_col": "signal_multi",  "sizing": "atr",    "mom_tilt": True,  "pca_scale": True,  "dd_control": True,  "macro": True},
+    "risk_parity":          {"signal_col": "signal_regime", "sizing": "rp",              "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    "rp_regime_aware":      {"signal_col": "signal_regime", "sizing": "rp",              "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
+    "rp_regime_dw":         {"signal_col": "signal_regime", "sizing": "rp",              "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
+    "rp_blend":             {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
     # ── Portable-alpha / carry strategies ────────────────────────────────────
-    "multi_mom_portable":   {"signal_col": "signal_multi",  "sizing": "portable",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},  # live proxy: multi_mom_tilt
-    "multi_mom_port_low":   {"signal_col": "signal_multi",  "sizing": "portable",       "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},  # live proxy: multi_mom_tilt (low beta)
-    "multi_mom_carry":      {"signal_col": "signal_multi",  "sizing": "carry_blend",    "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},  # 75% ATR + 25% carry curve slope
-    "portable_carry":       {"signal_col": "signal_multi",  "sizing": "portable_carry", "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},  # trend + carry alpha + beta hedge
+    "multi_mom_portable":   {"signal_col": "signal_multi",  "sizing": "portable",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_mom_port_low":   {"signal_col": "signal_multi",  "sizing": "portable",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    "multi_mom_carry":      {"signal_col": "signal_multi",  "sizing": "carry_blend",     "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    "portable_carry":       {"signal_col": "signal_multi",  "sizing": "portable_carry",  "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
 }
 
 # Portable-alpha strategies and their target betas for the live hedge
 _HEDGE_STRATEGIES = {
     "multi_mom_portable": 0.30,
     "multi_mom_port_low": 0.15,
-    "portable_carry":     0.30,   # same target beta as multi_mom_portable
+    "portable_carry":     0.30,
 }
 
 # Normalize oos_selection method names (spaces/hyphens → underscores) → STRATEGIES key

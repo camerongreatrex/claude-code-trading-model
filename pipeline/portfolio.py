@@ -1883,36 +1883,6 @@ def main():
     else:
         print("  NOTE: multi_signals.parquet not found — run signal_generation.py first\n")
 
-    fast_path  = SIGNAL_DIR / "fast_overlay_signals.parquet"
-    has_fast   = fast_path.exists()
-    if has_fast:
-        fast_overlay_signals = pd.read_parquet(fast_path)
-        mfast_path           = SIGNAL_DIR / "multi_fast_signals.parquet"
-        multi_fast_signals   = (pd.read_parquet(mfast_path)
-                                if mfast_path.exists() else fast_overlay_signals)
-    else:
-        print("  NOTE: fast_overlay_signals.parquet not found — run signal_generation.py first\n")
-
-    pair_path  = SIGNAL_DIR / "pair_signals.parquet"
-    has_pair   = pair_path.exists()
-    if has_pair:
-        pair_signals      = pd.read_parquet(pair_path)
-        multi_pair_path   = SIGNAL_DIR / "multi_pair_signals.parquet"
-        multi_pair_signals = (pd.read_parquet(multi_pair_path)
-                              if multi_pair_path.exists() else pair_signals)
-    else:
-        print("  NOTE: pair_signals.parquet not found — run signal_generation.py first\n")
-
-    earn_multi_path  = SIGNAL_DIR / "earn_multi_signals.parquet"
-    has_earn         = earn_multi_path.exists()
-    if has_earn:
-        earn_multi_signals      = pd.read_parquet(earn_multi_path)
-        earn_mfast_path         = SIGNAL_DIR / "earn_multi_fast_signals.parquet"
-        earn_multi_fast_signals = (pd.read_parquet(earn_mfast_path)
-                                   if earn_mfast_path.exists() else earn_multi_signals)
-    else:
-        print("  NOTE: earn_multi_signals.parquet not found — run signal_generation.py first\n")
-
     # ── Load features and returns ──────────────────────────────────────────────
     features, returns = {}, pd.DataFrame()
     for ticker in TICKER_LIST:
@@ -1929,125 +1899,32 @@ def main():
     signals_composite = composite_signals.reindex(returns.index).fillna(0)
     if has_multi:
         signals_multi = multi_signals.reindex(returns.index).fillna(0)
-    if has_fast:
-        signals_fast_overlay = fast_overlay_signals.reindex(returns.index).fillna(0)
-        signals_multi_fast   = multi_fast_signals.reindex(returns.index).fillna(0)
-    if has_pair:
-        signals_pair       = pair_signals.reindex(returns.index).fillna(0)
-        signals_multi_pair = multi_pair_signals.reindex(returns.index).fillna(0)
-    if has_earn:
-        signals_earn_multi      = earn_multi_signals.reindex(returns.index).fillna(0)
-        signals_earn_multi_fast = earn_multi_fast_signals.reindex(returns.index).fillna(0)
 
     print("Correlation matrix of returns (should be lower with diversified universe):")
     print(returns.corr().round(2))
     print()
 
     # ── Compute all position size DataFrames ──────────────────────────────────
-    sizes_eq        = equal_weight_sizes(signals_regime, CAPITAL)
-    sizes_atr       = atr_sizes(signals_regime, features, CAPITAL)
-    sizes_kelly     = kelly_sizes(signals_regime, returns, CAPITAL)
-    sizes_atr_pca   = apply_pca_scaling(sizes_atr, returns)
-    sizes_final     = apply_macro_multiplier(sizes_atr_pca)
-    sizes_vol       = vol_target_sizes(sizes_final, returns)
-    sizes_dd        = apply_drawdown_control(sizes_eq, returns)
-
-    sizes_comp_atr   = atr_sizes(signals_composite, features, CAPITAL)
-    sizes_comp_pca   = apply_pca_scaling(sizes_comp_atr, returns)
-    sizes_comp_macro = apply_macro_multiplier(sizes_comp_pca)
-    sizes_comp_vol   = vol_target_sizes(sizes_comp_macro, returns)
+    sizes_eq  = equal_weight_sizes(signals_regime, CAPITAL)
+    ret_eq    = portfolio_returns(sizes_eq, returns)
 
     print("  Computing risk-parity sizes (Ledoit-Wolf, monthly rebalance)...")
-    sizes_rp = risk_parity_sizes(signals_regime, features, returns, CAPITAL)
-
-    # rp_macro: risk-parity base sizing (already includes one macro pass inside
-    # risk_parity_sizes) with a second macro multiplier applied on top.
-    # This gives a more aggressive regime overlay — deeper size reduction in fear
-    # (0.5 × 0.5 = 0.25×) and a modest boost in calm (1.25 × 1.25 ≈ 1.56×).
-    print("  Computing rp_macro sizes (risk parity + double macro overlay)...")
-    sizes_rp_macro = apply_macro_multiplier(sizes_rp)
-
-    ret_eq       = portfolio_returns(sizes_eq,       returns)
-    ret_atr      = portfolio_returns(sizes_atr,      returns)
-    ret_kelly    = portfolio_returns(sizes_kelly,     returns)
-    ret_atr_pca  = portfolio_returns(sizes_atr_pca,  returns)
-    ret_final    = portfolio_returns(sizes_final,     returns)
-    ret_vol      = portfolio_returns(sizes_vol,       returns)
-    ret_dd       = portfolio_returns(sizes_dd,        returns)
-    ret_comp_vol = portfolio_returns(sizes_comp_vol,  returns)
-    ret_rp       = portfolio_returns(sizes_rp,        returns)
-    ret_rp_macro = portfolio_returns(sizes_rp_macro,  returns)
+    sizes_rp  = risk_parity_sizes(signals_regime, features, returns, CAPITAL)
+    ret_rp    = portfolio_returns(sizes_rp, returns)
 
     if has_multi:
-        sizes_multi_eq    = equal_weight_sizes(signals_multi, CAPITAL)
-        sizes_multi_atr   = atr_sizes(signals_multi, features, CAPITAL)
-        sizes_multi_macro = apply_macro_multiplier(sizes_multi_atr)
-        ret_multi_eq      = portfolio_returns(sizes_multi_eq,    returns)
-        ret_multi_atr     = portfolio_returns(sizes_multi_atr,   returns)
-        ret_multi_macro   = portfolio_returns(sizes_multi_macro, returns)
+        sizes_multi_eq  = equal_weight_sizes(signals_multi, CAPITAL)
+        sizes_multi_atr = atr_sizes(signals_multi, features, CAPITAL)
+        ret_multi_eq    = portfolio_returns(sizes_multi_eq,  returns)
+        ret_multi_atr   = portfolio_returns(sizes_multi_atr, returns)
 
-    if has_fast:
-        sizes_fast_atr       = atr_sizes(signals_fast_overlay, features, CAPITAL)
-        sizes_multi_fast_atr = atr_sizes(signals_multi_fast,   features, CAPITAL)
-        ret_fast_atr         = portfolio_returns(sizes_fast_atr,       returns)
-        ret_multi_fast_atr   = portfolio_returns(sizes_multi_fast_atr, returns)
-
-    # Cross-sectional momentum tilt — computed over multi and multi_fast signals.
-    # The per-date ranking loop is O(T × N) and runs ~2s for 2500 days × 37 tickers.
+    # Cross-sectional momentum tilt
     print("  Computing momentum tilt sizes (cross-sectional 63-day rank)...")
     if has_multi:
-        sizes_multi_mom       = momentum_tilt_sizes(signals_multi, features, CAPITAL)
-        ret_multi_mom         = portfolio_returns(sizes_multi_mom, returns)
-    if has_fast:
-        sizes_multi_fast_mom  = momentum_tilt_sizes(signals_multi_fast, features, CAPITAL)
-        ret_multi_fast_mom    = portfolio_returns(sizes_multi_fast_mom, returns)
+        sizes_multi_mom = momentum_tilt_sizes(signals_multi, features, CAPITAL)
+        ret_multi_mom   = portfolio_returns(sizes_multi_mom, returns)
 
-    # ── Vol-scaled sizing (21-day realized-vol targeting) ─────────────────────
-    # simple_vol_scale: ONE input (own trailing vol), ONE target (10%), ZERO fitted
-    # thresholds. Scales down when portfolio vol spikes, scales up when calm.
-    # More robust than macro multiplier (no cross-asset relationships to overfit).
-    if has_fast:
-        sizes_multi_fast_atr_vol = simple_vol_scale(sizes_multi_fast_atr, returns)
-        ret_multi_fast_atr_vol   = portfolio_returns(sizes_multi_fast_atr_vol, returns)
-        sizes_multi_fast_mom_vol = simple_vol_scale(sizes_multi_fast_mom, returns)
-        ret_multi_fast_mom_vol   = portfolio_returns(sizes_multi_fast_mom_vol, returns)
-
-    if has_pair:
-        print("  Computing beta-hedged pair sizes (ATR long + rolling-beta short hedge)...")
-        sizes_pair       = beta_hedged_sizes(signals_pair,       features, returns, CAPITAL)
-        sizes_multi_pair = beta_hedged_sizes(signals_multi_pair, features, returns, CAPITAL)
-        ret_pair         = portfolio_returns(sizes_pair,       returns)
-        ret_multi_pair   = portfolio_returns(sizes_multi_pair, returns)
-
-    ret_bnh      = returns.mean(axis=1)
-
-    if has_ensemble:
-        signals_ensemble = ensemble_signals.reindex(returns.index).fillna(0)
-        sizes_ens        = ensemble_sizes(signals_ensemble, features, returns, CAPITAL)
-        ret_ens          = portfolio_returns(sizes_ens, returns)
-
-    # ── IR-optimized sizing (mean-variance optimizer) ──────────────────────
-    has_ir_opt = has_ensemble
-    if has_ir_opt:
-        print("  Computing IR-optimized sizes (mean-variance optimizer, daily)...")
-        sizes_ir_opt = optimizer_sizes(
-            signals_regime, signals_ensemble, features, returns, CAPITAL
-        )
-        ret_ir_opt = portfolio_returns(sizes_ir_opt, returns)
-
-    # ── Regime-aware risk parity ─────────────────────────────────────────
-    # ── Hierarchical Risk Parity (HRP) ────────────────────────────────────────
-    print("  Computing HRP sizes (hierarchical risk parity, monthly rebalance)...")
-    sizes_hrp = hrp_sizes(signals_regime, features, returns, CAPITAL)
-    ret_hrp   = portfolio_returns(sizes_hrp, returns)
-
-    if has_multi:
-        print("  Computing multi_hrp sizes (HRP on multi-signal)...")
-        sizes_multi_hrp     = hrp_sizes(signals_multi, features, returns, CAPITAL)
-        ret_multi_hrp       = portfolio_returns(sizes_multi_hrp, returns)
-        print("  Computing multi_hrp_mom sizes (HRP + cross-sectional momentum tilt)...")
-        sizes_multi_hrp_mom = hrp_mom_sizes(signals_multi, features, returns, CAPITAL)
-        ret_multi_hrp_mom   = portfolio_returns(sizes_multi_hrp_mom, returns)
+    ret_bnh = returns.mean(axis=1)
 
     if has_multi:
         print("  Computing regime_adaptive sizes (smooth VIX interp + hedge cap + mom tilt)...")
@@ -2099,17 +1976,9 @@ def main():
     )
     ret_rp_regime = portfolio_returns(sizes_rp_regime, returns)
 
-    print("  Computing rp_regime_vix sizes (regime cov + VIX scalar)...")
-    sizes_rpv  = rp_regime_vix_sizes(signals_regime, features, returns, CAPITAL)
-    ret_rpv    = portfolio_returns(sizes_rpv, returns)
-
     print("  Computing rp_regime_dw sizes (regime cov + dead weight)...")
     sizes_rpd  = rp_regime_dw_sizes(signals_regime, features, returns, CAPITAL)
     ret_rpd    = portfolio_returns(sizes_rpd, returns)
-
-    print("  Computing rp_regime_vix_dw sizes (regime cov + VIX + DW)...")
-    sizes_rprvd = rp_regime_vix_dw_sizes(signals_regime, features, returns, CAPITAL)
-    ret_rprvd   = portfolio_returns(sizes_rprvd, returns)
 
     # ── Blended: 60% rp_regime_aware + 40% multi_mom_tilt ────────────────
     # Return-level blend. Since portfolio_returns is linear in sizes,
@@ -2120,15 +1989,6 @@ def main():
         sizes_blend = (0.60 * sizes_rp_regime.reindex(columns=returns.columns, fill_value=0)
                        + 0.40 * sizes_multi_mom.reindex(columns=returns.columns, fill_value=0))
         ret_blend = portfolio_returns(sizes_blend, returns)
-
-    # ── Signal-gated MV regime ───────────────────────────────────────────
-    has_sgmr = has_ensemble
-    if has_sgmr:
-        print("  Computing signal-gated MV regime sizes (MV + regime cov + ensemble tilt)...")
-        sizes_sgmr = signal_gated_mv_regime_sizes(
-            signals_regime, signals_ensemble, features, returns, CAPITAL
-        )
-        ret_sgmr = portfolio_returns(sizes_sgmr, returns)
 
     # ── Unified method registry ────────────────────────────────────────────────
     # Each entry: (label, full-period return series, signal matrix for WF, sizing_fn for WF)
@@ -2141,55 +2001,9 @@ def main():
             lambda sig, ret: equal_weight_sizes(sig, CAPITAL),
         ),
         (
-            "ATR sized",
-            ret_atr, signals_regime,
-            lambda sig, ret: atr_sizes(sig, features, CAPITAL),
-        ),
-        (
-            "half-Kelly",
-            ret_kelly, signals_regime,
-            lambda sig, ret: kelly_sizes(sig, ret, CAPITAL),
-        ),
-        (
-            "ATR + PCA",
-            ret_atr_pca, signals_regime,
-            lambda sig, ret: apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret),
-        ),
-        (
-            "ATR + PCA + macro",
-            ret_final, signals_regime,
-            lambda sig, ret: apply_macro_multiplier(
-                apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)),
-        ),
-        (
-            "equal wt + DD control",
-            ret_dd, signals_regime,
-            lambda sig, ret: apply_drawdown_control(equal_weight_sizes(sig, CAPITAL), ret),
-        ),
-        (
-            "regime + vol target",
-            ret_vol, signals_regime,
-            lambda sig, ret: vol_target_sizes(
-                apply_macro_multiplier(
-                    apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)), ret),
-        ),
-        (
-            "composite + vol target",
-            ret_comp_vol, signals_composite,
-            lambda sig, ret: vol_target_sizes(
-                apply_macro_multiplier(
-                    apply_pca_scaling(atr_sizes(sig, features, CAPITAL), ret)), ret),
-        ),
-        (
             "risk parity",
             ret_rp, signals_regime,
             lambda sig, ret: risk_parity_sizes(sig, features, ret, CAPITAL),
-        ),
-        (
-            "rp_macro",
-            ret_rp_macro, signals_regime,
-            lambda sig, ret: apply_macro_multiplier(
-                risk_parity_sizes(sig, features, ret, CAPITAL)),
         ),
         (
             "rp_regime_aware",
@@ -2197,19 +2011,9 @@ def main():
             lambda sig, ret: rp_regime_aware_sizes(sig, features, ret, CAPITAL),
         ),
         (
-            "rp_regime_vix",
-            ret_rpv, signals_regime,
-            lambda sig, ret: rp_regime_vix_sizes(sig, features, ret, CAPITAL),
-        ),
-        (
             "rp_regime_dw",
             ret_rpd, signals_regime,
             lambda sig, ret: rp_regime_dw_sizes(sig, features, ret, CAPITAL),
-        ),
-        (
-            "rp_regime_vix_dw",
-            ret_rprvd, signals_regime,
-            lambda sig, ret: rp_regime_vix_dw_sizes(sig, features, ret, CAPITAL),
         ),
     ]
     if has_blend:
@@ -2224,33 +2028,6 @@ def main():
                      _sm.reindex(ret.index).fillna(0), features, CAPITAL)
                      .reindex(columns=ret.columns, fill_value=0)
             ),
-        ))
-    # ── HRP methods ───────────────────────────────────────────────────────────
-    all_methods.append((
-        "hrp",
-        ret_hrp, signals_regime,
-        lambda sig, ret: hrp_sizes(sig, features, ret, CAPITAL),
-    ))
-    if has_multi:
-        all_methods.append((
-            "multi_hrp",
-            ret_multi_hrp, signals_multi,
-            lambda sig, ret: hrp_sizes(sig, features, ret, CAPITAL),
-        ))
-        all_methods.append((
-            "multi_hrp_mom",
-            ret_multi_hrp_mom, signals_multi,
-            lambda sig, ret: hrp_mom_sizes(sig, features, ret, CAPITAL),
-        ))
-
-    # signal_gated_mv_regime (OOS 0.660) and ir_optimized (OOS -0.019) removed
-    # from walk-forward to eliminate ~2,000 SLSQP solver calls per run.
-    # Equity curves are still saved for comparison; code is kept in optimizer.py.
-    if has_ensemble:
-        all_methods.append((
-            "ensemble + ATR + PCA + macro",
-            ret_ens, signals_ensemble,
-            lambda sig, ret: ensemble_sizes(sig, features, ret, CAPITAL),
         ))
     if has_multi:
         all_methods.extend([
@@ -2268,31 +2045,7 @@ def main():
                 ret_multi_atr, signals_multi,
                 lambda sig, ret: atr_sizes(sig, features, CAPITAL),
             ),
-            (
-                # ATR + macro multiplier only. Macro (VIX/yield-curve) uses published
-                # thresholds, not fitted parameters — the one overlay worth testing.
-                "multi_atr_macro",
-                ret_multi_macro, signals_multi,
-                lambda sig, ret: apply_macro_multiplier(atr_sizes(sig, features, CAPITAL)),
-            ),
         ])
-    if has_fast:
-        all_methods.extend([
-            (
-                # Fast MA20/50 overlay blended with slow MA50/200 for 5 liquid ETFs.
-                # Continuous signal in [0,1] or [-1,1] — atr_sizes handles this.
-                "fast_atr",
-                ret_fast_atr, signals_fast_overlay,
-                lambda sig, ret: atr_sizes(sig, features, CAPITAL),
-            ),
-            (
-                # Same but starting from multi-signal (breakout + bounce) entries.
-                "multi_fast_atr",
-                ret_multi_fast_atr, signals_multi_fast,
-                lambda sig, ret: atr_sizes(sig, features, CAPITAL),
-            ),
-        ])
-    if has_multi:
         all_methods.append((
             # Cross-sectional momentum tilt on multi-signal entries.
             # Tilts ATR sizes ±30% toward 63-day cross-sectional winners.
@@ -2356,50 +2109,6 @@ def main():
                 ret, CAPITAL, target_beta=0.30,
             ),
         ))
-    if has_fast:
-        all_methods.extend([
-            (
-                # Same tilt applied to the multi_fast signal (MA20/50 overlay + breakout/bounce).
-                "multi_fast_mom_tilt",
-                ret_multi_fast_mom, signals_multi_fast,
-                lambda sig, ret: momentum_tilt_sizes(sig, features, CAPITAL),
-            ),
-            (
-                # Vol-scaled multi_fast_atr: 21-day realized-vol targeting at 10%.
-                # scale = (0.10 / realized_vol).clip(0.5, 1.5).shift(1)
-                # ONE parameter (target_vol), structural bounds, zero cross-asset estimation.
-                "multi_fast_atr_vol",
-                ret_multi_fast_atr_vol, signals_multi_fast,
-                lambda sig, ret: simple_vol_scale(
-                    atr_sizes(sig, features, CAPITAL), ret),
-            ),
-            (
-                # Vol-scaled momentum-tilt: combines cross-sectional rank tilt with
-                # portfolio-level vol targeting. Should improve Calmar via lower DD.
-                "multi_fast_mom_vol",
-                ret_multi_fast_mom_vol, signals_multi_fast,
-                lambda sig, ret: simple_vol_scale(
-                    momentum_tilt_sizes(sig, features, CAPITAL), ret),
-            ),
-        ])
-    if has_pair:
-        all_methods.extend([
-            (
-                # Beta-hedged pair trade: long stock + short sector ETF.
-                # Uses regime signal filtered by spread outperformance.
-                # Should reduce SPY correlation and improve bull_calm alpha.
-                "pair_atr",
-                ret_pair, signals_pair,
-                lambda sig, ret: beta_hedged_sizes(sig, features, ret, CAPITAL),
-            ),
-            (
-                # Same but using multi-signal entries (breakout + bounce) filtered
-                # by spread outperformance — best-case combination.
-                "multi_pair_atr",
-                ret_multi_pair, signals_multi_pair,
-                lambda sig, ret: beta_hedged_sizes(sig, features, ret, CAPITAL),
-            ),
-        ])
 
     # ── Portfolio comparison table ─────────────────────────────────────────────
     print(f"{'='*84}")
@@ -2514,64 +2223,32 @@ def main():
 
     # ── Persist results ────────────────────────────────────────────────────────
     comparison_curves = {
-        "equal_weight"         : equity_curve(ret_eq,        CAPITAL),
-        "atr_sized"            : equity_curve(ret_atr,       CAPITAL),
-        "half_kelly"           : equity_curve(ret_kelly,     CAPITAL),
-        "atr_pca"              : equity_curve(ret_atr_pca,   CAPITAL),
-        "atr_pca_macro"        : equity_curve(ret_final,     CAPITAL),
-        "eq_dd_control"        : equity_curve(ret_dd,        CAPITAL),
-        "vol_target"           : equity_curve(ret_vol,       CAPITAL),
-        "composite_vol_target" : equity_curve(ret_comp_vol,  CAPITAL),
-        "risk_parity"          : equity_curve(ret_rp,        CAPITAL),
-        "rp_macro"             : equity_curve(ret_rp_macro,  CAPITAL),
-        "rp_regime_aware"      : equity_curve(ret_rp_regime, CAPITAL),
-        "rp_regime_vix"        : equity_curve(ret_rpv,       CAPITAL),
-        "rp_regime_dw"         : equity_curve(ret_rpd,       CAPITAL),
-        "rp_regime_vix_dw"     : equity_curve(ret_rprvd,     CAPITAL),
-        "buy_hold"             : equity_curve(ret_bnh,       CAPITAL),
+        "equal_weight"    : equity_curve(ret_eq,        CAPITAL),
+        "risk_parity"     : equity_curve(ret_rp,        CAPITAL),
+        "rp_regime_aware" : equity_curve(ret_rp_regime, CAPITAL),
+        "rp_regime_dw"    : equity_curve(ret_rpd,       CAPITAL),
+        "buy_hold"        : equity_curve(ret_bnh,       CAPITAL),
     }
     if has_blend:
         comparison_curves["rp_blend"] = equity_curve(ret_blend, CAPITAL)
-    comparison_curves["hrp"] = equity_curve(ret_hrp, CAPITAL)
     if has_multi:
-        comparison_curves["multi_hrp"]     = equity_curve(ret_multi_hrp,     CAPITAL)
-        comparison_curves["multi_hrp_mom"] = equity_curve(ret_multi_hrp_mom, CAPITAL)
-    if has_sgmr:
-        comparison_curves["signal_gated_mv_regime"] = equity_curve(ret_sgmr, CAPITAL)
-    if has_ensemble:
-        comparison_curves["ensemble_atr_pca_macro"] = equity_curve(ret_ens, CAPITAL)
-    if has_ir_opt:
-        comparison_curves["ir_optimized"] = equity_curve(ret_ir_opt, CAPITAL)
-    if has_multi:
-        comparison_curves["multi_equal_weight"] = equity_curve(ret_multi_eq,    CAPITAL)
-        comparison_curves["multi_atr_pure"]     = equity_curve(ret_multi_atr,   CAPITAL)
-        comparison_curves["multi_atr_macro"]    = equity_curve(ret_multi_macro, CAPITAL)
-    if has_fast:
-        comparison_curves["fast_atr"]       = equity_curve(ret_fast_atr,       CAPITAL)
-        comparison_curves["multi_fast_atr"] = equity_curve(ret_multi_fast_atr, CAPITAL)
-    if has_pair:
-        comparison_curves["pair_atr"]       = equity_curve(ret_pair,       CAPITAL)
-        comparison_curves["multi_pair_atr"] = equity_curve(ret_multi_pair, CAPITAL)
-    if has_multi:
-        comparison_curves["multi_mom_tilt"]      = equity_curve(ret_multi_mom,       CAPITAL)
-        comparison_curves["regime_adaptive"]   = equity_curve(ret_regime_adaptive, CAPITAL)
-        comparison_curves["adaptive_blend"]    = equity_curve(ret_adaptive_blend,  CAPITAL)
-        comparison_curves["multi_mom_portable"]= equity_curve(ret_portable,        CAPITAL)
-        comparison_curves["multi_mom_port_low"]= equity_curve(ret_portable_low,    CAPITAL)
+        comparison_curves["multi_equal_weight"] = equity_curve(ret_multi_eq,  CAPITAL)
+        comparison_curves["multi_atr_pure"]     = equity_curve(ret_multi_atr, CAPITAL)
+        comparison_curves["multi_mom_tilt"]     = equity_curve(ret_multi_mom, CAPITAL)
+        comparison_curves["regime_adaptive"]    = equity_curve(ret_regime_adaptive, CAPITAL)
+        comparison_curves["adaptive_blend"]     = equity_curve(ret_adaptive_blend,  CAPITAL)
+        comparison_curves["multi_mom_portable"] = equity_curve(ret_portable,        CAPITAL)
+        comparison_curves["multi_mom_port_low"] = equity_curve(ret_portable_low,    CAPITAL)
     if has_carry:
         comparison_curves["multi_mom_carry"] = equity_curve(ret_mom_carry,      CAPITAL)
         comparison_curves["portable_carry"]  = equity_curve(ret_portable_carry, CAPITAL)
-    if has_fast:
-        comparison_curves["multi_fast_mom_tilt"] = equity_curve(ret_multi_fast_mom, CAPITAL)
-        comparison_curves["multi_fast_atr_vol"]  = equity_curve(ret_multi_fast_atr_vol, CAPITAL)
-        comparison_curves["multi_fast_mom_vol"]  = equity_curve(ret_multi_fast_mom_vol, CAPITAL)
 
     pd.DataFrame(comparison_curves).to_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
 
     # Dashboard compatibility: keep the two named walk-forward parquets it expects
     wf_store["equal weight"].to_parquet(
         RESULTS_DIR / "walk_forward_regime.parquet", index=False)
-    wf_store["ATR + PCA + macro"].to_parquet(
+    wf_store["multi_mom_tilt"].to_parquet(
         RESULTS_DIR / "walk_forward_atr_pca.parquet", index=False)
 
     oos_df = pd.DataFrame([

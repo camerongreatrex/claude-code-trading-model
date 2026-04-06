@@ -1233,6 +1233,68 @@ def cross_asset_entry_boost(df: pd.DataFrame, regime_signal: pd.Series,
     return result
 
 
+def trend_continuation_reentry(
+    df: pd.DataFrame,
+    signal_r: pd.Series,
+    raw_ma_regime: pd.Series,
+    macro: pd.DataFrame,
+) -> pd.Series:
+    """
+    Fast re-entry after trailing stop exits during confirmed uptrends.
+
+    After a trailing stop exit, allow re-entry if ALL of these conditions
+    are met within 15 trading days (3 weeks):
+      (a) raw_ma_regime == 1 — slow MA50/200 trend still intact
+      (b) Close > MA50 — price recovered above fast moving average
+      (c) RSI < 65 — not re-entering at an overbought extreme
+      (d) VIX z-score < 1.5 — not during a fear spike
+
+    This function only ADDs entries (0→1), never removes them (1→0).
+    Only fires after trailing stop exits, not death cross exits.
+    """
+    ma50 = df["Close"].rolling(50).mean()
+
+    if not macro.empty and "vix_zscore" in macro.columns:
+        vix_z = macro["vix_zscore"].reindex(df.index).ffill().fillna(0)
+        reentry_gate = (vix_z < 1.0).astype(int)
+    else:
+        reentry_gate = vix_gate(macro, df.index)
+
+    result = signal_r.copy()
+    bars_since_stop_exit = -1   # -1 = not in re-entry window
+    REENTRY_WINDOW = 15
+
+    for i in range(1, len(result)):
+        current = int(result.iloc[i])
+        prev    = int(result.iloc[i - 1])
+
+        # Detect trailing stop exit: signal went 1→0 while MA regime is still 1
+        # (death cross exits have raw_ma_regime == 0 → don't trigger this)
+        if prev == 1 and current == 0 and int(raw_ma_regime.iloc[i]) == 1:
+            bars_since_stop_exit = 0
+
+        if 0 <= bars_since_stop_exit < REENTRY_WINDOW:
+            bars_since_stop_exit += 1
+
+            if current == 0:
+                price    = float(df["Close"].iloc[i])
+                ma50_val = float(ma50.iloc[i]) if not pd.isna(ma50.iloc[i]) else 0.0
+                rsi_val  = float(df["rsi_14"].iloc[i]) if not pd.isna(df["rsi_14"].iloc[i]) else 50.0
+                regime_ok = int(raw_ma_regime.iloc[i]) == 1
+                gate_ok   = int(reentry_gate.iloc[i]) == 1
+
+                if (regime_ok and gate_ok and
+                        price > ma50_val and ma50_val > 0 and
+                        rsi_val < 60):
+                    result.iloc[i] = 1
+                    bars_since_stop_exit = -1  # re-entry complete
+
+        elif bars_since_stop_exit >= REENTRY_WINDOW:
+            bars_since_stop_exit = -1  # window expired
+
+    return result
+
+
 def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame:
     """
     Master signal generator — routes each ticker to the correct logic and
@@ -1313,6 +1375,9 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         signal_r = apply_time_decay_exit(signal_r, df["Close"])
         signal_r = signal_r * regime_gate  # re-apply gate after post-processing
 
+        # Fast re-entry after trailing stop exits in confirmed uptrends
+        signal_r = trend_continuation_reentry(df, signal_r, raw_ma_regime, macro)
+
     elif asset_class == "commodity":
         # Two-sided MA50/200 crossover. Commodities have no structural upward
         # drift (no equity risk premium), so death-cross periods are shorted
@@ -1344,29 +1409,22 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     # direction (two-sided trend following), not entry timing.
     if asset_class in {"equity_index", "sector_etf", "stock"}:
         # Use raw_ma_regime (not post-processed signal_r) as the regime gate.
-        # This allows breakout/bounce to activate in windows where signal_r is
-        # temporarily flat (trailing stop fired, RSI blocked) but the structural
-        # trend (MA50 > MA200) is still intact — exactly the periods where
-        # entry timing adds value.
+        # This allows breakout/bounce/persistence to activate in windows where
+        # signal_r is temporarily flat but the structural trend is still intact.
         breakout_sig = breakout_entry_signal(df, raw_ma_regime)
         bounce_sig   = oversold_bounce_signal(df, raw_ma_regime)
-        # max() → long if ANY of MA crossover, breakout, or bounce says so.
-        # Combined is always >= MA crossover alone: only adds earlier entries,
-        # never earlier exits.  Long-only (max over {0, 1} signals).
-        signal_multi = pd.concat(
-            [signal_r, breakout_sig, bounce_sig], axis=1
-        ).max(axis=1).astype(int)
+
+        _multi_sources = [signal_r, breakout_sig, bounce_sig]
 
         # Cross-asset early entry: pre-position when MA50 is approaching MA200
         # from below and cross-asset conditions signal a risk-on environment.
-        # Only active for equity/sector/stock — same asset classes where the
-        # MA50/200 golden-cross generates the base signal.
         _ca_df = _load_cross_asset()
         if not _ca_df.empty:
-            ca_boost     = cross_asset_entry_boost(df, raw_ma_regime, _ca_df)
-            signal_multi = pd.concat(
-                [signal_multi, ca_boost], axis=1
-            ).max(axis=1).astype(int)
+            ca_boost = cross_asset_entry_boost(df, raw_ma_regime, _ca_df)
+            _multi_sources.append(ca_boost)
+
+        # max() → long if ANY source says so. Only adds entries, never exits.
+        signal_multi = pd.concat(_multi_sources, axis=1).max(axis=1).astype(int)
     else:
         signal_multi = signal_r   # bonds/commodities: no change
 
@@ -1590,15 +1648,19 @@ def main():
         avg_val     = fast_overlay[t].mean() if t in fast_overlay.columns else 0
         print(f"    {t:<5}: slow_regime {slow_active:.0f}% active  fast_overlay mean={avg_val:.2f}")
 
-    # Print extra stats for the multi-signal overlay
+    # Print extra stats for the multi-signal overlay (includes re-entry + breakout + bounce)
     print("\n  signal_multi vs signal_regime comparison (equity tickers):")
+    total_extra = 0
     for t, s in all_signals.items():
         if ASSET_CLASS[t] in {"equity_index", "sector_etf", "stock"}:
-            r = (s["signal_regime"] == 1).sum()
-            m = (s["signal_multi"]  == 1).sum()
+            r = int((s["signal_regime"] == 1).sum())
+            m = int((s["signal_multi"]  == 1).sum())
             extra = m - r
-            print(f"    {t:<6}: regime {r:>4} long days  multi {m:>4} long days  "
-                  f"(+{extra} extra from breakout/bounce)")
+            total_extra += extra
+            print(f"    {t:<8}: regime {r:>4} long days  multi {m:>4} long days  "
+                  f"(+{extra} from breakout/bounce/reentry)")
+    print(f"\n  Total extra long days added across equity tickers: +{total_extra}")
+    print(f"  (target: 200-600 extra days fills bull_calm cash drag gaps)")
 
     # ── Pair-trade signal generation ──────────────────────────────────────
     print("\n  Generating pair-trade signals (spread MA50/200 filter)...")

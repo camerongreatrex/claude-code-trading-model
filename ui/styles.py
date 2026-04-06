@@ -197,6 +197,7 @@ TIER_AVAILABLE = {
     "multi_mom_port_low",
     "equal_weight",
     "rp_regime_dw",
+    "risk_parity",
 }
 
 # Everything NOT in TIER_SHOW or TIER_AVAILABLE is hidden from the dashboard.
