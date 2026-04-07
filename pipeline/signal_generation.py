@@ -84,6 +84,10 @@ ATR_TIGHTEN_THRESHOLD = 5.0  # Tighten stop once price is 5× ATR above entry pr
                                # revert more aggressively; protect them with a tighter stop.
 ATR_TIGHTEN_MULT      = 1.5  # Tightened stop distance: 1.5× ATR (vs 3× normal).
                                # Locks in most of a 5×-ATR gain while allowing trend to run.
+ATR_PROFIT_TARGET = 8.0   # Partial exit at 8× ATR gain above entry (Elder, published).
+                           # At 8× ATR the position has captured most of its initial move;
+                           # exiting 50% locks in profit while letting 50% ride the trend.
+ATR_PARTIAL_REMAIN = 0.5  # Keep 50% of position after partial exit.
 TIME_DECAY_DAYS   = 126  # Close stale longs held > 6 months that are drifting negative.
                            # 126 = half the MA200 lookback — a structural timescale.
                            # Addresses bear_calm underperformance: equities held flat/down for
@@ -582,10 +586,11 @@ def apply_trailing_stop_signal(signal: pd.Series,
                                 close: pd.Series,
                                 atr: pd.Series,
                                 atr_mult: float = None,
-                                macro: pd.DataFrame = None) -> pd.Series:
+                                macro: pd.DataFrame = None) -> tuple:
     """
     Close a long position if price falls ATR_TRAILING_MULT × ATR below the
-    trailing high since entry, with profit-target stop tightening.
+    trailing high since entry, with profit-target stop tightening and a
+    partial exit at ATR_PROFIT_TARGET (8×) ATR gain.
 
     ATR-scaled stops adapt to each asset's volatility automatically.  A 3×
     stop on SPY (low vol) is tighter in dollar terms than 3× on NVDA (high
@@ -603,6 +608,16 @@ def apply_trailing_stop_signal(signal: pd.Series,
         a tighter stop locks in profit while still allowing the trend to run.
         Both constants (5× threshold, 1.5× tightened stop) are published,
         not fitted to this data.
+
+    Partial exit at ATR_PROFIT_TARGET (8×) ATR gain:
+        When price rises 8× ATR above entry, signal is set to 0 for that bar
+        (full exit at the close) and re-enters at 1 the next bar if the
+        upstream signal is still long.  The re-entered leg is tracked in
+        half_size (True) so portfolio.py can size it at ATR_PARTIAL_REMAIN
+        (50%) of the normal position.  The remaining half continues with the
+        1.5× ATR tight stop already in effect from the 5×-ATR tighten.
+        Source: Elder, "Trading for a Living" — partial profit taking at
+        extended gains reduces drawdown without cutting the trend short.
 
     VIX-adaptive stop tightening (when macro is provided):
         In bull_stress (VIX 20–25): tighten to 2.5× ATR (trail_mult × 0.83).
@@ -626,14 +641,22 @@ def apply_trailing_stop_signal(signal: pd.Series,
                   enables VIX-adaptive stop tightening in elevated-VIX regimes.
 
     Returns:
-        Filtered signal Series.  Same index and dtype (int) as input.
+        Tuple (signal_series, half_size_series):
+          signal_series  — Filtered signal Series, same index and dtype (int)
+                           as input.
+          half_size_series — Boolean Series (same index).  True on bars where
+                             position is in the half-size re-entry leg after a
+                             partial exit, until the position is fully closed.
     """
-    trail_mult   = atr_mult if atr_mult is not None else ATR_TRAILING_MULT
-    result       = signal.copy().astype(float)
-    position_dir = 0   # 0 = flat, +1 = long, -1 = short
-    trail_high   = 0.0
-    trail_low    = 0.0
-    entry_price  = 0.0
+    trail_mult        = atr_mult if atr_mult is not None else ATR_TRAILING_MULT
+    result            = signal.copy().astype(float)
+    half_size         = pd.Series(False, index=signal.index)
+    position_dir      = 0     # 0 = flat, +1 = long, -1 = short
+    trail_high        = 0.0
+    trail_low         = 0.0
+    entry_price       = 0.0
+    partial_exit_taken = False  # True once the 8×-ATR partial exit has fired
+    in_partial_reentry = False  # True while holding the post-partial-exit half leg
 
     # VIX-adaptive stop: precompute aligned VIX series if macro is provided
     vix_series = None
@@ -660,10 +683,17 @@ def apply_trailing_stop_signal(signal: pd.Series,
 
         if position_dir == 0:
             if val != 0:
-                position_dir = val
-                trail_high   = price
-                trail_low    = price
-                entry_price  = price
+                position_dir       = val
+                trail_high         = price
+                trail_low          = price
+                entry_price        = price
+                partial_exit_taken = False  # reset for each new entry
+                if in_partial_reentry:
+                    half_size.iloc[i] = True   # re-entry bar is half-size
+            elif in_partial_reentry:
+                # Upstream signal went 0 before we could re-enter — cancel
+                in_partial_reentry = False
+
         elif position_dir == 1:
             # Long: trail the high, stop below it
             if price > trail_high:
@@ -678,15 +708,35 @@ def apply_trailing_stop_signal(signal: pd.Series,
             else:
                 stop = trail_high * 0.80
 
+            # ── Partial exit at ATR_PROFIT_TARGET (8×) ATR gain ──────────────
+            # Fires once per position (partial_exit_taken guards re-fire).
+            # Sets signal to 0 this bar (full exit at close), then the state
+            # machine will naturally re-enter next bar when upstream signal=1.
+            # The re-entered leg is flagged by in_partial_reentry so portfolio.py
+            # sizes it at ATR_PARTIAL_REMAIN (50%).
+            if not partial_exit_taken and current_atr and current_atr > 0:
+                if (price - entry_price) > ATR_PROFIT_TARGET * current_atr:
+                    partial_exit_taken  = True
+                    in_partial_reentry  = True
+                    result.iloc[i]      = 0    # full exit this bar
+                    position_dir        = 0
+                    trail_high          = 0.0
+                    entry_price         = 0.0
+                    continue               # skip stop check for this bar
+
             if price < stop:
-                result.iloc[i] = 0              # trailing stop fires (long)
-                position_dir   = 0
-                trail_high     = 0.0
-                entry_price    = 0.0
+                result.iloc[i]     = 0    # trailing stop fires (long)
+                position_dir       = 0
+                trail_high         = 0.0
+                entry_price        = 0.0
+                in_partial_reentry = False
             elif val == 0:
-                position_dir = 0                # normal exit
-                trail_high   = 0.0
-                entry_price  = 0.0
+                position_dir       = 0    # normal exit
+                trail_high         = 0.0
+                entry_price        = 0.0
+                in_partial_reentry = False
+            elif in_partial_reentry:
+                half_size.iloc[i] = True  # still holding the half-size leg
 
         else:  # position_dir == -1 (short)
             # Short: trail the low, stop above it
@@ -704,16 +754,18 @@ def apply_trailing_stop_signal(signal: pd.Series,
                 stop = trail_low * 1.20
 
             if price > stop:
-                result.iloc[i] = 0              # trailing stop fires (short)
-                position_dir   = 0
-                trail_low      = 0.0
-                entry_price    = 0.0
+                result.iloc[i]     = 0    # trailing stop fires (short)
+                position_dir       = 0
+                trail_low          = 0.0
+                entry_price        = 0.0
+                in_partial_reentry = False
             elif val == 0:
-                position_dir = 0                # normal exit
-                trail_low    = 0.0
-                entry_price  = 0.0
+                position_dir       = 0    # normal exit
+                trail_low          = 0.0
+                entry_price        = 0.0
+                in_partial_reentry = False
 
-    return result.astype(int)
+    return result.astype(int), half_size
 
 
 def apply_time_decay_exit(signal: pd.Series, close: pd.Series) -> pd.Series:
@@ -1017,7 +1069,7 @@ def fast_signal(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.Series
 
     fast_sig = apply_rsi_entry_filter(fast_sig, df["rsi_14"])
     fast_sig = apply_min_hold_filter(fast_sig, min_hold=3)
-    fast_sig = apply_trailing_stop_signal(fast_sig, df["Close"], df["atr_14"], atr_mult=2.0)
+    fast_sig, _ = apply_trailing_stop_signal(fast_sig, df["Close"], df["atr_14"], atr_mult=2.0)
     fast_sig = fast_sig * gate
     return fast_sig
 
@@ -1065,7 +1117,8 @@ def breakout_entry_signal(df: pd.DataFrame, regime_signal: pd.Series) -> pd.Seri
             else:
                 in_pos = False       # regime exited
 
-    return apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
+    signal, _ = apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
+    return signal
 
 
 def oversold_bounce_signal(df: pd.DataFrame, regime_signal: pd.Series) -> pd.Series:
@@ -1116,7 +1169,8 @@ def oversold_bounce_signal(df: pd.DataFrame, regime_signal: pd.Series) -> pd.Ser
             else:
                 result.iloc[i] = 1      # still in bounce trade
 
-    return apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
+    signal, _ = apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
+    return signal
 
 
 # ── Cross-asset entry timing cache and helpers ────────────────────────────────
@@ -1371,7 +1425,9 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         # ── Principled signal improvements (not curve-fitted) ───────────────
         signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
         signal_r = apply_min_hold_filter(signal_r)
-        signal_r = apply_trailing_stop_signal(signal_r, df["Close"], df["atr_14"], macro=macro)
+        signal_r, half_size_r = apply_trailing_stop_signal(
+            signal_r, df["Close"], df["atr_14"], macro=macro
+        )
         signal_r = apply_time_decay_exit(signal_r, df["Close"])
         signal_r = signal_r * regime_gate  # re-apply gate after post-processing
 
@@ -1392,15 +1448,19 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         ).astype(int) * regime_gate
         signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
         signal_r = apply_min_hold_filter(signal_r)
-        signal_r = apply_trailing_stop_signal(signal_r, df["Close"], df["atr_14"])
+        signal_r, half_size_r = apply_trailing_stop_signal(
+            signal_r, df["Close"], df["atr_14"]
+        )
         signal_r = apply_time_decay_exit(signal_r, df["Close"])
         signal_r = signal_r * regime_gate
 
     else:
         # Bonds: two-sided momentum. Rate cycles genuinely go both ways for years.
-        signal_r = pd.Series(np.where(regime == 1, mom, rev), index=df.index) * regime_gate
+        signal_r   = pd.Series(np.where(regime == 1, mom, rev), index=df.index) * regime_gate
+        half_size_r = pd.Series(False, index=df.index)
 
     out["signal_regime"] = signal_r
+    out["half_size"]     = half_size_r
 
     # ── Multi-signal overlay (equity only) ─────────────────────────────────
     # breakout_entry_signal and oversold_bounce_signal are ADDITIONAL entry
@@ -1619,13 +1679,15 @@ def main():
     multi        = pd.DataFrame({t: s["signal_multi"]         for t, s in all_signals.items()}).dropna()
     fast_overlay = pd.DataFrame({t: s["signal_fast_overlay"]  for t, s in all_signals.items()}).dropna()
     multi_fast   = pd.DataFrame({t: s["signal_multi_fast"]    for t, s in all_signals.items()}).dropna()
+    half_size_mat = pd.DataFrame({t: s["half_size"]           for t, s in all_signals.items()}).dropna()
 
-    regime.to_parquet(SIGNAL_DIR        / "regime_signals.parquet")
-    composite.to_parquet(SIGNAL_DIR     / "composite_signals.parquet")
-    ensemble.to_parquet(SIGNAL_DIR      / "ensemble_signals.parquet")
-    multi.to_parquet(SIGNAL_DIR         / "multi_signals.parquet")
-    fast_overlay.to_parquet(SIGNAL_DIR  / "fast_overlay_signals.parquet")
-    multi_fast.to_parquet(SIGNAL_DIR    / "multi_fast_signals.parquet")
+    regime.to_parquet(SIGNAL_DIR         / "regime_signals.parquet")
+    composite.to_parquet(SIGNAL_DIR      / "composite_signals.parquet")
+    ensemble.to_parquet(SIGNAL_DIR       / "ensemble_signals.parquet")
+    multi.to_parquet(SIGNAL_DIR          / "multi_signals.parquet")
+    fast_overlay.to_parquet(SIGNAL_DIR   / "fast_overlay_signals.parquet")
+    multi_fast.to_parquet(SIGNAL_DIR     / "multi_fast_signals.parquet")
+    half_size_mat.to_parquet(SIGNAL_DIR  / "half_size.parquet")
     print(f"Signal matrices saved: {regime.shape}")
 
     # Save carry signal matrix if carry was loaded into any ticker

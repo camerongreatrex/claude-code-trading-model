@@ -71,7 +71,7 @@ from .backtester import (
     calmar_ratio, win_rate, profit_factor, summarise, equity_curve
 )
 from .data_pipeline import TICKER_LIST, ASSET_CLASS, HEDGE_MAP
-from .signal_generation import vix_position_scalar
+from .signal_generation import vix_position_scalar, ATR_PARTIAL_REMAIN
 
 SIGNAL_DIR  = Path("data/signals")
 FEATURE_DIR = Path("data/features")
@@ -1899,6 +1899,20 @@ def main():
     signals_composite = composite_signals.reindex(returns.index).fillna(0)
     if has_multi:
         signals_multi = multi_signals.reindex(returns.index).fillna(0)
+
+    # ── Partial-exit half-size reduction ──────────────────────────────────────
+    # half_size.parquet is written by signal_generation.py.  Where half_size is
+    # True, the position is in the half-leg after an 8×-ATR partial exit; size
+    # it at ATR_PARTIAL_REMAIN (0.5) of the normal position.  All other sizing
+    # logic (risk parity weights, VIX gate, drawdown control) is unchanged.
+    _hs_path = SIGNAL_DIR / "half_size.parquet"
+    if _hs_path.exists():
+        _hs_raw = pd.read_parquet(_hs_path).reindex(returns.index).fillna(False)
+        _hs_regime = _hs_raw.reindex(columns=signals_regime.columns, fill_value=False)
+        signals_regime = signals_regime * np.where(_hs_regime, ATR_PARTIAL_REMAIN, 1.0)
+        if has_multi:
+            _hs_multi = _hs_raw.reindex(columns=signals_multi.columns, fill_value=False)
+            signals_multi = signals_multi * np.where(_hs_multi, ATR_PARTIAL_REMAIN, 1.0)
 
     print("Correlation matrix of returns (should be lower with diversified universe):")
     print(returns.corr().round(2))

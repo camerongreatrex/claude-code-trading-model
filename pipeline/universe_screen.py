@@ -78,6 +78,12 @@ CANDIDATES = [
     ("FXA",  "commodity",    "Australian Dollar ETF",           "Commodity currency, China proxy, RBA carry"),
     ("FXC",  "commodity",    "Canadian Dollar ETF",             "Oil correlation, BOC policy divergence"),
     ("FXB",  "commodity",    "British Pound ETF",               "BOE policy, Brexit aftermath, UK macro"),
+
+    # Additional candidates for $20M threshold re-screen
+    ("COPX", "commodity",    "Copper Miners ETF",               "Electrification demand, housing, industrial cycle"),
+    ("HACK", "equity_index", "Cybersecurity ETF",               "Secular growth in cyber spending, low cyclicality"),
+    ("XBI",  "equity_index", "Biotech ETF (SPDR)",              "FDA pipeline, binary event risk, low macro correlation"),
+    ("IYR",  "equity_index", "US Real Estate ETF (iShares)",    "Rental income, rate sensitivity, distinct from VNQ"),
 ]
 
 FEATURE_DIR = Path("data/features")
@@ -132,7 +138,7 @@ def screen_candidate(
 
     # Liquidity check: average daily dollar volume
     avg_dv = float((close * volume).mean())
-    if avg_dv < 50_000_000:  # $50M minimum
+    if avg_dv < 20_000_000:  # $20M minimum (sufficient for portfolios under $500k)
         return {"ticker": ticker, "status": "FAIL",
                 "reason": f"illiquid (${avg_dv/1e6:.0f}M avg daily vol)"}
 
@@ -306,6 +312,15 @@ def main():
         print()
         for _, r in passed.iterrows():
             print(f"  {r['ticker']}: {r['description']} -- {r['driver']}")
+
+        # Show what the lower threshold surfaced vs original $50M
+        new_from_lower = passed[passed["avg_dollar_vol_M"] < 50]
+        if not new_from_lower.empty:
+            print(f"\n  NEW from $20M threshold (would have failed at $50M):")
+            for _, r in new_from_lower.iterrows():
+                print(f"    {r['ticker']:<8} ${r['avg_dollar_vol_M']:.0f}M ADV  "
+                      f"corr={r['avg_corr']:.3f}  stress={r['bear_stress_corr']:.3f}  "
+                      f"— {r.get('description', '')}")
 
     print(f"\n{'=' * W}")
     print(f"  MARGINAL ({len(marginal)} tickers) -- worth investigating further")

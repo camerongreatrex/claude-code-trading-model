@@ -170,6 +170,21 @@ TICKERS = {
                                # bear_stress corr +0.102; inception May 2019 (~7 years)
     "WTMF": "commodity",       # WisdomTree Managed Futures — conservative CTA replication;
                                # bear_stress corr +0.138; lower DD (-13.2%) than DBMF; full history from 2011
+
+    # --- Phase 7: Screened additions (universe_screen.py verified) ---
+    # Selected via pipeline/universe_screen.py quantitative screening:
+    #   avg pairwise correlation < 0.35, bear_stress correlation < 0.40,
+    #   max pairwise correlation < 0.70 (no redundancy), $50M+ daily volume
+
+    "VGSH": "bond",           # Vanguard Short-Term Treasury ETF — cash substitute with positive carry;
+                               # avg corr 0.010 (near zero to everything), bear_stress corr -0.155
+                               # (NEGATIVE — actually rises in crashes); replaces dead cash with a
+                               # position that earns short-term yield and appreciates in flight-to-safety
+
+    "MUB" : "bond",           # iShares Municipal Bond ETF — tax-exempt state/local government credit;
+                               # avg corr 0.244 (moderate), bear_stress corr 0.361 (below 0.40 threshold);
+                               # distinct credit driver from TLT (rate direction), HYG (corporate credit),
+                               # TIP (real rates), BWX (international govt) — adds a 5th bond factor
 }
 
 # Equity-like assets that can use momentum + mean reversion regime switching
@@ -347,6 +362,9 @@ def main():
         # phase 6 managed futures additions
         "DBMF": "iMGP DBi Managed Futures — replicates top 20 CTA hedge funds; bear_stress corr +0.102",
         "WTMF": "WisdomTree Managed Futures — conservative CTA replication; bear_stress corr +0.138; lower DD",
+        # phase 7 screened additions (universe_screen.py verified)
+        "VGSH": "Short-Term Treasury ETF — near-zero avg corr (0.010), negative bear_stress corr (-0.155); cash substitute",
+        "MUB" : "Municipal Bond ETF — state/local credit driver; avg corr 0.244, bear_stress corr 0.361",
     }
 
     for ticker in TICKER_LIST:
