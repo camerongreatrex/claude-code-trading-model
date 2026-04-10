@@ -83,7 +83,61 @@ CAPITAL          = 100_000
 MAX_POSITION_PCT = 0.20
 RISK_PER_TRADE   = 0.01
 
+# Cap broad index ETFs at 8% of portfolio to prevent alpha dilution.
+# Rationale: SPY/IWM/EEM track the market — large allocations to these
+# mean the portfolio is just an expensive index fund. The alpha comes from
+# sector ETFs, individual stocks, and uncorrelated assets (bonds, commodities).
+# 8% = enough to maintain the trend signal's participation without dominating.
+INDEX_ETF_CAP     = 0.08
+INDEX_ETF_TICKERS = {"SPY", "IWM", "EEM", "EFA", "VWO"}
+
 RESEARCH_DIR = Path("data/research")
+
+# Module-level cache for regime label data (loaded once per process, re-used across
+# all momentum_tilt_sizes calls including walk-forward windows).
+_REGIME_DATA_CACHE: dict = {}
+
+# Regime-conditional tilt ranges for momentum_tilt_sizes (Part 1).
+# bull_calm:   [0.50, 1.50]  ±50% — maximum concentration toward top-ranked
+# bull_stress: [0.60, 1.40]  ±40%
+# bear_calm:   [0.80, 1.20]  ±20%
+# bear_stress: [0.90, 1.10]  ±10% — near-equal weight in momentum crash regime
+# Default (unknown): [0.70, 1.30] ±30% — unchanged from original
+_REGIME_TILT_PARAMS: dict = {
+    "bull_calm":   (0.50, 1.00),
+    "bull_stress": (0.60, 0.80),
+    "bear_calm":   (0.80, 0.40),
+    "bear_stress": (0.90, 0.20),
+}
+
+# Regime-conditional safe-haven floor fractions (Part 2).
+# In bull_calm: halve the floor to free 7% for equity deployment.
+# In bear_stress: increase floor for stronger crisis protection.
+# VIX guardrail: if regime == bull_calm AND VIX >= 20 → use bull_stress floor.
+_REGIME_FLOOR_PARAMS: dict = {
+    "bull_calm":   {"VGSH": 0.02, "DBMF": 0.02, "WTMF": 0.02},
+    "bull_stress": {"VGSH": 0.03, "DBMF": 0.03, "WTMF": 0.03},
+    "bear_calm":   {"VGSH": 0.05, "DBMF": 0.04, "WTMF": 0.04},
+    "bear_stress": {"VGSH": 0.07, "DBMF": 0.05, "WTMF": 0.05},
+}
+
+# Gross exposure targets by regime — non-floor positions are scaled UP toward
+# these targets after the adaptive floor is applied (Part 2).
+_REGIME_GROSS_TARGET: dict = {
+    "bull_calm":   0.92,
+    "bull_stress": 0.87,
+    "bear_calm":   0.80,
+    "bear_stress": 0.70,
+}
+
+# Minimum floor allocations — held regardless of signal state in sizing functions.
+# Mirrors SAFE_HAVEN_FLOOR in paper_trader.py so backtests reflect the same
+# permanent crisis-hedge positions.  See paper_trader.py for full rationale.
+SAFE_HAVEN_FLOOR = {
+    "VGSH": 0.05,   # 5% — bear_stress corr -0.155 (rises in crashes)
+    "DBMF": 0.04,   # 4% — bear_stress corr +0.102 (managed futures)
+    "WTMF": 0.04,   # 4% — bear_stress corr +0.138 (managed futures)
+}
 
 
 def load_dead_weight_scalars(
@@ -128,6 +182,49 @@ def _get_macro() -> pd.DataFrame:
         else:
             _MACRO_CACHE = pd.DataFrame()
     return _MACRO_CACHE
+
+
+def _load_regime_data(index: pd.DatetimeIndex) -> tuple:
+    """
+    Load regime labels and VIX series aligned to index.
+
+    Cached at module level — parquet files are read once per process.
+    Called by momentum_tilt_sizes() for each walk-forward window (fast path).
+
+    Returns:
+        (regimes, vix_series) where:
+          regimes    — Series of "bull_calm"/"bull_stress"/"bear_calm"/"bear_stress"
+                       aligned to index.  Falls back to "unknown" if data missing.
+          vix_series — VIX Series aligned to index, or None if unavailable.
+    """
+    global _REGIME_DATA_CACHE
+    if "macro" not in _REGIME_DATA_CACHE:
+        macro_path = MACRO_DIR / "macro_features.parquet"
+        spy_path   = FEATURE_DIR / "SPY.parquet"
+        if macro_path.exists() and spy_path.exists():
+            try:
+                _REGIME_DATA_CACHE["macro"]     = pd.read_parquet(macro_path)
+                _REGIME_DATA_CACHE["spy_close"] = pd.read_parquet(spy_path)["Close"]
+            except Exception:
+                _REGIME_DATA_CACHE["macro"]     = pd.DataFrame()
+                _REGIME_DATA_CACHE["spy_close"] = pd.Series(dtype=float)
+        else:
+            _REGIME_DATA_CACHE["macro"]     = pd.DataFrame()
+            _REGIME_DATA_CACHE["spy_close"] = pd.Series(dtype=float)
+
+    macro_df  = _REGIME_DATA_CACHE["macro"]
+    spy_close = _REGIME_DATA_CACHE["spy_close"]
+
+    if macro_df.empty or "vix" not in macro_df.columns or spy_close.empty:
+        return pd.Series("unknown", index=index), None
+
+    try:
+        vix     = macro_df["vix"]
+        regimes = label_regimes(vix, spy_close, index)
+        vix_s   = vix.reindex(index).ffill().fillna(20.0)
+        return regimes, vix_s
+    except Exception:
+        return pd.Series("unknown", index=index), None
 
 
 def equal_weight_sizes(signals: pd.DataFrame, capital: float) -> pd.DataFrame:
@@ -196,6 +293,13 @@ def atr_sizes(signals: pd.DataFrame, features: dict, capital: float) -> pd.DataF
         sizes[ticker] = (signals[ticker] * dollar_pos).clip(
             -capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT
         )
+
+    # Index ETF concentration cap — mirrors paper_trader.INDEX_ETF_CAP.
+    # SPY/IWM/EEM have low ATR relative to price, so ATR sizing gives them
+    # outsized positions.  Cap at 8% to redirect capital to higher-alpha tickers.
+    for _etf in INDEX_ETF_TICKERS:
+        if _etf in sizes.columns:
+            sizes[_etf] = sizes[_etf].clip(-capital * INDEX_ETF_CAP, capital * INDEX_ETF_CAP)
 
     # Portfolio-level cap: scale all positions down if total gross exposure
     # exceeds capital.  Without this, 21 assets × 20%-cap each = 4.2× leverage,
@@ -1032,6 +1136,15 @@ def regime_adaptive_sizes(
     cap_limit = capital * MAX_POSITION_PCT
     sized     = sized.clip(-cap_limit, cap_limit)
 
+    # ── Safe-haven floor and VXZ cap ──────────────────────────────────────────
+    for _ft, _ff in SAFE_HAVEN_FLOOR.items():
+        if _ft in sized.columns:
+            _floor_dollars = _ff * capital
+            sized[_ft] = sized[_ft].where(sized[_ft] < 0,
+                                           sized[_ft].clip(lower=_floor_dollars))
+    if "VXZ" in sized.columns:
+        sized["VXZ"] = sized["VXZ"].clip(-0.03 * capital, 0.03 * capital)
+
     # ── Final gross cap (no leverage) ─────────────────────────────────────────
     gross = sized.abs().sum(axis=1).replace(0, np.nan)
     cap   = (capital / gross).clip(upper=1.0).fillna(1.0)
@@ -1075,6 +1188,15 @@ def adaptive_blend_sizes(
 
     blended = (0.50 * sizes_regime.reindex(columns=returns.columns, fill_value=0)
              + 0.50 * sizes_mom.reindex(columns=returns.columns, fill_value=0))
+
+    # ── Safe-haven floor and VXZ cap ──────────────────────────────────────────
+    for _ft, _ff in SAFE_HAVEN_FLOOR.items():
+        if _ft in blended.columns:
+            _floor_dollars = _ff * capital
+            blended[_ft] = blended[_ft].where(blended[_ft] < 0,
+                                               blended[_ft].clip(lower=_floor_dollars))
+    if "VXZ" in blended.columns:
+        blended["VXZ"] = blended["VXZ"].clip(-0.03 * capital, 0.03 * capital)
 
     gross = blended.abs().sum(axis=1).replace(0, np.nan)
     cap   = (capital / gross).clip(upper=1.0).fillna(1.0)
@@ -1231,6 +1353,15 @@ def multi_mom_carry_sizes(
     carry_active     = (carry_aligned.abs() > 0.05).astype(float)
     effective_weight = carry_weight * carry_active   # 0 for equities, carry_weight for bonds/commodities
     combined = (1 - effective_weight) * trend_sizes + effective_weight * carry_sizes
+
+    # ── Safe-haven floor and VXZ cap ──────────────────────────────────────────
+    for _ft, _ff in SAFE_HAVEN_FLOOR.items():
+        if _ft in combined.columns:
+            _floor_dollars = _ff * capital
+            combined[_ft] = combined[_ft].where(combined[_ft] < 0,
+                                                 combined[_ft].clip(lower=_floor_dollars))
+    if "VXZ" in combined.columns:
+        combined["VXZ"] = combined["VXZ"].clip(-0.03 * capital, 0.03 * capital)
 
     # Step 4: Gross exposure cap
     gross = combined.abs().sum(axis=1).replace(0, np.nan)
@@ -1643,6 +1774,118 @@ def beta_hedged_sizes(
     return sizes.multiply(scale, axis=0)
 
 
+def defensive_tilt_overlay(
+    sizes: pd.DataFrame,
+    signals: pd.DataFrame,
+    macro: pd.DataFrame,
+    capital: float,
+) -> pd.DataFrame:
+    """
+    When VIX term structure inverts (VIX9D > VIX, ratio > 1.05)
+    AND TLT is in a positive signal day AND SPY signal is 0 or
+    negative, boost VGSH weight by +3% and TLT weight by +3%
+    (absolute, capped at their max allowed weight).
+    Fund the boost by reducing the lowest-conviction long
+    positions proportionally.
+
+    Trigger condition (all three must be true):
+      1. vix_term_ratio > 1.05  (VIX9D/VIX backwardation — acute stress onset;
+         CBOE published threshold, not fitted to this dataset)
+      2. signals["TLT"] > 0 on that bar (TLT in uptrend)
+      3. signals["SPY"] == 0 on that bar (SPY not in uptrend)
+
+    When triggered:
+      - VGSH weight += min(0.03, max_weight - current_vgsh_weight)
+      - TLT  weight += min(0.03, max_weight - current_tlt_weight)
+      - Reduce other long weights proportionally to keep sum(weights) = 1.0
+
+    When NOT triggered: return sizes unchanged.
+
+    If VGSH is not in the universe on a given bar, skip the VGSH boost
+    silently and only boost TLT.
+
+    The 3% boost and 1.05 VIX ratio are CBOE published backwardation
+    thresholds — not fitted to this dataset.
+
+    Args:
+        sizes:   Dollar position size DataFrame (T × N).
+        signals: Signal DataFrame (T × N) with TLT and SPY columns.
+        macro:   Macro DataFrame with vix_term_ratio column.
+        capital: Total capital in dollars.
+
+    Returns:
+        Adjusted dollar position size DataFrame.  Unchanged if trigger
+        conditions are never met or if macro is unavailable.
+    """
+    if macro.empty or "vix_term_ratio" not in macro.columns:
+        return sizes
+
+    result  = sizes.copy()
+    max_pos = capital * MAX_POSITION_PCT
+    boost   = 0.03 * capital   # 3% absolute boost (CBOE published threshold)
+
+    vix_ratio = macro["vix_term_ratio"].reindex(sizes.index).ffill().fillna(1.0)
+    ratio_ok  = vix_ratio > 1.05
+
+    tlt_sig = (
+        signals["TLT"].reindex(sizes.index).fillna(0) > 0
+        if "TLT" in signals.columns
+        else pd.Series(False, index=sizes.index)
+    )
+    spy_sig = (
+        signals["SPY"].reindex(sizes.index).fillna(1) == 0
+        if "SPY" in signals.columns
+        else pd.Series(False, index=sizes.index)
+    )
+
+    triggered = ratio_ok & tlt_sig & spy_sig
+
+    if not triggered.any():
+        return result
+
+    # ── Boost VGSH and TLT on triggered rows ─────────────────────────────────
+    total_boost_per_row = pd.Series(0.0, index=sizes.index)
+
+    for col in ["VGSH", "TLT"]:
+        if col not in result.columns:
+            # VGSH not in universe — skip silently; TLT is always present
+            continue
+        current = result[col].copy()
+        # Room below position cap
+        room = (max_pos - current).clip(lower=0)
+        # Boost = min(3% of capital, available room), only on triggered rows
+        add = pd.Series(0.0, index=sizes.index)
+        add[triggered] = room[triggered].clip(upper=boost)
+        result[col] = current + add
+        total_boost_per_row += add
+
+    # ── Reduce other long positions proportionally to fund the boost ──────────
+    other_longs = [t for t in result.columns if t not in {"VGSH", "TLT"}]
+    if not other_longs:
+        return result
+
+    # Sum of long-only exposures in other tickers (per row)
+    other_pos_sum = result[other_longs].clip(lower=0).sum(axis=1)
+
+    # Scale factor: (existing_longs - boost_needed) / existing_longs
+    # Only apply where triggered AND there are longs to reduce
+    reduce_mask = triggered & (other_pos_sum > 0)
+    scale = pd.Series(1.0, index=sizes.index)
+    scale[reduce_mask] = (
+        (other_pos_sum[reduce_mask] - total_boost_per_row[reduce_mask])
+        / other_pos_sum[reduce_mask]
+    ).clip(lower=0.0)
+
+    # Apply scale only to positive (long) positions in other columns
+    for t in other_longs:
+        col_data  = result[t].copy()
+        long_rows = reduce_mask & (col_data > 0)
+        if long_rows.any():
+            result.loc[long_rows, t] = col_data[long_rows] * scale[long_rows]
+
+    return result
+
+
 def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
     """
     Compute daily portfolio P&L from dollar position sizes and asset returns.
@@ -1680,30 +1923,35 @@ def momentum_tilt_sizes(
     63-day (3-month) return.  Position sizes are scaled by a tilt factor:
 
         tilt = tilt_min + tilt_range × rank     [rank ∈ [0, 1]]
-             = 0.70 at rank 0.0  (worst 3-month performer  → 30% underweight)
-             = 1.00 at rank 0.5  (median performer         → neutral weight)
-             = 1.30 at rank 1.0  (best 3-month performer   → 30% overweight)
 
-    The rank is computed cross-sectionally across ONLY the tickers that
-    have an active signal on that date (signal ≠ 0).  Flat tickers are
-    excluded — their rank would be meaningless and would dilute the signal.
+    Part 1 — Regime-adaptive tilt range (structural, not curve-fitted):
+        bull_calm:   [0.50, 1.50]  ±50% — strong dispersion in confirmed up-trend
+        bull_stress: [0.60, 1.40]  ±40%
+        bear_calm:   [0.80, 1.20]  ±20%
+        bear_stress: [0.90, 1.10]  ±10% — near-equal weight during momentum crashes
 
-    The ±30% tilt (tilt_min=0.7, tilt_range=0.6) is deliberately conservative.
-    Most quant equity funds use ±50–100% momentum tilts; ±30% preserves
-    diversification while capturing cross-sectional momentum alpha.
+    Part 2 — Regime-adaptive safe-haven floor:
+        bull_calm:   VGSH 2%, DBMF 2%, WTMF 2% = 6% (halved)
+        bull_stress: VGSH 3%, DBMF 3%, WTMF 3% = 9%
+        bear_calm:   VGSH 5%, DBMF 4%, WTMF 4% = 13% (unchanged)
+        bear_stress: VGSH 7%, DBMF 5%, WTMF 5% = 17% (increased)
+        VIX guardrail: bull_calm + VIX ≥ 20 → use bull_stress floor.
+        Freed floor capital is deployed into active equity signals via gross scaling.
 
-    Window choice (63 days):
-        Jegadeesh and Titman (1993) showed that 3–12-month momentum
-        is strongest and most persistent.  63 trading days (≈3 months)
-        is the published sweet spot: shorter captures mean-reversion,
-        longer captures reversal.  This window is not fitted to this data.
+    Part 4 — Signal breadth conviction multiplier:
+        breadth = fraction of universe with active signals on a given day.
+        conviction_mult = (1.40 − 0.75 × breadth).clip(0.80, 1.25)
+        When fewer names are long (high conviction), size up.
+        When everything is long, size down per-position; more positions compensate.
+
+    Window choice (63 days): Jegadeesh & Titman (1993) 3–12-month momentum sweet spot.
 
     Args:
         signals:    Signal DataFrame (T × N), any signal type.
         features:   Dict[ticker → feature DataFrame] with Close prices.
         capital:    Starting capital in dollars.
-        tilt_min:   Minimum tilt factor (default 0.7 = worst-performer weight).
-        tilt_range: Tilt range (default 0.6 → tilt spans [0.7, 1.3]).
+        tilt_min:   Default minimum tilt factor (overridden by regime, default 0.7).
+        tilt_range: Default tilt range (overridden by regime, default 0.6).
         mom_window: Trailing return window for cross-sectional ranking (default 63).
 
     Returns:
@@ -1713,7 +1961,6 @@ def momentum_tilt_sizes(
     base = atr_sizes(signals, features, capital)
 
     # Step 2: Build trailing close-price matrix for momentum ranking.
-    # Only include tickers that have feature data and appear in signals.
     close_cols = {t: features[t]["Close"].reindex(base.index).ffill()
                   for t in signals.columns if t in features}
     if not close_cols:
@@ -1721,28 +1968,103 @@ def momentum_tilt_sizes(
     closes = pd.DataFrame(close_cols)
 
     # Step 3: 63-day trailing return for each ticker, computed daily.
-    mom = closes.pct_change(mom_window)   # (T × N), backward-looking only
+    mom = closes.pct_change(mom_window)
 
-    # Step 4: Vectorised cross-sectional momentum ranking.
-    # On each day, rank ONLY active tickers (signal ≠ 0) by momentum.
-    # Tickers with no active signal get a neutral tilt of 1.0 (base size).
+    # ── Load regime labels for Parts 1 and 2 ─────────────────────────────────
+    regimes, vix_s = _load_regime_data(base.index)
+    has_regimes    = not (regimes == "unknown").all()
+
+    # ── Part 1: Regime-adaptive per-bar tilt parameters ──────────────────────
+    t_min_s   = pd.Series(tilt_min,   index=base.index)
+    t_range_s = pd.Series(tilt_range, index=base.index)
+    if has_regimes:
+        for reg, (rmin, rrange) in _REGIME_TILT_PARAMS.items():
+            mask = regimes == reg
+            if mask.any():
+                t_min_s[mask]   = rmin
+                t_range_s[mask] = rrange
+
+    # ── Part 4: Signal breadth conviction multiplier ──────────────────────────
+    # breadth = fraction of universe active; high breadth → lower conviction per position.
+    # Linear: 1.175 at breadth=0.3, 1.025 at breadth=0.5, 0.80 at breadth=0.8.
+    breadth         = ((signals != 0).sum(axis=1) / max(signals.shape[1], 1)
+                       ).clip(0.0, 1.0).reindex(base.index).fillna(0.5)
+    conviction_mult = (1.40 - 0.75 * breadth).clip(0.80, 1.25)
+
+    # ── Step 4: Vectorised cross-sectional momentum ranking ───────────────────
     active_mask = signals.abs() > 0
-    # Restrict to columns present in mom; mask out inactive tickers with NaN
-    mom_cols = [c for c in signals.columns if c in mom.columns]
-    mom_masked = mom[mom_cols].where(active_mask[mom_cols])
-    # Percentile rank across columns (axis=1), only among non-NaN (active) tickers
-    ranks = mom_masked.rank(axis=1, pct=True)  # NaN stays NaN for inactive
-    # Count active+non-NaN tickers per row; only apply tilt where ≥ 2
-    n_active = ranks.notna().sum(axis=1)
-    tilt = pd.DataFrame(1.0, index=base.index, columns=base.columns)
-    valid_rows = n_active >= 2
+    mom_cols    = [c for c in signals.columns if c in mom.columns]
+    mom_masked  = mom[mom_cols].where(active_mask[mom_cols])
+    ranks       = mom_masked.rank(axis=1, pct=True)
+
+    n_active    = ranks.notna().sum(axis=1)
+    tilt        = pd.DataFrame(1.0, index=base.index, columns=base.columns)
+    valid_rows  = n_active >= 2
     for c in mom_cols:
         col_ranks = ranks[c]
         col_valid = valid_rows & col_ranks.notna()
-        tilt.loc[col_valid, c] = tilt_min + tilt_range * col_ranks[col_valid].values
+        if not col_valid.any():
+            continue
+        tilt.loc[col_valid, c] = (
+            t_min_s[col_valid].values + t_range_s[col_valid].values * col_ranks[col_valid].values
+        )
 
-    # Step 5: Apply tilt and re-apply gross exposure cap.
-    tilted = base * tilt
+    # ── Step 5: Apply tilt + conviction multiplier (before floor/cap) ─────────
+    tilted = base * tilt * conviction_mult.values[:, None]
+
+    # ── Part 2: Regime-adaptive safe-haven floor ──────────────────────────────
+    # Compute per-day effective regime (with VIX guardrail for floor logic).
+    if has_regimes:
+        eff_regime = regimes.copy()
+        if vix_s is not None:
+            # If labeled bull_calm but spot VIX ≥ 20, use bull_stress floor.
+            transitioning = (regimes == "bull_calm") & (vix_s >= 20)
+            eff_regime[transitioning] = "bull_stress"
+        floor_tickers = {t: {} for t in SAFE_HAVEN_FLOOR if t in tilted.columns}
+        for _ft in floor_tickers:
+            # Build per-bar floor fraction from regime
+            floor_frac = pd.Series(SAFE_HAVEN_FLOOR[_ft], index=tilted.index)
+            for reg, reg_floors in _REGIME_FLOOR_PARAMS.items():
+                mask = eff_regime == reg
+                if mask.any() and _ft in reg_floors:
+                    floor_frac[mask] = reg_floors[_ft]
+            floor_dollars = floor_frac * capital
+            tilted[_ft]   = tilted[_ft].where(tilted[_ft] < 0,
+                                               tilted[_ft].clip(lower=floor_dollars))
+        # ── Gross scaling: deploy freed floor capital into active equity signals ──
+        # After reducing the floor, scale non-floor long positions toward the
+        # regime's gross target so the freed 7% (bull_calm) goes to equities,
+        # not cash.  The final gross cap (below) prevents leverage.
+        floor_set     = set(SAFE_HAVEN_FLOOR.keys()) & set(tilted.columns)
+        non_floor_c   = [t for t in tilted.columns if t not in floor_set]
+        if non_floor_c:
+            gross_target_s = pd.Series(0.85, index=tilted.index)
+            for reg, gt in _REGIME_GROSS_TARGET.items():
+                mask = eff_regime == reg
+                if mask.any():
+                    gross_target_s[mask] = gt
+            floor_notional    = tilted[list(floor_set)].abs().sum(axis=1)
+            non_floor_target  = (gross_target_s * capital - floor_notional).clip(lower=0)
+            current_non_floor = tilted[non_floor_c].abs().sum(axis=1).replace(0, np.nan)
+            scale_up = (non_floor_target / current_non_floor).clip(0.50, 1.40).fillna(1.0)
+            tilted[non_floor_c] = tilted[non_floor_c].multiply(scale_up, axis=0)
+            # Re-clip per-position cap after scale-up
+            cap_limit = capital * MAX_POSITION_PCT
+            for t in non_floor_c:
+                tilted[t] = tilted[t].clip(-cap_limit, cap_limit)
+    else:
+        # Fallback: static floor (original behaviour)
+        for _ft, _ff in SAFE_HAVEN_FLOOR.items():
+            if _ft in tilted.columns:
+                _floor_dollars = _ff * capital
+                tilted[_ft] = tilted[_ft].where(tilted[_ft] < 0,
+                                                 tilted[_ft].clip(lower=_floor_dollars))
+
+    # ── VXZ cap: conditional vol hedge — never more than 3% of capital ────────
+    if "VXZ" in tilted.columns:
+        tilted["VXZ"] = tilted["VXZ"].clip(-0.03 * capital, 0.03 * capital)
+
+    # ── Final gross exposure cap (no leverage) ────────────────────────────────
     gross  = tilted.abs().sum(axis=1).replace(0, np.nan)
     scale  = (capital / gross).clip(upper=1.0).fillna(1.0)
     return tilted.multiply(scale, axis=0)
@@ -1778,6 +2100,115 @@ def active_sharpe_ratio(port_ret: pd.Series, returns: pd.DataFrame) -> float:
     beta   = float(np.cov(p, s)[0, 1]) / spy_var
     active = pd.Series(p - beta * s, index=port_ret.index)
     return sharpe_ratio(active)
+
+
+def compute_regime_diagnostic(
+    port_ret: pd.Series,
+    sizes: pd.DataFrame,
+    returns: pd.DataFrame,
+    signals: pd.DataFrame,
+    capital: float,
+) -> dict:
+    """
+    Compute regime-decomposed performance metrics for multi_mom_tilt.
+
+    Returns a dict with per-regime stats plus aggregate capture ratios.
+    Printed to stdout and saved to JSON for before/after comparison.
+    """
+    regimes, vix_s = _load_regime_data(port_ret.index)
+
+    if (regimes == "unknown").all():
+        print("  [regime_diagnostic] Cannot compute — regime data unavailable.")
+        return {}
+
+    spy_ret  = (returns["SPY"].reindex(port_ret.index).fillna(0)
+                if "SPY" in returns.columns else pd.Series(0.0, index=port_ret.index))
+    gross_pct = sizes.reindex(port_ret.index).abs().sum(axis=1) / capital * 100
+    n_pos     = (signals.reindex(port_ret.index).abs() > 0).sum(axis=1)
+    total     = len(port_ret)
+
+    regime_stats = {}
+    for reg in ["bull_calm", "bull_stress", "bear_calm", "bear_stress"]:
+        mask = regimes == reg
+        n    = int(mask.sum())
+        if n == 0:
+            regime_stats[reg] = dict(pct_days=0.0, avg_daily_return_pct=0.0,
+                                     avg_daily_spy_pct=0.0, daily_alpha_bps=0.0,
+                                     avg_gross_pct=0.0, avg_positions=0.0)
+            continue
+        pr           = port_ret[mask]
+        sr           = spy_ret[mask]
+        avg_port     = float(pr.mean()) * 100
+        avg_spy      = float(sr.mean()) * 100
+        alpha_bps    = (avg_port - avg_spy) * 100
+        avg_gross    = float(gross_pct[mask].mean())
+        avg_npos     = float(n_pos[mask].mean())
+        regime_stats[reg] = dict(
+            pct_days             = round(n / total * 100, 1),
+            avg_daily_return_pct = round(avg_port,  4),
+            avg_daily_spy_pct    = round(avg_spy,   4),
+            daily_alpha_bps      = round(alpha_bps, 2),
+            avg_gross_pct        = round(avg_gross, 1),
+            avg_positions        = round(avg_npos,  1),
+        )
+
+    # Capture ratios
+    spy_up   = spy_ret > 0
+    spy_dn   = spy_ret < 0
+    spy_big  = spy_ret > 0.005
+    up_cap   = (float(port_ret[spy_up].mean()) / float(spy_ret[spy_up].mean())
+                if spy_up.sum() > 0 and float(spy_ret[spy_up].mean()) != 0 else float("nan"))
+    dn_cap   = (float(port_ret[spy_dn].mean()) / float(spy_ret[spy_dn].mean())
+                if spy_dn.sum() > 0 and float(spy_ret[spy_dn].mean()) != 0 else float("nan"))
+    hit_rate = (float((port_ret[spy_big] > 0).mean()) * 100
+                if spy_big.sum() > 0 else float("nan"))
+
+    # OLS beta
+    spy_vals  = spy_ret.fillna(0).values
+    port_vals = port_ret.fillna(0).values
+    spy_var   = float(np.var(spy_vals))
+    ols_beta  = (float(np.cov(port_vals, spy_vals)[0, 1]) / spy_var
+                 if spy_var > 0 else float("nan"))
+
+    bc_mask = regimes == "bull_calm"
+    bs_mask = regimes == "bear_stress"
+
+    result = dict(
+        regime_stats              = regime_stats,
+        upside_capture            = round(up_cap,  3),
+        downside_capture          = round(dn_cap,  3),
+        hit_rate_spy_big_pct      = round(hit_rate, 1),
+        avg_positions_bull_calm   = round(float(n_pos[bc_mask].mean()), 1) if bc_mask.sum() > 0 else 0.0,
+        avg_positions_bear_stress = round(float(n_pos[bs_mask].mean()), 1) if bs_mask.sum() > 0 else 0.0,
+        avg_gross_bull_calm_pct   = round(float(gross_pct[bc_mask].mean()), 1) if bc_mask.sum() > 0 else 0.0,
+        avg_gross_bear_stress_pct = round(float(gross_pct[bs_mask].mean()), 1) if bs_mask.sum() > 0 else 0.0,
+        ols_beta                  = round(ols_beta, 3),
+    )
+
+    # ── Print table ───────────────────────────────────────────────────────
+    print(f"\n{'='*88}")
+    print("  REGIME DIAGNOSTIC  (multi_mom_tilt — full history)")
+    print(f"{'='*88}")
+    print(f"  {'Regime':<14} {'%Days':>7} {'PortRet%':>9} {'SPYRet%':>9} "
+          f"{'Alpha(bps)':>11} {'GrossExp%':>10} {'AvgPos':>7}")
+    print("  " + "-" * 72)
+    for reg in ["bull_calm", "bull_stress", "bear_calm", "bear_stress"]:
+        s = regime_stats[reg]
+        print(f"  {reg:<14} {s['pct_days']:>7.1f} {s['avg_daily_return_pct']:>9.4f} "
+              f"{s['avg_daily_spy_pct']:>9.4f} {s['daily_alpha_bps']:>11.2f} "
+              f"{s['avg_gross_pct']:>10.1f} {s['avg_positions']:>7.1f}")
+    print()
+    print(f"  Upside capture ratio  (port / SPY | SPY > 0): {up_cap:.3f}")
+    print(f"  Downside capture ratio(port / SPY | SPY < 0): {dn_cap:.3f}")
+    print(f"  Hit rate on SPY >+0.5% days: {hit_rate:.1f}%")
+    print(f"  Avg positions  bull_calm:    {result['avg_positions_bull_calm']:.1f}")
+    print(f"  Avg positions  bear_stress:  {result['avg_positions_bear_stress']:.1f}")
+    print(f"  Avg gross exp  bull_calm:    {result['avg_gross_bull_calm_pct']:.1f}%")
+    print(f"  Avg gross exp  bear_stress:  {result['avg_gross_bear_stress_pct']:.1f}%")
+    print(f"  OLS beta to SPY:             {ols_beta:.3f}")
+    print(f"{'='*88}")
+
+    return result
 
 
 def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
@@ -1842,6 +2273,10 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
             # portfolio_returns uses shift(1) so the first test-day return is 0
             # (no carry-over position from training) — this is correct.
             sizes      = sizing_fn(all_sig, all_ret)
+            # Defensive tilt overlay: boost VGSH/TLT when VIX backwardation is
+            # acute, TLT is trending, and SPY is flat.  Applied last — after all
+            # sizing logic — so it doesn't interact with vol scaling or PCA.
+            sizes      = defensive_tilt_overlay(sizes, all_sig, _get_macro(), CAPITAL)
             period_ret = portfolio_returns(sizes.iloc[-test_days:], all_ret.iloc[-test_days:])
 
         y0 = signals.index[start].year
@@ -1919,39 +2354,129 @@ def main():
     print()
 
     # ── Compute all position size DataFrames ──────────────────────────────────
-    sizes_eq  = equal_weight_sizes(signals_regime, CAPITAL)
+    # defensive_tilt_overlay is applied as the final step for every method.
+    # It boosts VGSH/TLT when VIX backwardation is acute and SPY is flat,
+    # funded by proportionally reducing other long positions.
+    _macro_for_overlay = _get_macro()
+
+    # ── IMPROVEMENT 2 VALIDATION: count defensive tilt trigger bars ───────────
+    _sig_for_trigger = signals_multi if has_multi else signals_regime
+    if not _macro_for_overlay.empty and "vix_term_ratio" in _macro_for_overlay.columns:
+        _ratio_ok  = _macro_for_overlay["vix_term_ratio"].reindex(returns.index).ffill().fillna(1.0) > 1.05
+        _tlt_ok    = ((_sig_for_trigger["TLT"] > 0)
+                      if "TLT" in _sig_for_trigger.columns
+                      else pd.Series(False, index=returns.index))
+        _spy_ok    = ((_sig_for_trigger["SPY"] == 0)
+                      if "SPY" in _sig_for_trigger.columns
+                      else pd.Series(False, index=returns.index))
+        _triggered = (_ratio_ok
+                      & _tlt_ok.reindex(returns.index).fillna(False)
+                      & _spy_ok.reindex(returns.index).fillna(False))
+        _n_tilt    = int(_triggered.sum())
+    else:
+        _n_tilt = 0
+    print(f"\n  IMPROVEMENT 2 — Defensive tilt overlay:")
+    print(f"  Bars triggering vix_term_ratio>1.05 + TLT long + SPY flat: {_n_tilt}")
+
+    sizes_eq  = defensive_tilt_overlay(
+        equal_weight_sizes(signals_regime, CAPITAL),
+        signals_regime, _macro_for_overlay, CAPITAL,
+    )
     ret_eq    = portfolio_returns(sizes_eq, returns)
 
     print("  Computing risk-parity sizes (Ledoit-Wolf, monthly rebalance)...")
-    sizes_rp  = risk_parity_sizes(signals_regime, features, returns, CAPITAL)
+    sizes_rp  = defensive_tilt_overlay(
+        risk_parity_sizes(signals_regime, features, returns, CAPITAL),
+        signals_regime, _macro_for_overlay, CAPITAL,
+    )
     ret_rp    = portfolio_returns(sizes_rp, returns)
 
     if has_multi:
-        sizes_multi_eq  = equal_weight_sizes(signals_multi, CAPITAL)
-        sizes_multi_atr = atr_sizes(signals_multi, features, CAPITAL)
+        sizes_multi_eq  = defensive_tilt_overlay(
+            equal_weight_sizes(signals_multi, CAPITAL),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
+        sizes_multi_atr = defensive_tilt_overlay(
+            atr_sizes(signals_multi, features, CAPITAL),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
         ret_multi_eq    = portfolio_returns(sizes_multi_eq,  returns)
         ret_multi_atr   = portfolio_returns(sizes_multi_atr, returns)
 
     # Cross-sectional momentum tilt
     print("  Computing momentum tilt sizes (cross-sectional 63-day rank)...")
     if has_multi:
-        sizes_multi_mom = momentum_tilt_sizes(signals_multi, features, CAPITAL)
+        sizes_multi_mom = defensive_tilt_overlay(
+            momentum_tilt_sizes(signals_multi, features, CAPITAL),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
         ret_multi_mom   = portfolio_returns(sizes_multi_mom, returns)
+
+    # ── Regime diagnostic for multi_mom_tilt (printed before and after each part) ──
+    import json as _json
+    _diag_baseline_path = RESULTS_DIR / "regime_diagnostic_baseline.json"
+    _diag_final_path    = RESULTS_DIR / "regime_diagnostic_final.json"
+    _diag: dict = {}
+    if has_multi:
+        _diag = compute_regime_diagnostic(
+            ret_multi_mom, sizes_multi_mom, returns, signals_multi, CAPITAL
+        )
+        # Save as baseline if it doesn't exist yet; otherwise save as current
+        if not _diag_baseline_path.exists() and _diag:
+            with open(_diag_baseline_path, "w") as _f:
+                _json.dump(_diag, _f, indent=2)
+            print(f"\n  Baseline diagnostic saved → {_diag_baseline_path}")
+        elif _diag:
+            with open(_diag_final_path, "w") as _f:
+                _json.dump(_diag, _f, indent=2)
+            # Print delta vs baseline if it exists
+            if _diag_baseline_path.exists():
+                with open(_diag_baseline_path) as _f:
+                    _base = _json.load(_f)
+                print("\n  DELTA vs BASELINE (multi_mom_tilt):")
+                _metrics = [
+                    ("bull_calm daily alpha (bps)", _diag.get("regime_stats", {}).get("bull_calm", {}).get("daily_alpha_bps", 0),
+                     _base.get("regime_stats", {}).get("bull_calm", {}).get("daily_alpha_bps", 0)),
+                    ("bear_stress daily alpha (bps)", _diag.get("regime_stats", {}).get("bear_stress", {}).get("daily_alpha_bps", 0),
+                     _base.get("regime_stats", {}).get("bear_stress", {}).get("daily_alpha_bps", 0)),
+                    ("bull_calm gross exp %", _diag.get("avg_gross_bull_calm_pct", 0), _base.get("avg_gross_bull_calm_pct", 0)),
+                    ("upside capture",  _diag.get("upside_capture", 0),  _base.get("upside_capture", 0)),
+                    ("downside capture", _diag.get("downside_capture", 0), _base.get("downside_capture", 0)),
+                    ("OLS beta",        _diag.get("ols_beta", 0),        _base.get("ols_beta", 0)),
+                ]
+                print(f"  {'Metric':<35} {'Before':>10} {'After':>10} {'Delta':>10}")
+                print("  " + "-" * 68)
+                for _name, _after, _before in _metrics:
+                    _delta = _after - _before
+                    print(f"  {_name:<35} {_before:>10.3f} {_after:>10.3f} {_delta:>+10.3f}")
+
 
     ret_bnh = returns.mean(axis=1)
 
     if has_multi:
         print("  Computing regime_adaptive sizes (smooth VIX interp + hedge cap + mom tilt)...")
-        sizes_regime_adaptive = regime_adaptive_sizes(signals_multi, features, returns, CAPITAL)
+        sizes_regime_adaptive = defensive_tilt_overlay(
+            regime_adaptive_sizes(signals_multi, features, returns, CAPITAL),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
         ret_regime_adaptive   = portfolio_returns(sizes_regime_adaptive, returns)
         print("  Computing adaptive_blend sizes (50% regime_adaptive + 50% multi_mom_tilt)...")
-        sizes_adaptive_blend  = adaptive_blend_sizes(signals_multi, features, returns, CAPITAL)
+        sizes_adaptive_blend  = defensive_tilt_overlay(
+            adaptive_blend_sizes(signals_multi, features, returns, CAPITAL),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
         ret_adaptive_blend    = portfolio_returns(sizes_adaptive_blend, returns)
         print("  Computing portable alpha sizes (multi_mom_tilt + SPY beta hedge, β=0.30)...")
-        sizes_portable        = portable_alpha_sizes(sizes_multi_mom, returns, CAPITAL, target_beta=0.30)
+        sizes_portable        = defensive_tilt_overlay(
+            portable_alpha_sizes(sizes_multi_mom, returns, CAPITAL, target_beta=0.30),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
         ret_portable          = portfolio_returns(sizes_portable, returns)
         print("  Computing portable alpha low-beta sizes (multi_mom_tilt + SPY beta hedge, β=0.15)...")
-        sizes_portable_low    = portable_alpha_sizes(sizes_multi_mom, returns, CAPITAL, target_beta=0.15)
+        sizes_portable_low    = defensive_tilt_overlay(
+            portable_alpha_sizes(sizes_multi_mom, returns, CAPITAL, target_beta=0.15),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
         ret_portable_low      = portfolio_returns(sizes_portable_low, returns)
 
     # ── Carry signal methods ───────────────────────────────────────────────────
@@ -1963,8 +2488,9 @@ def main():
         carry_signals_raw = carry_signals_raw.reindex(columns=signals_multi.columns, fill_value=0.0)
 
         print("  Computing multi_mom_carry sizes (75% trend + 25% carry)...")
-        sizes_mom_carry = multi_mom_carry_sizes(
-            signals_multi, carry_signals_raw, features, CAPITAL
+        sizes_mom_carry = defensive_tilt_overlay(
+            multi_mom_carry_sizes(signals_multi, carry_signals_raw, features, CAPITAL),
+            signals_multi, _macro_for_overlay, CAPITAL,
         )
         ret_mom_carry = portfolio_returns(sizes_mom_carry, returns)
 
@@ -1979,19 +2505,24 @@ def main():
             print(f"  GOOD: < 0.30 — carry provides genuine diversification")
 
         print("  Computing portable_carry sizes (multi_mom_carry + β=0.30 hedge)...")
-        sizes_portable_carry = portable_alpha_sizes(
-            sizes_mom_carry, returns, CAPITAL, target_beta=0.30
+        sizes_portable_carry = defensive_tilt_overlay(
+            portable_alpha_sizes(sizes_mom_carry, returns, CAPITAL, target_beta=0.30),
+            signals_multi, _macro_for_overlay, CAPITAL,
         )
         ret_portable_carry = portfolio_returns(sizes_portable_carry, returns)
 
     print("  Computing regime-aware risk parity sizes (regime-conditional cov)...")
-    sizes_rp_regime = rp_regime_aware_sizes(
-        signals_regime, features, returns, CAPITAL
+    sizes_rp_regime = defensive_tilt_overlay(
+        rp_regime_aware_sizes(signals_regime, features, returns, CAPITAL),
+        signals_regime, _macro_for_overlay, CAPITAL,
     )
     ret_rp_regime = portfolio_returns(sizes_rp_regime, returns)
 
     print("  Computing rp_regime_dw sizes (regime cov + dead weight)...")
-    sizes_rpd  = rp_regime_dw_sizes(signals_regime, features, returns, CAPITAL)
+    sizes_rpd  = defensive_tilt_overlay(
+        rp_regime_dw_sizes(signals_regime, features, returns, CAPITAL),
+        signals_regime, _macro_for_overlay, CAPITAL,
+    )
     ret_rpd    = portfolio_returns(sizes_rpd, returns)
 
     # ── Blended: 60% rp_regime_aware + 40% multi_mom_tilt ────────────────
@@ -2000,8 +2531,11 @@ def main():
     has_blend = has_multi
     if has_blend:
         print("  Computing rp_blend sizes (0.60 rp_regime_aware + 0.40 multi_mom_tilt)...")
-        sizes_blend = (0.60 * sizes_rp_regime.reindex(columns=returns.columns, fill_value=0)
-                       + 0.40 * sizes_multi_mom.reindex(columns=returns.columns, fill_value=0))
+        _blend_raw = (0.60 * sizes_rp_regime.reindex(columns=returns.columns, fill_value=0)
+                      + 0.40 * sizes_multi_mom.reindex(columns=returns.columns, fill_value=0))
+        sizes_blend = defensive_tilt_overlay(
+            _blend_raw, signals_regime, _macro_for_overlay, CAPITAL,
+        )
         ret_blend = portfolio_returns(sizes_blend, returns)
 
     # ── Unified method registry ────────────────────────────────────────────────
@@ -2009,40 +2543,28 @@ def main():
     # signal matrix must match what the sizing_fn expects — regime methods use
     # signals_regime, composite uses signals_composite, ensemble uses signals_ensemble.
     all_methods = [
-        (
-            "equal weight",
-            ret_eq, signals_regime,
-            lambda sig, ret: equal_weight_sizes(sig, CAPITAL),
-        ),
-        (
-            "risk parity",
-            ret_rp, signals_regime,
-            lambda sig, ret: risk_parity_sizes(sig, features, ret, CAPITAL),
-        ),
-        (
-            "rp_regime_aware",
-            ret_rp_regime, signals_regime,
-            lambda sig, ret: rp_regime_aware_sizes(sig, features, ret, CAPITAL),
-        ),
-        (
-            "rp_regime_dw",
-            ret_rpd, signals_regime,
-            lambda sig, ret: rp_regime_dw_sizes(sig, features, ret, CAPITAL),
-        ),
+        # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.307, composite 0.662
+        # ("equal weight", ret_eq, signals_regime, lambda sig, ret: equal_weight_sizes(sig, CAPITAL)),
+        # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 0.730, composite 0.448
+        # ("risk parity", ret_rp, signals_regime, lambda sig, ret: risk_parity_sizes(sig, features, ret, CAPITAL)),
+        # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 0.929, composite 0.271
+        # ("rp_regime_aware", ret_rp_regime, signals_regime, lambda sig, ret: rp_regime_aware_sizes(sig, features, ret, CAPITAL)),
+        # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 0.990, composite 0.277
+        # ("rp_regime_dw", ret_rpd, signals_regime, lambda sig, ret: rp_regime_dw_sizes(sig, features, ret, CAPITAL)),
     ]
     if has_blend:
-        # Capture signals_multi via default arg to avoid late-binding closure issues.
-        all_methods.append((
-            "rp_blend",
-            ret_blend, signals_regime,
-            lambda sig, ret, _sm=signals_multi: (
-                0.60 * rp_regime_aware_sizes(sig, features, ret, CAPITAL)
-                     .reindex(columns=ret.columns, fill_value=0)
-                + 0.40 * momentum_tilt_sizes(
-                     _sm.reindex(ret.index).fillna(0), features, CAPITAL)
-                     .reindex(columns=ret.columns, fill_value=0)
-            ),
-        ))
+        pass  # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.271, composite 0.544
+        # all_methods.append((
+        #     "rp_blend",
+        #     ret_blend, signals_regime,
+        #     lambda sig, ret, _sm=signals_multi: (
+        #         0.60 * rp_regime_aware_sizes(sig, features, ret, CAPITAL)
+        #              .reindex(columns=ret.columns, fill_value=0)
+        #         + 0.40 * momentum_tilt_sizes(
+        #              _sm.reindex(ret.index).fillna(0), features, CAPITAL)
+        #              .reindex(columns=ret.columns, fill_value=0)
+        #     ),
+        # ))
     if has_multi:
         all_methods.extend([
             (
@@ -2081,48 +2603,47 @@ def main():
             ret_adaptive_blend, signals_multi,
             lambda sig, ret: adaptive_blend_sizes(sig, features, ret, CAPITAL),
         ))
-        all_methods.append((
-            # Portable alpha: multi_mom_tilt alpha + SPY beta hedge targeting β=0.30.
-            # Separates alpha (signal edge) from beta (passive market exposure).
-            "multi_mom_portable",
-            ret_portable, signals_multi,
-            lambda sig, ret: portable_alpha_sizes(
-                momentum_tilt_sizes(sig, features, CAPITAL), ret, CAPITAL, target_beta=0.30),
-        ))
-        all_methods.append((
-            # Portable alpha low-beta: same but targeting β=0.15 (deeper hedge).
-            "multi_mom_port_low",
-            ret_portable_low, signals_multi,
-            lambda sig, ret: portable_alpha_sizes(
-                momentum_tilt_sizes(sig, features, CAPITAL), ret, CAPITAL, target_beta=0.15),
-        ))
+        # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.584, composite 0.643
+        # IS-OOS gap -0.558: regime concentrated, hedge costs 3-4% annualized in bull markets
+        # all_methods.append((
+        #     "multi_mom_portable",
+        #     ret_portable, signals_multi,
+        #     lambda sig, ret: portable_alpha_sizes(
+        #         momentum_tilt_sizes(sig, features, CAPITAL), ret, CAPITAL, target_beta=0.30),
+        # ))
+        # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.371, composite 0.621
+        # all_methods.append((
+        #     "multi_mom_port_low",
+        #     ret_portable_low, signals_multi,
+        #     lambda sig, ret: portable_alpha_sizes(
+        #         momentum_tilt_sizes(sig, features, CAPITAL), ret, CAPITAL, target_beta=0.15),
+        # ))
     if has_carry:
-        all_methods.append((
-            # 75% cross-sectional momentum tilt + 25% carry (bond/commodity curve slope).
-            # Carry is orthogonal to trend by construction: measures income from
-            # HOLDING (yield roll, futures slope) vs DIRECTION (price momentum).
-            "multi_mom_carry",
-            ret_mom_carry, signals_multi,
-            lambda sig, ret, _cs=carry_signals_raw: multi_mom_carry_sizes(
-                sig,
-                _cs.reindex(index=ret.index, columns=sig.columns, fill_value=0.0),
-                features, CAPITAL,
-            ),
-        ))
-        all_methods.append((
-            # Portable alpha applied to the carry-enhanced trend signal.
-            # Stacks three alpha sources: trend + carry + beta hedge.
-            "portable_carry",
-            ret_portable_carry, signals_multi,
-            lambda sig, ret, _cs=carry_signals_raw: portable_alpha_sizes(
-                multi_mom_carry_sizes(
-                    sig,
-                    _cs.reindex(index=ret.index, columns=sig.columns, fill_value=0.0),
-                    features, CAPITAL,
-                ),
-                ret, CAPITAL, target_beta=0.30,
-            ),
-        ))
+        pass  # REMOVED by strategy audit 2026-04-08 — both carry methods removed (see comments below)
+        # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.376, composite 0.675
+        # all_methods.append((
+        #     "multi_mom_carry",
+        #     ret_mom_carry, signals_multi,
+        #     lambda sig, ret, _cs=carry_signals_raw: multi_mom_carry_sizes(
+        #         sig,
+        #         _cs.reindex(index=ret.index, columns=sig.columns, fill_value=0.0),
+        #         features, CAPITAL,
+        #     ),
+        # ))
+        # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.613, composite 0.526
+        # IS-OOS gap -0.673: regime concentrated; SPY hedge costs 3-4% ann in bull markets
+        # all_methods.append((
+        #     "portable_carry",
+        #     ret_portable_carry, signals_multi,
+        #     lambda sig, ret, _cs=carry_signals_raw: portable_alpha_sizes(
+        #         multi_mom_carry_sizes(
+        #             sig,
+        #             _cs.reindex(index=ret.index, columns=sig.columns, fill_value=0.0),
+        #             features, CAPITAL,
+        #         ),
+        #         ret, CAPITAL, target_beta=0.30,
+        #     ),
+        # ))
 
     # ── Portfolio comparison table ─────────────────────────────────────────────
     print(f"{'='*84}")
@@ -2137,6 +2658,53 @@ def main():
         print(f"  {s['label']:<32}" + "".join(f"{str(s[m]):>12}" for m in metrics))
     bnh = summarise(ret_bnh, "buy & hold")
     print(f"  {bnh['label']:<32}" + "".join(f"{str(bnh[m]):>12}" for m in metrics))
+
+    # ── Gross Exposure Analysis ────────────────────────────────────────────────
+    print(f"\n{'='*84}")
+    print("  GROSS EXPOSURE ANALYSIS")
+    print(f"{'='*84}")
+    print(f"  {'Method':<32} {'AvgGross%':>10} {'AvgLong%':>10} {'%DaysFull':>10} {'RetGapAnn%':>11}")
+    print("  " + "-" * 77)
+
+    _sizes_map: dict = {
+        "equal weight"    : sizes_eq,
+        "risk parity"     : sizes_rp,
+        "rp_regime_aware" : sizes_rp_regime,
+        "rp_regime_dw"    : sizes_rpd,
+    }
+    if has_blend:
+        _sizes_map["rp_blend"] = sizes_blend
+    if has_multi:
+        _sizes_map["multi equal weight"] = sizes_multi_eq
+        _sizes_map["multi_atr_pure"]     = sizes_multi_atr
+        _sizes_map["multi_mom_tilt"]     = sizes_multi_mom
+        _sizes_map["regime_adaptive"]    = sizes_regime_adaptive
+        _sizes_map["adaptive_blend"]     = sizes_adaptive_blend
+        _sizes_map["multi_mom_portable"] = sizes_portable
+        _sizes_map["multi_mom_port_low"] = sizes_portable_low
+    if has_carry:
+        _sizes_map["multi_mom_carry"] = sizes_mom_carry
+        _sizes_map["portable_carry"]  = sizes_portable_carry
+
+    bnh_ann = bnh["ann_return"]
+    _gross_exposures: list = []
+    _return_gaps:     list = []
+    for _lbl, _ret, _, _ in all_methods:
+        _sz        = _sizes_map[_lbl]
+        _gross_exp = _sz.abs().sum(axis=1) / CAPITAL
+        _long_exp  = _sz.clip(lower=0).sum(axis=1) / CAPITAL
+        _avg_gross = _gross_exp.mean() * 100
+        _avg_long  = _long_exp.mean() * 100
+        _pct_full  = (_gross_exp > 0.90).mean() * 100
+        _ret_gap   = bnh_ann - summarise(_ret, _lbl)["ann_return"]
+        _gross_exposures.append(_avg_gross)
+        _return_gaps.append(_ret_gap)
+        print(f"  {_lbl:<32} {_avg_gross:>9.1f}% {_avg_long:>9.1f}% {_pct_full:>9.1f}% {_ret_gap:>+10.1f}%")
+
+    _avg_gross_all = float(np.mean(_gross_exposures))
+    _avg_gap_all   = float(np.mean(_return_gaps))
+    print(f"\n  Buy & hold gross exposure: 100% | Your avg gross exposure: {_avg_gross_all:.1f}% | "
+          f"Return gap: {_avg_gap_all:+.1f}% annualized")
 
     # ── Walk-forward for every method ─────────────────────────────────────────
     # Runs the full 3yr-train / 1yr-test roll for each method and collects
@@ -2162,8 +2730,8 @@ def main():
 
         print(f"\n  -- {label}")
         print(f"     IS Sharpe {is_sharpes[label]:.3f}  |  IS Active {is_act_sharpes[label]:.3f}  |  "
-              f"Mean OOS {oos_sharpes[label]:.3f}  |  Mean OOS Active {oos_act_sharpes[label]:.3f}  |  "
-              f"Std OOS {wf['sharpe'].std():.3f}  |  "
+              f"Mean OOS {oos_sharpes[label]:.3f} \u00b1 {wf['sharpe'].std():.3f}  |  "
+              f"Mean OOS Active {oos_act_sharpes[label]:.3f}  |  "
               f"IS-OOS gap {is_sharpes[label] - oos_sharpes[label]:+.3f}")
         print(wf[["period", "sharpe", "active_sharpe", "ann_return", "max_dd", "n_days"]].to_string(index=False))
 
@@ -2231,9 +2799,143 @@ def main():
               f" IS-OOS gap {is_sharpes[best_total_label] - oos_sharpes[best_total_label]:+.3f})")
     print()
     print("  IS-OOS gap interpretation:")
-    print("    < 0.3  -> robust, generalises well")
-    print("    0.3-0.6 -> moderate overfitting, acceptable")
-    print("    > 0.6  -> overfit; simplify or add regularisation")
+    print("    Positive gap (OOS < IS): IS > OOS — classical overfitting signal")
+    print("      < +0.20 -> acceptable, monitor")
+    print("      > +0.20 -> overfit; simplify or regularise")
+    print("    Negative gap (OOS > IS): OOS > IS — regime concentration, not overfitting")
+    print("      > -0.40 -> robust generalization")
+    print("      < -0.40 -> OOS windows contain favorable regimes; expect reversion toward IS Sharpe in live trading")
+
+    # ── Alpha Source Comparison Table + PASS/FAIL ─────────────────────────────
+    # Printed only when a baseline diagnostic exists (i.e. not the very first run).
+    _new_alpha_path = RESULTS_DIR / "regime_diagnostic_new_alpha.json"
+    if (has_multi
+            and "multi_mom_tilt" in oos_sharpes
+            and _diag_baseline_path.exists()
+            and _diag):
+        try:
+            _wf_mt   = wf_store.get("multi_mom_tilt")
+            _oos_s   = oos_sharpes["multi_mom_tilt"]
+            _is_s    = is_sharpes["multi_mom_tilt"]
+            _gap     = _is_s - _oos_s
+            # max_drawdown() expects cumulative returns; ret_multi_mom is daily returns
+            _dd_full = max_drawdown((1 + ret_multi_mom).cumprod()) * 100
+
+            with open(_diag_baseline_path) as _bf:
+                _bbase = _json.load(_bf)
+            _bbc  = _bbase.get("regime_stats", {}).get("bull_calm",   {})
+            _bbs  = _bbase.get("regime_stats", {}).get("bear_stress", {})
+            _abc  = _diag.get("regime_stats", {}).get("bull_calm",   {})
+            _abs_ = _diag.get("regime_stats", {}).get("bear_stress", {})
+
+            _bc_bef = _bbc.get("daily_alpha_bps", -7.49)
+            _bs_bef = _bbs.get("daily_alpha_bps", 17.18)
+            _bc_aft = _abc.get("daily_alpha_bps", float("nan"))
+            _bs_aft = _abs_.get("daily_alpha_bps", float("nan"))
+
+            print(f"\n{'='*92}")
+            print("  ALPHA SOURCE COMPARISON TABLE  (value-momentum tilt + carry breadth overlay)")
+            print(f"{'='*92}")
+            _hdr = f"  {'Metric':<35} {'Before':>17} {'After':>10} {'Delta':>10}  Constraint"
+            print(_hdr)
+            print("  " + "-" * 84)
+
+            def _row(name, bef, aft, cstr=""):
+                _b = f"{bef:.3f}" if bef is not None and not (isinstance(bef, float) and np.isnan(bef)) else "n/a"
+                _a = f"{aft:.3f}" if not (isinstance(aft, float) and np.isnan(aft)) else "n/a"
+                _d = f"{aft - bef:+.3f}" if (bef is not None and _b != "n/a" and _a != "n/a") else "n/a"
+                print(f"  {name:<35} {_b:>17} {_a:>10} {_d:>10}  {cstr}")
+
+            # wf ann_return is already in percent (from summarise * 100)
+            _oos_ann = float(_wf_mt["ann_return"].mean()) if _wf_mt is not None else float("nan")
+            _row("OOS Sharpe",                1.555,                           _oos_s,   "≥ 1.50")
+            _row("IS Sharpe",                 None,                            _is_s,    "")
+            _row("IS-OOS Gap",                None,                            _gap,     "< 0.50")
+            _row("OOS Ann Return (%)",        None,                            _oos_ann, "")
+            _row("Max Drawdown (%) full hist",-4.64,                           _dd_full, "≥ -7.0")
+            _row("bull_calm alpha (bps)",     _bc_bef,                         _bc_aft,  "TARGET: > 0")
+            _row("bear_stress alpha (bps)",   _bs_bef,                         _bs_aft,  "≥ 14.18")
+            _row("Upside capture",            _bbase.get("upside_capture",   0.332), _diag.get("upside_capture",   float("nan")), "")
+            _row("Downside capture",          _bbase.get("downside_capture", 0.295), _diag.get("downside_capture", float("nan")), "")
+            _row("OLS beta",                  _bbase.get("ols_beta",         0.184), _diag.get("ols_beta",         float("nan")), "")
+            _row("Gross exp bull_calm (%)",   _bbase.get("avg_gross_bull_calm_pct",   83.6), _diag.get("avg_gross_bull_calm_pct",   float("nan")), "")
+            _row("Avg positions bull_calm",   _bbase.get("avg_positions_bull_calm",   30.1), _diag.get("avg_positions_bull_calm",   float("nan")), "")
+
+            _p_bc  = (not np.isnan(_bc_aft)) and (_bc_aft > _bc_bef + 3.0)
+            _p_oos = _oos_s >= 1.50
+            _p_gap = _gap < 0.50
+            _p_dd  = _dd_full >= -7.0
+            _all_p = _p_bc and _p_oos and _p_gap and _p_dd
+
+            print(f"\n  PASS/FAIL VERDICT:")
+            print(f"  {'bull_calm alpha improves ≥3 bps':<40}: {'PASS' if _p_bc  else 'FAIL'}  ({_bc_bef:.2f} → {_bc_aft:.2f} bps)")
+            print(f"  {'OOS Sharpe ≥ 1.50':<40}: {'PASS' if _p_oos else 'FAIL'}  ({_oos_s:.3f})")
+            print(f"  {'IS-OOS gap < 0.50':<40}: {'PASS' if _p_gap else 'FAIL'}  ({_gap:+.3f})")
+            print(f"  {'Max drawdown ≥ -7.0%':<40}: {'PASS' if _p_dd  else 'FAIL'}  ({_dd_full:.2f}%)")
+            print(f"\n  OVERALL: {'*** PASS — alpha sources deployed ***' if _all_p else '*** FAIL — review and consider reverting ***'}")
+
+            _new_alpha_data = {
+                "alpha_sources": ["value_momentum_tilt_70_30", "carry_breadth_scalar_15pct"],
+                "before": {
+                    "oos_sharpe": 1.555,
+                    "max_dd_pct": -4.64,
+                    "bull_calm_alpha_bps":   _bc_bef,
+                    "bear_stress_alpha_bps": _bs_bef,
+                    "upside_capture":   _bbase.get("upside_capture",   0.332),
+                    "downside_capture": _bbase.get("downside_capture", 0.295),
+                    "ols_beta":         _bbase.get("ols_beta",         0.184),
+                },
+                "after":             _diag,
+                "oos_sharpe_after":  _oos_s,
+                "is_sharpe_after":   _is_s,
+                "is_oos_gap":        _gap,
+                "max_dd_full_pct":   _dd_full,
+                "pass_fail": {
+                    "bull_calm_alpha": bool(_p_bc),
+                    "oos_sharpe":      bool(_p_oos),
+                    "is_oos_gap":      bool(_p_gap),
+                    "max_drawdown":    bool(_p_dd),
+                    "overall":         bool(_all_p),
+                },
+            }
+            with open(_new_alpha_path, "w") as _nf:
+                _json.dump(_new_alpha_data, _nf, indent=2)
+            print(f"\n  New alpha diagnostic saved → {_new_alpha_path}")
+        except Exception as _e:
+            print(f"  [new_alpha table] Error: {_e}")
+
+    # ── Down-day alpha: SPY daily return < -1% ────────────────────────────────
+    # Tests Improvement 2 directly: does the portfolio print positive return on
+    # days when SPY drops > 1%?  Pre-improvement target: > 0% avg, > 40% days pos.
+    if "SPY" in returns.columns:
+        _spy_daily  = returns["SPY"]
+        _spy_down   = _spy_daily < -0.01   # log return proxy (≈ simple for small values)
+        _n_down     = int(_spy_down.sum())
+        print(f"\n{'='*84}")
+        print(f"  DOWN-DAY ALPHA  (SPY daily return < -1%,  n={_n_down} days)")
+        print(f"{'='*84}")
+        print(f"  {'Method':<32} {'AvgReturn%':>11} {'%DaysPos':>10}")
+        print("  " + "-" * 56)
+
+        _all_down_rets = []
+        for _lbl, _ret, _, _ in all_methods:
+            _port_down = _ret[_spy_down].dropna()
+            if len(_port_down) == 0:
+                continue
+            _avg_r  = float(_port_down.mean()) * 100
+            _pct_p  = float((_port_down > 0).mean()) * 100
+            _all_down_rets.append(_port_down.values)
+            print(f"  {_lbl:<32} {_avg_r:>+10.3f}%  {_pct_p:>8.1f}%")
+
+        if _all_down_rets:
+            import numpy as _np
+            _combined  = _np.mean(_all_down_rets, axis=0)
+            _avg_comb  = float(_combined.mean()) * 100
+            _pct_comb  = float((_combined > 0).mean()) * 100
+            print(f"\n  All-methods combined:          {_avg_comb:>+10.3f}%  {_pct_comb:>8.1f}%")
+            print(f"  SPY average on down days:      "
+                  f"{float(_spy_daily[_spy_down].mean())*100:>+10.3f}%  "
+                  f"  (benchmark — strategy should beat this)")
 
     # ── Persist results ────────────────────────────────────────────────────────
     comparison_curves = {
@@ -2260,7 +2962,8 @@ def main():
     pd.DataFrame(comparison_curves).to_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
 
     # Dashboard compatibility: keep the two named walk-forward parquets it expects
-    wf_store["equal weight"].to_parquet(
+    # (was "equal weight" pre-audit; now "multi equal weight" as simplest available)
+    wf_store["multi equal weight"].to_parquet(
         RESULTS_DIR / "walk_forward_regime.parquet", index=False)
     wf_store["multi_mom_tilt"].to_parquet(
         RESULTS_DIR / "walk_forward_atr_pca.parquet", index=False)

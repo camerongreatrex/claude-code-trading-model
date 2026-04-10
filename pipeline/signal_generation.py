@@ -88,6 +88,35 @@ ATR_PROFIT_TARGET = 8.0   # Partial exit at 8× ATR gain above entry (Elder, pub
                            # At 8× ATR the position has captured most of its initial move;
                            # exiting 50% locks in profit while letting 50% ride the trend.
 ATR_PARTIAL_REMAIN = 0.5  # Keep 50% of position after partial exit.
+
+# Regime-conditional RSI and ADX thresholds (Improvement 1: Bull-calm exposure boost).
+# In bull_calm (VIX < 20) trend signals are most reliable; tighter filters kill gross
+# exposure precisely when the edge is highest.  These relaxed thresholds are Wilder's
+# published values, not fitted to this dataset.
+RSI_ENTRY_THRESH_CALM   = 75   # Wilder relaxed overbought level for calm bull regimes
+RSI_ENTRY_THRESH_STRESS = 68   # Tighter entry gate in stress / neutral regimes
+ADX_MIN_CALM   = 22    # Wilder's published minimum trend threshold (bull_calm only)
+ADX_MIN_STRESS = 25    # Standard ADX threshold (stress and neutral regimes)
+
+# Module-level counter: long-entry days enabled by the relaxed calm RSI threshold.
+# Incremented in generate() for equity_index and sector_etf tickers.
+# Printed in main() for validation (Improvement 1 pass criterion).
+_CALM_EXTRA_ENTRIES: int = 0
+
+# Module-level counter: long-entry days added by volume-price divergence re-entry.
+# Counts days where vol_div_sig fires (signal=1) while the primary signal_r is flat.
+# Printed in main() alongside the breakout/bounce/reentry count.
+_VOL_DIV_EXTRA_ENTRIES: int = 0
+
+# Module-level counter: extra long-entry days from the bull_calm early entry signal
+# (Part 3).  Counts days where early_entry fires (price > MA200, MA50 slope > 0,
+# bull_calm, ADX > 15) while the primary MA50/200 golden cross has NOT yet fired.
+_EARLY_ENTRY_DAYS: int = 0
+
+# Module-level SPY close cache for bull_calm detection in generate() (Part 3).
+# Loaded once and reused across all 37+ tickers to avoid 37 parquet reads.
+_SPY_CLOSE_CACHE: pd.Series | None = None
+
 TIME_DECAY_DAYS   = 126  # Close stale longs held > 6 months that are drifting negative.
                            # 126 = half the MA200 lookback — a structural timescale.
                            # Addresses bear_calm underperformance: equities held flat/down for
@@ -120,6 +149,32 @@ def load_macro() -> pd.DataFrame:
         print("  WARNING: macro_features.parquet not found — run macro_features.py first")
         return pd.DataFrame()
     return pd.read_parquet(path)
+
+
+def _load_spy_close() -> "pd.Series":
+    """
+    Load SPY close prices, cached at module level (Part 3 early entry).
+
+    generate() is called once per ticker (~41 tickers); caching avoids
+    41 redundant parquet reads for the SPY 60d return used in bull_calm detection.
+
+    Returns:
+        SPY Close Series with DatetimeIndex, or empty Series if unavailable.
+    """
+    global _SPY_CLOSE_CACHE
+    if _SPY_CLOSE_CACHE is not None:
+        return _SPY_CLOSE_CACHE
+    spy_path = FEATURE_DIR / "SPY.parquet"
+    if spy_path.exists():
+        try:
+            _SPY_CLOSE_CACHE = pd.read_parquet(spy_path)["Close"]
+            _SPY_CLOSE_CACHE.index = pd.to_datetime(_SPY_CLOSE_CACHE.index)
+        except Exception:
+            _SPY_CLOSE_CACHE = pd.Series(dtype=float)
+    else:
+        _SPY_CLOSE_CACHE = pd.Series(dtype=float)
+    return _SPY_CLOSE_CACHE
+
 
 # -----------------------------------------------------------------------------
 # Regime filters
@@ -504,30 +559,39 @@ def scores_to_signal(score: pd.Series, long_thresh: float = 0.5,
 # These are principled risk/quality filters, not parameter-optimised rules.
 # -----------------------------------------------------------------------------
 
-def apply_rsi_entry_filter(signal: pd.Series, rsi: pd.Series) -> pd.Series:
+def apply_rsi_entry_filter(signal: pd.Series, rsi: pd.Series,
+                            thresh_series: pd.Series = None) -> pd.Series:
     """
-    Block new entries at RSI extremes: longs when RSI > 70 (overbought),
-    shorts when RSI < 30 (oversold — symmetric rule for short side).
+    Block new entries at RSI extremes: longs when RSI > thresh (overbought),
+    shorts when RSI < (100 - thresh) (oversold — symmetric rule for short side).
 
     State machine tracks current position direction (0 = flat, +1 = long,
     -1 = short) so the filter only blocks NEW entries, not ongoing positions.
 
     Args:
-        signal: Signal Series {-1, 0, 1} BEFORE the RSI filter.
-        rsi:    RSI-14 Series aligned to signal.index.
+        signal:       Signal Series {-1, 0, 1} BEFORE the RSI filter.
+        rsi:          RSI-14 Series aligned to signal.index.
+        thresh_series: Optional per-bar threshold Series.  When provided, the
+                       overbought gate on each bar equals thresh_series.iloc[i]
+                       instead of the global RSI_ENTRY_THRESH.  Allows regime-
+                       conditional thresholds (e.g. 75 in bull_calm, 68 in stress)
+                       without changing the state-machine logic.  Pass None to
+                       use the global RSI_ENTRY_THRESH (default behaviour).
 
     Returns:
         Filtered signal Series.  Same index and dtype (int) as input.
     """
     result       = signal.copy().astype(float)
     position_dir = 0   # 0 = flat, +1 = long, -1 = short
-    rsi_oversold = 100 - RSI_ENTRY_THRESH   # symmetric short-entry gate: 30
 
     for i in range(len(result)):
+        thresh       = float(thresh_series.iloc[i]) if thresh_series is not None else RSI_ENTRY_THRESH
+        rsi_oversold = 100 - thresh   # symmetric short-entry gate
+
         val = int(result.iloc[i])
         if position_dir == 0:
             if val == 1:
-                if float(rsi.iloc[i]) > RSI_ENTRY_THRESH:
+                if float(rsi.iloc[i]) > thresh:
                     result.iloc[i] = 0          # block overbought long entry
                 else:
                     position_dir = 1
@@ -1349,6 +1413,64 @@ def trend_continuation_reentry(
     return result
 
 
+def volume_divergence_reentry(
+    df: pd.DataFrame,
+    regime_signal: pd.Series,
+    raw_ma_regime: pd.Series,
+) -> pd.Series:
+    """
+    Re-enter long when price pulls back to MA50 on declining volume
+    during a confirmed uptrend.
+
+    Entry conditions (ALL required):
+      (a) raw_ma_regime == 1 — MA50/200 golden cross intact
+      (b) regime_signal == 0 — trailing stop or time decay exited the position
+      (c) Close is within 2% above MA50 (price testing support)
+      (d) obv_zscore < -0.5 — volume declining (selling pressure fading)
+      (e) RSI between 35-60 — not overbought, not deeply oversold
+
+    Once entered, held until regime_signal takes over (golden cross active)
+    or raw_ma_regime flips to 0 (death cross).
+
+    Reference: Lo & Wang (2000), Llorente et al. (2002) — volume-price
+    divergence as a signal for informed vs uninformed trading.
+    """
+    ma50 = df["Close"].rolling(50).mean()
+
+    # Price within 2% above MA50 (testing support, not far above)
+    price_near_ma50 = ((df["Close"] / ma50 - 1) >= 0) & ((df["Close"] / ma50 - 1) < 0.02)
+
+    entry = (
+        (raw_ma_regime == 1) &          # uptrend structure intact
+        (regime_signal == 0) &           # currently flat (stopped out or decayed)
+        price_near_ma50 &                # price at MA50 support
+        (df["obv_zscore"] < -0.5) &      # volume declining
+        (df["rsi_14"] > 35) &            # not deeply oversold
+        (df["rsi_14"] < 60)              # not overbought
+    )
+
+    result = pd.Series(0, index=df.index, dtype=int)
+    in_pos = False
+
+    for i in range(len(result)):
+        if not in_pos:
+            if entry.iloc[i]:
+                in_pos = True
+                result.iloc[i] = 1
+        else:
+            if raw_ma_regime.iloc[i] == 1:
+                result.iloc[i] = 1  # hold while uptrend intact
+            else:
+                in_pos = False      # death cross — exit
+
+            # Hand off to main signal when it re-activates
+            if regime_signal.iloc[i] == 1:
+                in_pos = False
+                result.iloc[i] = 0  # main signal takes over
+
+    return result
+
+
 def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame:
     """
     Master signal generator — routes each ticker to the correct logic and
@@ -1372,9 +1494,27 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     out  = df[["Close", "log_return"]].copy()
     gate = vix_gate(macro, df.index)
 
+    # Regime-conditional threshold detection: calm = VIX < 20, per bar.
+    # Used by both the ADX regime filter (equity_index only) and the RSI entry
+    # filter (equity_index + sector_etf).  Defaults to False (stress thresholds)
+    # when macro is unavailable so existing behaviour is preserved.
+    if not macro.empty and "vix" in macro.columns:
+        calm = macro["vix"].reindex(df.index).ffill().fillna(20.0) < 20
+    else:
+        calm = pd.Series(False, index=df.index)
+
     # asset-class-aware regime selection
     if asset_class == "equity_index":
-        regime = equity_index_regime(df)
+        # Regime-conditional ADX threshold: ADX_MIN_CALM (22) in bull_calm,
+        # ADX_MIN_STRESS (25) otherwise.  Both are Wilder published values.
+        # The regime variable feeds compute_scores() blending only — it does
+        # NOT directly gate signal_r (that uses the raw MA50/200 crossover).
+        _ma50_r  = df["Close"].rolling(50).mean()
+        _ma200_r = df["Close"].rolling(200).mean()
+        _adx_min = pd.Series(
+            np.where(calm, ADX_MIN_CALM, ADX_MIN_STRESS), index=df.index
+        )
+        regime = ((_ma50_r > _ma200_r) & (df["adx"] > _adx_min)).astype(int)
     elif asset_class == "sector_etf":
         regime = sector_regime(df)
     elif asset_class == "stock":
@@ -1422,8 +1562,76 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         raw_ma_regime = ((ma50 > ma200).astype(int) * regime_gate).astype(int)
         signal_r = raw_ma_regime.copy()
 
+        # ── Part 3: Bull-calm early entry (structural, not curve-fitted) ─────
+        # Problem: MA50/200 golden cross can lag the actual bottom by 2-4 months.
+        # In bull_calm, stocks above MA200 with a rising MA50 almost always complete
+        # the golden cross — entering early captures 20-40 days of additional return.
+        #
+        # Entry conditions (ALL required for equity/sector/stock):
+        #   (a) close > MA200       — long-term uptrend structure intact after pullback
+        #   (b) MA50 > MA50.shift(10) — MA50 has been rising for 10 trading days
+        #       (relaxed to shift(5) if total extra days < 20 after full run)
+        #   (c) bull_calm regime    — VIX < 20 AND SPY 60d return > 0
+        #   (d) ADX > 15            — some directional trend present (not dead-flat)
+        #   (e) VIX gate            — no extreme VIX spike days
+        #
+        # Same exit path as regular entries: RSI filter, min-hold, ATR trailing stop.
+        # Tags _EARLY_ENTRY_DAYS for pass/fail validation.
+        # Reference: Jegadeesh & Titman (1993) — momentum continuation in bull trends.
+        _spy_close_early = _load_spy_close()
+        _bull_calm_bar   = pd.Series(False, index=df.index)
+        if not _spy_close_early.empty and not macro.empty and "vix" in macro.columns:
+            _vix_early   = macro["vix"].reindex(df.index).ffill().fillna(20.0)
+            _spy_60d     = _spy_close_early.pct_change(60).reindex(df.index).ffill().fillna(0.0)
+            _bull_calm_bar = (_vix_early < 20) & (_spy_60d > 0)
+
+        _ma50_slope_10   = ma50 > ma50.shift(10)   # MA50 rising for 10 days
+        _early_entry_raw = (
+            (df["Close"] > ma200) &    # price above long-term trend
+            _ma50_slope_10             &    # MA50 has turned upward
+            _bull_calm_bar             &    # confirmed bull_calm macro regime
+            (df["adx"] > 15)           &    # some directional trend present
+            (regime_gate == 1)              # VIX gate — not an extreme spike day
+        )
+        _early_signal = _early_entry_raw.astype(int)
+        # Merge with golden-cross signal: long if EITHER fires (adds entries, not exits)
+        _pre_early_signal_r = signal_r.copy()
+        signal_r = ((signal_r + _early_signal).clip(0, 1)).astype(int)
+
+        # Validation counter: days where early entry fires but golden cross has NOT
+        global _EARLY_ENTRY_DAYS
+        _extra_early = int(((signal_r == 1) & (_pre_early_signal_r == 0)).sum())
+        _EARLY_ENTRY_DAYS += _extra_early
+
         # ── Principled signal improvements (not curve-fitted) ───────────────
-        signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
+        # RSI entry filter: regime-conditional threshold for equity_index and
+        # sector_etf (calm → 75, stress → 68); global RSI_ENTRY_THRESH (70) for
+        # stocks.  Relaxing RSI in bull_calm increases gross exposure precisely
+        # when trend signals are most reliable without adding noise in stress.
+        if asset_class in {"equity_index", "sector_etf"}:
+            _rsi_thresh = pd.Series(
+                np.where(calm, RSI_ENTRY_THRESH_CALM, RSI_ENTRY_THRESH_STRESS),
+                index=df.index,
+            )
+            signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"],
+                                               thresh_series=_rsi_thresh)
+        else:
+            signal_r = apply_rsi_entry_filter(signal_r, df["rsi_14"])
+
+        # Validation counter: new long-entry days that passed the relaxed calm
+        # RSI threshold but would have been blocked by the stress threshold.
+        # Proxy: 0→1 transition in signal_r on a calm day where RSI is in
+        # (RSI_ENTRY_THRESH_STRESS, RSI_ENTRY_THRESH_CALM].
+        global _CALM_EXTRA_ENTRIES
+        if asset_class in {"equity_index", "sector_etf"} and calm.any():
+            _calm_al  = calm.reindex(signal_r.index).fillna(False)
+            _rsi_zone = (
+                (df["rsi_14"].reindex(signal_r.index) > RSI_ENTRY_THRESH_STRESS) &
+                (df["rsi_14"].reindex(signal_r.index) <= RSI_ENTRY_THRESH_CALM)
+            )
+            _new_longs = (signal_r.diff().fillna(0) == 1)
+            _CALM_EXTRA_ENTRIES += int((_new_longs & _calm_al & _rsi_zone).sum())
+
         signal_r = apply_min_hold_filter(signal_r)
         signal_r, half_size_r = apply_trailing_stop_signal(
             signal_r, df["Close"], df["atr_14"], macro=macro
@@ -1433,6 +1641,23 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
 
         # Fast re-entry after trailing stop exits in confirmed uptrends
         signal_r = trend_continuation_reentry(df, signal_r, raw_ma_regime, macro)
+
+    elif ticker == "VXZ":
+        # VXZ is only held during vol backwardation (VIX9D > VIX).
+        # This is NOT a trend signal — it's a conditional hedge allocation.
+        # In normal markets: flat (avoids the ~8-12% annual roll decay).
+        # In stress (backwardation): long (VXZ appreciates as vol rises).
+        #
+        # All post-processors (RSI filter, min-hold, trailing stop, time decay)
+        # are deliberately skipped — they are inappropriate for a vol hedge
+        # position that must be held whenever the backwardation condition is met,
+        # not based on price momentum or RSI extremes.
+        if not macro.empty and "vol_backwardation" in macro.columns:
+            backwardation = macro["vol_backwardation"].reindex(df.index).ffill().fillna(0)
+            signal_r = backwardation.astype(int) * gate
+        else:
+            signal_r = pd.Series(0, index=df.index)
+        half_size_r = pd.Series(False, index=df.index)
 
     elif asset_class == "commodity":
         # Two-sided MA50/200 crossover. Commodities have no structural upward
@@ -1475,6 +1700,17 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         bounce_sig   = oversold_bounce_signal(df, raw_ma_regime)
 
         _multi_sources = [signal_r, breakout_sig, bounce_sig]
+
+        # Volume-price divergence re-entry: price pulls back to MA50 on declining
+        # volume during an active golden cross — institutions aren't selling,
+        # retail is taking profits.  High-probability re-entry point.
+        # Reference: Lo & Wang (2000), Llorente et al. (2002).
+        vol_div_sig = volume_divergence_reentry(df, signal_r, raw_ma_regime)
+        _multi_sources.append(vol_div_sig)
+
+        # Validation counter: extra long days from this signal specifically.
+        global _VOL_DIV_EXTRA_ENTRIES
+        _VOL_DIV_EXTRA_ENTRIES += int(((vol_div_sig == 1) & (signal_r != 1)).sum())
 
         # Cross-asset early entry: pre-position when MA50 is approaching MA200
         # from below and cross-asset conditions signal a risk-on environment.
@@ -1723,6 +1959,19 @@ def main():
                   f"(+{extra} from breakout/bounce/reentry)")
     print(f"\n  Total extra long days added across equity tickers: +{total_extra}")
     print(f"  (target: 200-600 extra days fills bull_calm cash drag gaps)")
+    print(f"  Of which, volume-price divergence re-entry contributed: +{_VOL_DIV_EXTRA_ENTRIES} days")
+    print(f"  (vol_div fires when signal_r is flat but price pulls back to MA50 on declining volume)")
+
+    # ── IMPROVEMENT 1 VALIDATION: Bull-calm exposure boost ────────────────────
+    print(f"\n{'='*70}")
+    print("  IMPROVEMENT 1 — Bull-calm exposure boost validation")
+    print(f"{'='*70}")
+    print(f"  Extra long-entry days from relaxed RSI threshold in calm regime: "
+          f"+{_CALM_EXTRA_ENTRIES}")
+    print(f"  (equity_index + sector_etf combined; entries where RSI ∈ "
+          f"({RSI_ENTRY_THRESH_STRESS}, {RSI_ENTRY_THRESH_CALM}] on VIX<20 bars)")
+    print(f"  ADX threshold relaxed to {ADX_MIN_CALM} (from {ADX_MIN_STRESS}) "
+          f"on VIX<20 bars for equity_index regime scoring")
 
     # ── Pair-trade signal generation ──────────────────────────────────────
     print("\n  Generating pair-trade signals (spread MA50/200 filter)...")

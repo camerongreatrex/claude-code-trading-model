@@ -33,3 +33,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-04-01,XLE,SELL,77.814144,58.97,4588.7,2.29,-32.64,catchup_signal_exit
 2026-04-08,VZ,SELL,93.351812,48.04,4484.62,2.24,-136.67,signal_exit
 2026-04-08,SPY,BUY,19.843282,676.01,13414.26,6.71,,signal_entry
+2026-04-08,VZ,SELL,93.351812,48.04,4484.62,2.24,-136.67,signal_exit
+2026-04-08,SPY,BUY,19.843282,676.01,13414.26,6.71,,signal_entry
+2026-04-09,UUP,SELL,167.478159,27.48,4602.3,2.3,-19.05,catchup_signal_exit

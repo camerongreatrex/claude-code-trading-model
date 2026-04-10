@@ -180,25 +180,16 @@ LABELS = {
 #                  for research purposes).
 
 TIER_SHOW = {
-    "portable_carry",       # Best OOS (1.527) — trend + carry + beta hedge
-    "multi_mom_tilt",       # Proven live method — trend + momentum tilt
-    "multi_mom_portable",   # Portable alpha — trend + beta hedge (no carry)
-    "multi_mom_carry",      # Trend + carry (no hedge)
-    "adaptive_blend",       # Regime-adaptive blend
-    "rp_regime_aware",      # Best risk-parity variant
+    # Top 5 strategies from audit 2026-04-08 + benchmark
+    "multi_mom_tilt",       # rank 1 — OOS 1.399  composite 0.775  (recommended live)
+    "multi_equal_weight",   # rank 2 — OOS 1.348  composite 0.753
+    "adaptive_blend",       # rank 3 — OOS 1.395  composite 0.745
+    "multi_atr_pure",       # rank 4 — OOS 1.348  composite 0.738
+    "regime_adaptive",      # rank 5 — OOS 1.384  composite 0.708
     "buy_hold",             # Benchmark — always shown
 }
 
-TIER_AVAILABLE = {
-    "multi_equal_weight",
-    "multi_atr_pure",
-    "rp_blend",
-    "regime_adaptive",
-    "multi_mom_port_low",
-    "equal_weight",
-    "rp_regime_dw",
-    "risk_parity",
-}
+TIER_AVAILABLE = set()   # All non-top-5 hidden; add back via set if needed for research
 
 # Everything NOT in TIER_SHOW or TIER_AVAILABLE is hidden from the dashboard.
 # This includes: half_kelly, ir_optimized, composite_vol_target, vol_target,

@@ -39,6 +39,13 @@ Phase 4 additions (EFA, VWO, HYG, TIP, DBC, UUP, VNQ):
   - UUP: USD dollar index — inverse to EM/commodities, distinct FX driver
   - VNQ: REITs — rental income driver distinct from XLU utility regulated revenue
 
+Phase 8 addition (VXZ) — conditional vol hedge:
+  - iPath Series B S&P 500 VIX Mid-Term Futures ETN; ONLY held during vol backwardation
+    (VIX9D > VIX, i.e., acute near-term stress); zero allocation otherwise
+  - Mid-term futures have ~60% less roll decay than VIXY; conditional holding is viable
+  - Classified "commodity" to reuse the two-sided signal infrastructure; VXZ signal
+    overrides to backwardation-only in signal_generation.py
+
 Phase 6 additions (DBMF, WTMF) — managed futures (structurally different return driver):
   - CTA trend-following across commodities, rates, FX, equities — zero overlap with MA equity signals
   - DBMF: bear_stress corr +0.102; $3.3B AUM; replicates top 20 CTA funds via Dynamic Beta Engine
@@ -185,6 +192,16 @@ TICKERS = {
                                # avg corr 0.244 (moderate), bear_stress corr 0.361 (below 0.40 threshold);
                                # distinct credit driver from TLT (rate direction), HYG (corporate credit),
                                # TIP (real rates), BWX (international govt) — adds a 5th bond factor
+
+    # --- Phase 8: Conditional vol hedge ---
+    # VXZ held ONLY during vol term-structure backwardation (VIX9D > VIX),
+    # which signals acute near-term stress.  Mid-term VIX futures have ~60%
+    # less roll decay than short-term VIXY, making conditional holding viable.
+    # Zero allocation in contango (normal markets) avoids the ~8-12% annual
+    # roll decay that makes unconditional VIX products portfolio poison.
+    "VXZ" : "commodity",      # iPath Series B S&P 500 VIX Mid-Term Futures ETN —
+                               # conditional hedge; only held during vol backwardation
+                               # (VIX9D > VIX); provides positive return on SPY crash days
 }
 
 # Equity-like assets that can use momentum + mean reversion regime switching
@@ -214,7 +231,7 @@ HEDGE_MAP: dict[str, str] = {
     "BRK-B": "SPY",   # Conglomerate — no single sector ETF; use broad market
 }
 
-START = "2015-01-01"
+START = "2010-01-01"
 END   = "2026-01-01"
 
 DATA_DIR = Path("data/raw")
@@ -365,6 +382,8 @@ def main():
         # phase 7 screened additions (universe_screen.py verified)
         "VGSH": "Short-Term Treasury ETF — near-zero avg corr (0.010), negative bear_stress corr (-0.155); cash substitute",
         "MUB" : "Municipal Bond ETF — state/local credit driver; avg corr 0.244, bear_stress corr 0.361",
+        # phase 8 conditional vol hedge
+        "VXZ" : "iPath S&P 500 VIX Mid-Term Futures ETN — conditional hedge; held only during vol backwardation (VIX9D > VIX); ~60% less roll decay than VIXY",
     }
 
     for ticker in TICKER_LIST:

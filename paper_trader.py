@@ -73,26 +73,43 @@ ET_ZONE         = ZoneInfo("America/New_York")
 # use simplified live proxies. Full regime-conditional covariance and beta-hedge
 # computation require historical return fetches that are impractical at EOD.
 STRATEGIES = {
-    # ── Baseline strategies ───────────────────────────────────────────────────
-    "equal_weight":         {"signal_col": "signal_regime", "sizing": "equal",           "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_equal_weight":   {"signal_col": "signal_multi",  "sizing": "equal",           "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_atr_pure":       {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_atr_macro":      {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
-    # ── Production candidates ─────────────────────────────────────────────────
-    "multi_mom_tilt":       {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
-    "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend",  "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
-    # ── Risk-parity strategies ────────────────────────────────────────────────
-    "risk_parity":          {"signal_col": "signal_regime", "sizing": "rp",              "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
-    "rp_regime_aware":      {"signal_col": "signal_regime", "sizing": "rp",              "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
-    "rp_regime_dw":         {"signal_col": "signal_regime", "sizing": "rp",              "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": True},
-    "rp_blend":             {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},
-    # ── Portable-alpha / carry strategies ────────────────────────────────────
-    "multi_mom_portable":   {"signal_col": "signal_multi",  "sizing": "portable",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_mom_port_low":   {"signal_col": "signal_multi",  "sizing": "portable",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    "multi_mom_carry":      {"signal_col": "signal_multi",  "sizing": "carry_blend",     "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
-    "portable_carry":       {"signal_col": "signal_multi",  "sizing": "portable_carry",  "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},
+    # ── Top 5 strategies (audit 2026-04-08) ──────────────────────────────────
+    "multi_mom_tilt":       {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": False},   # rank 1 composite 0.775
+    "multi_equal_weight":   {"signal_col": "signal_multi",  "sizing": "equal",           "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},   # rank 2 composite 0.753
+    "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend",  "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},    # rank 3 composite 0.745
+    "multi_atr_pure":       {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},   # rank 4 composite 0.738
+    "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},    # rank 5 composite 0.708
+    # ── Removed by strategy audit 2026-04-08 ─────────────────────────────────
+    # "equal_weight":       {"signal_col": "signal_regime", "sizing": "equal",           ...}  # OOS 1.307 composite 0.662
+    # "multi_atr_macro":    {"signal_col": "signal_multi",  "sizing": "atr",             ...}  # not in walk-forward (subsumed by multi_atr_pure)
+    # "risk_parity":        {"signal_col": "signal_regime", "sizing": "rp",              ...}  # OOS 0.730 composite 0.448
+    # "rp_regime_aware":    {"signal_col": "signal_regime", "sizing": "rp",              ...}  # OOS 0.929 composite 0.271
+    # "rp_regime_dw":       {"signal_col": "signal_regime", "sizing": "rp",              ...}  # OOS 0.990 composite 0.277
+    # "rp_blend":           {"signal_col": "signal_multi",  "sizing": "atr",             ...}  # OOS 1.271 composite 0.544
+    # "multi_mom_portable": {"signal_col": "signal_multi",  "sizing": "portable",        ...}  # OOS 1.584 composite 0.643 — IS-OOS gap -0.558 (regime concentrated)
+    # "multi_mom_port_low": {"signal_col": "signal_multi",  "sizing": "portable",        ...}  # OOS 1.371 composite 0.621
+    # "multi_mom_carry":    {"signal_col": "signal_multi",  "sizing": "carry_blend",     ...}  # OOS 1.376 composite 0.675
+    # "portable_carry":     {"signal_col": "signal_multi",  "sizing": "portable_carry",  ...}  # OOS 1.613 composite 0.526 — IS-OOS gap -0.673 (regime concentrated)
 }
+
+# Minimum floor allocations — held regardless of MA signal state.
+# These tickers have structurally low/negative bear_stress correlation
+# and convert dead cash into crisis-hedging positions.
+# Short signal (-1) overrides the floor — the floor is permanent only
+# for flat (signal == 0) periods; directional signals still apply.
+SAFE_HAVEN_FLOOR = {
+    "VGSH": 0.05,   # 5% of portfolio — bear_stress corr -0.155
+    "DBMF": 0.04,   # 4% of portfolio — bear_stress corr +0.102
+    "WTMF": 0.04,   # 4% of portfolio — bear_stress corr +0.138
+}
+
+# Cap broad index ETFs at 8% of portfolio to prevent alpha dilution.
+# Rationale: SPY/IWM/EEM track the market — large allocations to these
+# mean the portfolio is just an expensive index fund. The alpha comes from
+# sector ETFs, individual stocks, and uncorrelated assets (bonds, commodities).
+# 8% = enough to maintain the trend signal's participation without dominating.
+INDEX_ETF_CAP     = 0.08
+INDEX_ETF_TICKERS = {"SPY", "IWM", "EEM", "EFA", "VWO"}
 
 # Portable-alpha strategies and their target betas for the live hedge
 _HEDGE_STRATEGIES = {
@@ -103,29 +120,27 @@ _HEDGE_STRATEGIES = {
 
 # Normalize oos_selection method names (spaces/hyphens → underscores) → STRATEGIES key
 _OOS_NAME_MAP = {
-    "equal weight":         "equal_weight",
-    "ATR sized":            "atr_sized",
-    "ATR + PCA":            "atr_pca",
-    "ATR + PCA + macro":    "atr_pca_macro",
-    "equal wt + DD control":"equal_wt_dd_control",
-    "regime + vol target":  "regime_vol_target",
-    "multi equal weight":   "multi_equal_weight",
-    "multi_atr_pure":       "multi_atr_pure",
-    "multi_atr_macro":      "multi_atr_macro",
+    # ── Top 5 strategies (audit 2026-04-08) ──────────────────────────────────
     "multi_mom_tilt":       "multi_mom_tilt",
-    "multi_fast_atr":       "multi_fast_atr",
-    "multi_fast_mom_tilt":  "multi_fast_mom_tilt",
-    "fast_atr":             "fast_atr",
-    "risk parity":          "risk_parity",
-    "rp_macro":             "rp_macro",
-    "rp_regime_aware":      "rp_regime_aware",
-    "rp_blend":             "rp_blend",
-    "regime_adaptive":      "regime_adaptive",
+    "multi equal weight":   "multi_equal_weight",
     "adaptive_blend":       "adaptive_blend",
-    "multi_mom_portable":   "multi_mom_portable",
-    "multi_mom_port_low":   "multi_mom_port_low",
-    "multi_mom_carry":      "multi_mom_carry",
-    "portable_carry":       "portable_carry",
+    "multi_atr_pure":       "multi_atr_pure",
+    "regime_adaptive":      "regime_adaptive",
+    # ── Removed strategies — kept for oos_selection backward-compat lookup ───
+    # "equal weight":       "equal_weight",
+    # "ATR sized":          "atr_sized",
+    # "ATR + PCA":          "atr_pca",
+    # "ATR + PCA + macro":  "atr_pca_macro",
+    # "multi_atr_macro":    "multi_atr_macro",
+    # "risk parity":        "risk_parity",
+    # "rp_macro":           "rp_macro",
+    # "rp_regime_aware":    "rp_regime_aware",
+    # "rp_regime_dw":       "rp_regime_dw",
+    # "rp_blend":           "rp_blend",
+    # "multi_mom_portable": "multi_mom_portable",
+    # "multi_mom_port_low": "multi_mom_port_low",
+    # "multi_mom_carry":    "multi_mom_carry",
+    # "portable_carry":     "portable_carry",
 }
 
 
@@ -713,6 +728,61 @@ def _macro_live_multiplier() -> float:
         return 1.0
 
 
+# Regime-adaptive safe haven floor fractions — mirrors portfolio.py _REGIME_FLOOR_PARAMS
+_REGIME_FLOOR_PARAMS_PT: dict = {
+    "bull_calm":   {"VGSH": 0.02, "DBMF": 0.02, "WTMF": 0.02},
+    "bull_stress": {"VGSH": 0.03, "DBMF": 0.03, "WTMF": 0.03},
+    "bear_calm":   {"VGSH": 0.05, "DBMF": 0.04, "WTMF": 0.04},
+    "bear_stress": {"VGSH": 0.07, "DBMF": 0.05, "WTMF": 0.05},
+}
+
+
+def _get_current_safe_haven_floor() -> dict:
+    """
+    Return the safe-haven floor fractions appropriate for the current market regime.
+
+    Regime is determined using the same logic as portfolio.py / regime_analysis.py:
+      bull_calm   : VIX < 20  AND SPY 60d return > 0
+      bull_stress : VIX >= 20 AND SPY 60d return > 0
+      bear_calm   : VIX < 20  AND SPY 60d return <= 0
+      bear_stress : VIX >= 20 AND SPY 60d return <= 0
+
+    Reads from already-on-disk parquet files (no new downloads).
+    Falls back to the static SAFE_HAVEN_FLOOR if data is unavailable.
+    """
+    try:
+        macro_path = Path("data/macro/macro_features.parquet")
+        spy_path   = Path("data/features/SPY.parquet")
+        if not macro_path.exists() or not spy_path.exists():
+            return SAFE_HAVEN_FLOOR
+
+        macro_df  = pd.read_parquet(macro_path)
+        spy_close = pd.read_parquet(spy_path)["Close"]
+
+        if macro_df.empty or "vix" not in macro_df.columns or spy_close.empty:
+            return SAFE_HAVEN_FLOOR
+
+        vix_now    = float(macro_df["vix"].iloc[-1])
+        spy_60d    = spy_close.pct_change(60).iloc[-1]
+        spy_60d    = float(spy_60d) if pd.notna(spy_60d) else 0.0
+
+        stressed   = vix_now >= 20
+        bull_trend = spy_60d > 0
+
+        if not stressed and bull_trend:
+            regime = "bull_calm"
+        elif stressed and bull_trend:
+            regime = "bull_stress"
+        elif not stressed and not bull_trend:
+            regime = "bear_calm"
+        else:
+            regime = "bear_stress"
+
+        return _REGIME_FLOOR_PARAMS_PT[regime]
+    except Exception:
+        return SAFE_HAVEN_FLOOR
+
+
 def _compute_position_size(
     pv: float, ticker: str, sig: dict, strat_cfg: dict,
     rp_weights: dict, mom_rank: dict,
@@ -729,6 +799,12 @@ def _compute_position_size(
       5. Macro multiplier: VIX + yield curve
       6. Cap at MAX_POSITION_PCT × pv
     """
+    # VXZ special case: cap at 3% — it's a conditional hedge, not a core position.
+    # ATR sizing would give it the same risk budget as any other commodity, but
+    # VXZ should only absorb 2-3% of capital during backwardation episodes.
+    if ticker == "VXZ":
+        return min(pv * 0.03, pv * MAX_POSITION_PCT)
+
     # Base sizing
     sizing = strat_cfg.get("sizing", "atr")
     if sizing == "rp" and ticker in rp_weights:
@@ -786,7 +862,10 @@ def _compute_position_size(
     if strat_cfg.get("macro", False):
         base *= macro_mult
 
-    return min(base, pv * MAX_POSITION_PCT)
+    result = min(base, pv * MAX_POSITION_PCT)
+    if ticker in INDEX_ETF_TICKERS:
+        result = min(result, pv * INDEX_ETF_CAP)
+    return result
 
 
 # ── Trade execution ───────────────────────────────────────────────────────────
@@ -991,6 +1070,24 @@ def init_positions():
         size = min(size, per_position_cap)
         state = _buy(state, ticker, sig["close"], size,
                      reason=f"init_{strat_key}", trade_date=today_str)
+
+    # ── Safe-haven floor positions (init) ─────────────────────────────────────
+    # Enter floor allocations for SAFE_HAVEN_FLOOR tickers not already entered
+    # by signal-driven logic.  Converts dead cash into crisis hedges on day 1.
+    _pv_init = _portfolio_value(state, prices)
+    for _floor_ticker, _floor_frac in _get_current_safe_haven_floor().items():
+        if _floor_ticker in state["positions"]:
+            continue   # already entered by signal — normal sizing applies
+        if _floor_ticker not in signals:
+            continue
+        _raw_init = signals[_floor_ticker].get("raw_signal", signals[_floor_ticker]["signal"])
+        if _raw_init == -1:
+            continue   # short signal overrides floor
+        _floor_price_init = signals[_floor_ticker]["close"]
+        _floor_size_init  = _pv_init * _floor_frac
+        if state["cash"] >= _floor_size_init * 1.01:
+            state = _buy(state, _floor_ticker, _floor_price_init, _floor_size_init,
+                         reason="init_safe_haven_floor", trade_date=today_str)
 
     pv = _portfolio_value(state, prices)
     # Store INITIAL_CAPITAL as the baseline so "Portfolio Today" on day 1
@@ -1213,6 +1310,11 @@ def end_of_day_update():
         if ticker not in signals:
             continue
         if signals[ticker]["signal"] == 0:
+            # Floor tickers maintain minimum allocation when signal is flat (raw == 0).
+            # Only exit if the underlying raw signal is negative (short override).
+            _raw = signals[ticker].get("raw_signal", signals[ticker]["signal"])
+            if ticker in SAFE_HAVEN_FLOOR and _raw == 0:
+                continue   # floor maintenance — do not exit on flat signal
             state = _sell(state, ticker, prices[ticker],
                           reason="signal_exit", trade_date=today_str)
 
@@ -1252,6 +1354,55 @@ def end_of_day_update():
         if state["cash"] >= size * 1.01:
             state = _buy(state, ticker, sig["close"], size,
                          reason="signal_entry", trade_date=today_str)
+
+    # ── Safe-haven floor positions ─────────────────────────────────────────────
+    # After normal signal-driven entries: ensure SAFE_HAVEN_FLOOR tickers maintain
+    # their minimum allocation regardless of MA signal state.  These have
+    # structurally low/negative bear_stress correlation and convert dead cash into
+    # crisis-hedging positions.
+    pv = _portfolio_value(state, prices)   # refresh after normal entries
+    for _floor_ticker, _floor_frac in _get_current_safe_haven_floor().items():
+        if _floor_ticker not in signals:
+            continue
+        _floor_price = prices.get(_floor_ticker, signals[_floor_ticker]["close"])
+        _floor_size  = pv * _floor_frac
+        _raw_sig     = signals[_floor_ticker].get("raw_signal", signals[_floor_ticker]["signal"])
+
+        if _raw_sig == -1:
+            # Short signal overrides the floor — exit if currently held as floor pos.
+            if _floor_ticker in state["positions"]:
+                state = _sell(state, _floor_ticker, _floor_price,
+                              reason="floor_short_override", trade_date=today_str)
+
+        elif _floor_ticker not in state["positions"] and signals[_floor_ticker]["signal"] == 0:
+            # Not held and signal flat → enter minimum floor allocation.
+            if state["cash"] >= _floor_size * 1.01:
+                state = _buy(state, _floor_ticker, _floor_price, _floor_size,
+                             reason="safe_haven_floor", trade_date=today_str)
+
+        elif _floor_ticker in state["positions"] and signals[_floor_ticker]["signal"] == 0:
+            # Held as a floor position but may have shrunk due to price moves.
+            # Top up to floor_size if current value has fallen below 80% of target.
+            _pos     = state["positions"][_floor_ticker]
+            _cur_val = _pos["shares"] * _floor_price
+            if _cur_val < _floor_size * 0.80:
+                _topup       = _floor_size - _cur_val
+                _commission  = _topup * COMMISSION_PCT
+                _total_cost  = _topup + _commission
+                if state["cash"] >= _total_cost * 1.01:
+                    _extra_shares      = _topup / _floor_price
+                    state["cash"]     -= _total_cost
+                    _pos["shares"]    += _extra_shares
+                    _pos["cost_basis"] = _pos.get("cost_basis", _cur_val) + _topup
+                    _append_csv(TRADES_FILE, {
+                        "date": today_str, "ticker": _floor_ticker, "action": "BUY",
+                        "shares": round(_extra_shares, 6), "price": round(_floor_price, 4),
+                        "value": round(_topup, 2), "commission": round(_commission, 2),
+                        "pnl": "", "reason": "safe_haven_floor_topup",
+                    })
+                    print(f"  BUY  {_floor_ticker:<6}  {_extra_shares:.3f} sh @ ${_floor_price:.2f}"
+                          f"  (${_topup:,.0f})  [safe_haven_floor_topup]")
+        # signal == 1: normal signal-driven sizing already handled above — no action needed.
 
     # ── Snapshot ──────────────────────────────────────────────────────────────
     pv        = _portfolio_value(state, prices)
@@ -1428,7 +1579,13 @@ def _end_of_day_update_for_date(as_of: date) -> None:
 
     # Exits
     for ticker in list(state["positions"]):
-        if ticker in signals and signals[ticker]["signal"] == 0:
+        if ticker not in signals:
+            continue
+        if signals[ticker]["signal"] == 0:
+            # Floor tickers: skip exit on flat signal unless raw signal is negative.
+            _raw = signals[ticker].get("raw_signal", signals[ticker]["signal"])
+            if ticker in SAFE_HAVEN_FLOOR and _raw == 0:
+                continue   # maintain floor allocation
             state = _sell(state, ticker, prices[ticker],
                           reason="catchup_signal_exit", trade_date=as_of_str)
 
@@ -1463,6 +1620,44 @@ def _end_of_day_update_for_date(as_of: date) -> None:
         if state["cash"] >= size * 1.01:
             state = _buy(state, ticker, signals[ticker]["close"], size,
                          reason="catchup_signal_entry", trade_date=as_of_str)
+
+    # ── Safe-haven floor positions (catchup) ──────────────────────────────────
+    pv = _portfolio_value(state, prices)
+    for _floor_ticker, _floor_frac in _get_current_safe_haven_floor().items():
+        if _floor_ticker not in signals:
+            continue
+        _floor_price = prices.get(_floor_ticker, signals[_floor_ticker]["close"])
+        _floor_size  = pv * _floor_frac
+        _raw_sig     = signals[_floor_ticker].get("raw_signal", signals[_floor_ticker]["signal"])
+
+        if _raw_sig == -1:
+            if _floor_ticker in state["positions"]:
+                state = _sell(state, _floor_ticker, _floor_price,
+                              reason="floor_short_override", trade_date=as_of_str)
+
+        elif _floor_ticker not in state["positions"] and signals[_floor_ticker]["signal"] == 0:
+            if state["cash"] >= _floor_size * 1.01:
+                state = _buy(state, _floor_ticker, _floor_price, _floor_size,
+                             reason="safe_haven_floor", trade_date=as_of_str)
+
+        elif _floor_ticker in state["positions"] and signals[_floor_ticker]["signal"] == 0:
+            _pos     = state["positions"][_floor_ticker]
+            _cur_val = _pos["shares"] * _floor_price
+            if _cur_val < _floor_size * 0.80:
+                _topup       = _floor_size - _cur_val
+                _commission  = _topup * COMMISSION_PCT
+                _total_cost  = _topup + _commission
+                if state["cash"] >= _total_cost * 1.01:
+                    _extra_shares      = _topup / _floor_price
+                    state["cash"]     -= _total_cost
+                    _pos["shares"]    += _extra_shares
+                    _pos["cost_basis"] = _pos.get("cost_basis", _cur_val) + _topup
+                    _append_csv(TRADES_FILE, {
+                        "date": as_of_str, "ticker": _floor_ticker, "action": "BUY",
+                        "shares": round(_extra_shares, 6), "price": round(_floor_price, 4),
+                        "value": round(_topup, 2), "commission": round(_commission, 2),
+                        "pnl": "", "reason": "safe_haven_floor_topup",
+                    })
 
     # Snapshot
     pv        = _portfolio_value(state, prices)
