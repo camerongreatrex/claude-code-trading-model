@@ -243,6 +243,14 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 MIN_TRADING_DAYS = 1000
 
 
+def _is_fresh(path: Path, today: pd.Timestamp) -> bool:
+    """Return True if the parquet exists and was last written today (cache hit)."""
+    if not path.exists():
+        return False
+    mtime = pd.Timestamp.fromtimestamp(path.stat().st_mtime).normalize()
+    return mtime >= today
+
+
 def fetch_earnings_dates(ticker: str) -> list:
     """
     Fetch quarterly earnings announcement dates for a stock from yfinance.
@@ -437,6 +445,184 @@ def main():
     avg_corr = corr.values[mask].mean()
     print(f"\nAverage pairwise correlation: {avg_corr:.3f}")
     print("Target: below 0.35 for genuine diversification")
+
+    # ── Expanded universe (opt-in) ─────────────────────────────────────────────
+    # Batch-downloads ~115 new S&P 500 stocks organised by GICS sector.
+    # Cached aggressively: a ticker is skipped if its parquet file was written
+    # today — re-running the pipeline on the same day skips re-downloads.
+    # The closes matrix is rebuilt to include all tickers once downloads complete.
+    try:
+        from pipeline.universe_expansion import (
+            USE_EXPANDED_UNIVERSE,
+            get_expanded_universe,
+            SECTOR_STOCKS,
+            NEW_TICKERS,
+            SECTOR_MAP,
+        )
+    except ImportError:
+        USE_EXPANDED_UNIVERSE = False
+
+    if USE_EXPANDED_UNIVERSE:
+        _, expanded_asset_class, _ = get_expanded_universe()
+        today = pd.Timestamp.today().normalize()
+
+        print(f"\n{'─' * 72}")
+        print(f"  Expanded universe  (USE_EXPANDED_UNIVERSE = True)")
+        print(f"  New stocks to download: {len(NEW_TICKERS)}")
+        print(f"{'─' * 72}")
+
+        for sector_etf, sector_tickers in SECTOR_STOCKS.items():
+            to_download = [
+                t for t in sector_tickers
+                if not _is_fresh(DATA_DIR / f"{t}.parquet", today)
+            ]
+            n_cached = len(sector_tickers) - len(to_download)
+
+            if n_cached:
+                print(f"\n  {sector_etf}: {n_cached} cached, downloading {len(to_download)}...")
+            else:
+                print(f"\n  {sector_etf}: downloading {len(to_download)} tickers...")
+
+            if to_download:
+                try:
+                    batch = yf.download(
+                        to_download,
+                        start=START,
+                        end=END,
+                        auto_adjust=True,
+                        progress=False,
+                        group_by="ticker",
+                    )
+                except Exception as e:
+                    print(f"    Batch download failed: {e}")
+                    batch = None
+
+                if batch is not None and not batch.empty:
+                    for ticker in to_download:
+                        try:
+                            if len(to_download) == 1:
+                                df_raw = batch
+                            else:
+                                lvl0 = batch.columns.get_level_values(0)
+                                if ticker not in lvl0:
+                                    print(f"    {ticker:<8} MISSING in batch response")
+                                    continue
+                                df_raw = batch[ticker].dropna(how="all")
+
+                            if isinstance(df_raw.columns, pd.MultiIndex):
+                                df_raw.columns = df_raw.columns.droplevel(1)
+
+                            df_raw = df_raw[["Open", "High", "Low", "Close", "Volume"]]
+                            df_raw.index = pd.to_datetime(df_raw.index).tz_localize(None)
+                            df_raw.index.name = "Date"
+                            df_raw = clean(df_raw)
+
+                            if len(df_raw) < MIN_TRADING_DAYS:
+                                print(f"    {ticker:<8} SKIP  {len(df_raw)} rows < {MIN_TRADING_DAYS}")
+                                continue
+
+                            (DATA_DIR / f"{ticker}.parquet").parent.mkdir(parents=True, exist_ok=True)
+                            df_raw.to_parquet(DATA_DIR / f"{ticker}.parquet",
+                                              engine="pyarrow", compression="snappy")
+                            all_data[ticker] = df_raw
+                            print(f"    {ticker:<8} {len(df_raw)} rows  ({sector_etf})")
+
+                        except Exception as e:
+                            print(f"    {ticker:<8} ERROR: {e}")
+
+            # Load any tickers that were already cached into all_data
+            for ticker in sector_tickers:
+                if ticker not in all_data:
+                    path = DATA_DIR / f"{ticker}.parquet"
+                    if path.exists():
+                        try:
+                            all_data[ticker] = pd.read_parquet(path)
+                        except Exception:
+                            pass
+
+        # Build expanded-only closes matrix.
+        # Use dropna(how='all') — only drop dates where EVERY expanded ticker is NaN.
+        # Individual ticker NaNs (e.g., before a stock's listing date) are fine;
+        # the signal generation handles them via sector groupby.
+        # This preserves the full ~2015-onward history instead of truncating to the
+        # DBMF 2019 listing date that constrained the combined-universe dropna().
+        #
+        # The core closes_matrix.parquet is intentionally NOT rebuilt here — it stays
+        # core-only so the core sleeve pipeline is unaffected by expanded universe changes.
+        exp_closes = pd.DataFrame(
+            {t: all_data[t]["Close"] for t in NEW_TICKERS if t in all_data}
+        ).dropna(how="all")
+        exp_closes.to_parquet(DATA_DIR / "closes_matrix_expanded.parquet")
+        print(f"\ncore  closes_matrix.parquet    : {closes.shape}  "
+              f"({closes.index[0].date()} to {closes.index[-1].date()})")
+        print(f"expanded closes_matrix_expanded: {exp_closes.shape}  "
+              f"({exp_closes.index[0].date()} to {exp_closes.index[-1].date()})")
+
+        # Append earnings dates for new stocks (merges into existing file)
+        new_stock_tickers = [
+            t for t in NEW_TICKERS
+            if t in all_data and expanded_asset_class.get(t) == "stock"
+        ]
+        if new_stock_tickers:
+            earn_path = DATA_DIR / "earnings_dates.json"
+            if earn_path.exists():
+                with open(earn_path) as fh:
+                    earnings_map = json.load(fh)
+            else:
+                earnings_map = {}
+
+            print(f"\nFetching earnings dates for {len(new_stock_tickers)} new stocks...")
+            for t in new_stock_tickers:
+                dates = fetch_earnings_dates(t)
+                earnings_map[t] = dates
+                print(f"  {t:<8} {len(dates):>3} dates  "
+                      f"({dates[0] if dates else 'n/a'} — {dates[-1] if dates else 'n/a'})")
+            with open(earn_path, "w") as fh:
+                json.dump(earnings_map, fh, indent=2)
+            print(f"\nEarnings dates updated -> {earn_path}")
+
+        # ── Validation gate ────────────────────────────────────────────────────
+        ref_start     = pd.Timestamp("2015-01-01")
+        ref_days      = len(pd.bdate_range(ref_start, pd.Timestamp.today()))
+        missing_dl    : list[str] = []
+        low_coverage  : list[str] = []
+        sector_counts : dict[str, int] = {}
+
+        for ticker in NEW_TICKERS:
+            path = DATA_DIR / f"{ticker}.parquet"
+            if not path.exists():
+                missing_dl.append(ticker)
+                continue
+            df_t = all_data.get(ticker)
+            if df_t is None:
+                missing_dl.append(ticker)
+                continue
+            in_window = df_t.loc[ref_start:]
+            cov = len(in_window) / ref_days
+            if cov < 0.90:
+                low_coverage.append(f"{ticker}({cov:.0%})")
+            sec = SECTOR_MAP.get(ticker)
+            if sec:
+                sector_counts[sec] = sector_counts.get(sec, 0) + 1
+
+        print(f"\n{'─' * 72}")
+        print(f"  Validation gate — expanded universe")
+        print(f"{'─' * 72}")
+        print(f"  {'Sector':<6}  {'Stocks':>6}")
+        for sec in sorted(sector_counts):
+            print(f"  {sec:<6}  {sector_counts[sec]:>6}")
+
+        n_ok = len(NEW_TICKERS) - len(missing_dl) - len(low_coverage)
+        print(f"\n  Tickers with >= 90% coverage since 2015: {n_ok}/{len(NEW_TICKERS)}")
+        if missing_dl:
+            print(f"  Missing downloads ({len(missing_dl)}): {', '.join(missing_dl)}")
+        if low_coverage:
+            print(f"  Low coverage (<90%): {', '.join(low_coverage)}")
+        if not missing_dl and not low_coverage:
+            print(f"  All {len(NEW_TICKERS)} new tickers downloaded successfully")
+        print(f"  Total universe: {len(all_data)} tickers  "
+              f"(core: {len(TICKER_LIST)}, expansion: {len(NEW_TICKERS)})")
+        print(f"{'─' * 72}")
 
 
 if __name__ == "__main__":

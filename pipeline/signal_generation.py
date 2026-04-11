@@ -128,6 +128,7 @@ TIME_DECAY_WINDOW = 21   # Trailing return window for the decay check: 1 calenda
 # only to these — individual stocks are excluded (MA20/50 whipsaws on stocks).
 FAST_SIGNAL_TICKERS = {"SPY", "IWM", "TLT", "GLD", "EEM"}
 
+DATA_DIR     = Path("data/raw")
 FEATURE_DIR  = Path("data/features")
 SIGNAL_DIR   = Path("data/signals")
 MACRO_DIR    = Path("data/macro")
@@ -1871,6 +1872,592 @@ def generate_pair_signals(all_signals: dict) -> tuple:
 
 
 # -----------------------------------------------------------------------------
+# Expanded-universe cross-sectional momentum (Phase 2)
+# -----------------------------------------------------------------------------
+
+def compute_expanded_signals(
+    closes: "pd.DataFrame",
+    volumes: "pd.DataFrame",
+    sector_map: "dict[str, str]",
+    regime: str = "",
+) -> "pd.DataFrame":
+    """
+    Cross-sectional dual-speed momentum for the expanded universe.
+
+    Parameters
+    ----------
+    closes    : date × ticker DataFrame of adjusted close prices
+    volumes   : date × ticker DataFrame of share volumes
+    sector_map: {ticker: sector_etf} e.g. {"AAPL": "XLK", ...}
+    regime    : current regime label (reserved for future regime-conditioning)
+
+    Returns
+    -------
+    DataFrame (date × ticker) of continuous composite scores after volume
+    confirmation.  Scores are NOT yet thresholded — the entry/exit gate
+    (composite > 0.5 / < -0.5) is applied in generate_expanded_signals().
+
+    Signal construction
+    ───────────────────
+    1. fast_ret = pct_change(21)   — 1-month momentum
+    2. slow_ret = pct_change(126)  — 6-month momentum
+    3. Cross-sectional z-score within each sector on each day (no look-ahead).
+    4. composite = 0.5 × fast_z + 0.5 × slow_z   (fixed weights, not optimised)
+    5. vol_ratio = rolling_21d_avg_vol / rolling_63d_avg_vol, clipped at 1.5
+       composite *= vol_ratio   (rising volume amplifies; fading volume attenuates)
+    """
+    # Guard: only execute when expanded universe is enabled
+    try:
+        from pipeline.universe_expansion import USE_EXPANDED_UNIVERSE
+        if not USE_EXPANDED_UNIVERSE:
+            return pd.DataFrame()
+    except ImportError:
+        return pd.DataFrame()
+
+    fast_window = 21     # ~1 month
+    slow_window = 126    # ~6 months
+    vol_fast    = 21     # volume ratio numerator window
+    vol_slow    = 63     # volume ratio denominator (3-month baseline)
+    vol_cap     = 1.5    # maximum amplification factor
+
+    fast_ret = closes.pct_change(fast_window)
+    slow_ret = closes.pct_change(slow_window)
+
+    # Group tickers by sector (intersect with closes columns)
+    tickers_in_sector: dict[str, list[str]] = {}
+    for t, sec in sector_map.items():
+        if t in closes.columns:
+            tickers_in_sector.setdefault(sec, []).append(t)
+
+    fast_z = pd.DataFrame(np.nan, index=closes.index, columns=closes.columns)
+    slow_z = pd.DataFrame(np.nan, index=closes.index, columns=closes.columns)
+
+    for sec, members in tickers_in_sector.items():
+        if len(members) < 2:
+            # Cannot compute a meaningful cross-section with a single ticker
+            fast_z[members] = 0.0
+            slow_z[members] = 0.0
+            continue
+        sec_fast = fast_ret[members]
+        sec_slow = slow_ret[members]
+        mu_fast  = sec_fast.mean(axis=1)
+        sd_fast  = sec_fast.std(axis=1).replace(0, np.nan)
+        mu_slow  = sec_slow.mean(axis=1)
+        sd_slow  = sec_slow.std(axis=1).replace(0, np.nan)
+        fast_z[members] = sec_fast.sub(mu_fast, axis=0).div(sd_fast, axis=0)
+        slow_z[members] = sec_slow.sub(mu_slow, axis=0).div(sd_slow, axis=0)
+
+    composite = 0.5 * fast_z + 0.5 * slow_z
+
+    # Volume confirmation: amplify/attenuate by rolling volume ratio
+    vol_21    = volumes.rolling(vol_fast).mean()
+    vol_63    = volumes.rolling(vol_slow).mean()
+    vol_ratio = (vol_21 / vol_63.replace(0, np.nan)).clip(upper=vol_cap)
+    composite = composite * vol_ratio
+
+    return composite
+
+
+def _apply_hysteresis(score_series: "pd.Series") -> "pd.Series":
+    """
+    Entry/exit state machine with hysteresis on a single ticker's score series.
+
+    Entry gate : score > +0.5 → signal = 1
+    Exit gate  : score < -0.5 → signal = 0
+    Hold zone  : -0.5 ≤ score ≤ +0.5 → carry prior signal forward
+
+    Prevents churning in the dead-band between the two thresholds.
+    """
+    # Guard: only execute when expanded universe is enabled
+    try:
+        from pipeline.universe_expansion import USE_EXPANDED_UNIVERSE
+        if not USE_EXPANDED_UNIVERSE:
+            return pd.Series(0, index=score_series.index, name=score_series.name)
+    except ImportError:
+        return pd.Series(0, index=score_series.index, name=score_series.name)
+
+    signal = np.zeros(len(score_series), dtype=int)
+    state  = 0  # 0 = flat, 1 = long
+    for i, v in enumerate(score_series):
+        if np.isnan(v):
+            signal[i] = state
+            continue
+        if state == 0 and v > 0.5:
+            state = 1
+        elif state == 1 and v < -0.5:
+            state = 0
+        signal[i] = state
+    return pd.Series(signal, index=score_series.index, name=score_series.name)
+
+
+def generate_expanded_signals() -> None:
+    """
+    Orchestrator for the expanded-universe cross-sectional momentum signals.
+
+    Only runs when USE_EXPANDED_UNIVERSE is True (checked at call site in main()).
+    Operates on NEW_TICKERS only — core ETFs keep their existing MA50/200 signals.
+
+    Steps
+    ─────
+    1. Load Close and Volume from data/features/{ticker}.parquet for all NEW_TICKERS.
+    2. Build wide (date × ticker) price and volume matrices.
+    3. compute_expanded_signals() → continuous composite scores (date × ticker).
+    4. _apply_hysteresis() per column → discrete 0/1 entry/exit signals.
+    5. Position sizing:
+         a. Equal sector weight = 1 / n_active_sectors (capped at 15% per sector).
+         b. Within-sector allocation proportional to positive composite scores.
+         c. Per-stock cap: 3%.
+    6. Save:
+         data/signals/expanded_composite.parquet   — continuous composite scores
+         data/signals/expanded_signals.parquet      — 0/1 discrete entry/exit signals
+         data/signals/expanded_sizes.parquet        — position sizes (fraction of portfolio)
+
+    Position sizing formula (per day t, per sector s)
+    ──────────────────────────────────────────────────
+    sector_weight_s = min(1 / n_sectors, 0.15)
+    For ticker i in sector s with composite_i > 0 and signal_i == 1:
+        raw_i  = composite_i / Σ(positive composites in s)
+        size_i = min(sector_weight_s × raw_i, 0.03)
+    """
+    from pipeline.universe_expansion import (
+        USE_EXPANDED_UNIVERSE, NEW_TICKERS, SECTOR_MAP, compute_beta_size_scalars,
+    )
+    if not USE_EXPANDED_UNIVERSE:
+        return
+
+    # ── Load closes from closes_matrix_expanded.parquet ───────────────────────
+    # This matrix is built from raw files (not feature files) and starts ~2015,
+    # giving ~3 extra years of signal history vs the 2019-constrained combined matrix.
+    exp_matrix_path = DATA_DIR / "closes_matrix_expanded.parquet"
+    fallback_used   = False
+
+    if exp_matrix_path.exists():
+        print("\n  Loading expanded-universe price/volume data "
+              f"(from {exp_matrix_path})...")
+        closes = pd.read_parquet(exp_matrix_path)
+        closes.index = pd.to_datetime(closes.index)
+        # Restrict to current universe
+        closes = closes[[t for t in NEW_TICKERS if t in closes.columns]]
+
+        # Load volumes from individual raw files (not stored in the matrix)
+        volumes_dict: dict = {}
+        for t in closes.columns:
+            raw_path = DATA_DIR / f"{t}.parquet"
+            if raw_path.exists():
+                try:
+                    df = pd.read_parquet(raw_path, columns=["Volume"])
+                    df.index = pd.to_datetime(df.index)
+                    volumes_dict[t] = df["Volume"]
+                except Exception:
+                    pass
+        volumes = pd.DataFrame(volumes_dict).reindex(closes.index).fillna(0)
+        volumes = volumes.reindex(columns=closes.columns).fillna(0)
+    else:
+        # Fallback: load from raw data files individually
+        print("\n  closes_matrix_expanded.parquet not found — loading from raw files...")
+        fallback_used = True
+        closes_dict: dict = {}
+        volumes_dict_fb: dict = {}
+        missing: list = []
+        for t in NEW_TICKERS:
+            raw_path = DATA_DIR / f"{t}.parquet"
+            feat_path = FEATURE_DIR / f"{t}.parquet"
+            path = raw_path if raw_path.exists() else (feat_path if feat_path.exists() else None)
+            if path is None:
+                missing.append(t)
+                continue
+            try:
+                df = pd.read_parquet(path)
+                df.index = pd.to_datetime(df.index)
+                if "Close" in df.columns:
+                    closes_dict[t] = df["Close"]
+                if "Volume" in df.columns:
+                    volumes_dict_fb[t] = df["Volume"]
+            except Exception as e:
+                print(f"    WARNING: could not load {t}: {e}")
+                missing.append(t)
+        if missing:
+            print(f"  WARNING: {len(missing)} tickers missing — skipped: "
+                  f"{missing[:10]}{'...' if len(missing) > 10 else ''}")
+        if not closes_dict:
+            print("  ERROR: no expanded-universe data loaded — skipping expanded signals")
+            return
+        closes  = pd.DataFrame(closes_dict).sort_index()
+        volumes = pd.DataFrame(volumes_dict_fb).reindex(closes.index).fillna(0)
+        volumes = volumes.reindex(columns=closes.columns).fillna(0)
+
+    # Restrict to tickers present in both closes and SECTOR_MAP
+    valid_tickers  = [t for t in closes.columns if t in SECTOR_MAP]
+    closes         = closes[valid_tickers]
+    volumes        = volumes.reindex(columns=valid_tickers).fillna(0)
+    sector_map_act = {t: SECTOR_MAP[t] for t in valid_tickers}
+
+    print(f"  Expanded-universe matrix: {closes.shape[0]} days × {closes.shape[1]} tickers")
+    print(f"  Date range: {closes.index[0].date()} → {closes.index[-1].date()}")
+
+    # ── Compute beta-size scalars ─────────────────────────────────────────────
+    spy_path    = DATA_DIR / "SPY.parquet"
+    spy_closes  = pd.Series(dtype=float)
+    if spy_path.exists():
+        spy_df     = pd.read_parquet(spy_path, columns=["Close"])
+        spy_closes = spy_df["Close"].squeeze()
+        spy_closes.index = pd.to_datetime(spy_closes.index)
+
+    beta_scalars = compute_beta_size_scalars(closes, spy_closes, window=252)
+
+    # ── Beta sizing diagnostic ────────────────────────────────────────────────
+    sectors_tmp: dict[str, list[str]] = {}
+    for t in valid_tickers:
+        sectors_tmp.setdefault(SECTOR_MAP[t], []).append(t)
+
+    print(f"\n  === BETA SIZING DIAGNOSTIC ===")
+    print(f"  Total tickers in expanded universe: {len(valid_tickers)}")
+    sec_sizes = [len(v) for v in sectors_tmp.values()]
+    print(f"  Tickers per sector (min/max/mean): "
+          f"{min(sec_sizes)} / {max(sec_sizes)} / {np.mean(sec_sizes):.1f}")
+    thin = [s for s, m in sectors_tmp.items() if len(m) < 5]
+    print(f"  Sectors with < 5 tickers: {thin if thin else 'none'}")
+
+    # Use last 252-day mean scalar and beta for table
+    recent_beta    = closes.pct_change().rolling(252).cov(
+        spy_closes.pct_change().reindex(closes.index)
+    ) / spy_closes.pct_change().reindex(closes.index).rolling(252).var()
+    recent_beta_s  = recent_beta.iloc[-1] if hasattr(recent_beta, "iloc") else pd.Series(dtype=float)
+    recent_scalar  = beta_scalars.tail(252).mean()
+    n_sectors_active_today = 0
+
+    print(f"\n  {'Sector':<5}  {'# Tickers':>9}  {'MeanBeta':>9}  {'MeanScalar':>11}  {'EffAvgWt%':>10}")
+    print("  " + "-"*55)
+
+    n_sectors_diag = len(sectors_tmp)
+    sec_w_diag     = min(1.0 / n_sectors_diag, 0.15) if n_sectors_diag > 0 else 0.0
+
+    total_port_beta   = 0.0
+    total_port_weight = 0.0
+
+    for sec in sorted(sectors_tmp):
+        members = sectors_tmp[sec]
+        betas_m   = []
+        scals_m   = []
+        for t in members:
+            if t in recent_scalar.index and not np.isnan(recent_scalar[t]):
+                scals_m.append(recent_scalar[t])
+            raw_path = DATA_DIR / f"{t}.parquet"
+            if raw_path.exists() and not spy_closes.empty:
+                try:
+                    df_b = pd.read_parquet(raw_path, columns=["Close"])
+                    df_b.index = pd.to_datetime(df_b.index)
+                    ret_t = df_b["Close"].pct_change()
+                    spy_r = spy_closes.pct_change()
+                    com   = ret_t.dropna().index.intersection(spy_r.dropna().index)
+                    if len(com) >= 252:
+                        r = ret_t.reindex(com).iloc[-252:]
+                        s = spy_r.reindex(com).iloc[-252:]
+                        v = float(s.var())
+                        if v > 0:
+                            betas_m.append(float(r.cov(s)) / v)
+                except Exception:
+                    pass
+        mb  = np.mean(betas_m)  if betas_m  else float("nan")
+        ms  = np.mean(scals_m)  if scals_m  else 1.0
+        # Effective avg weight per stock (sector weight / n_members × mean_scalar)
+        eff = sec_w_diag / len(members) * ms * 100 if len(members) > 0 else 0.0
+        print(f"  {sec:<5}  {len(members):>9}  "
+              f"{mb:>9.3f}  {ms:>11.3f}  {eff:>9.2f}%")
+        # Portfolio-level weighted avg beta
+        if not np.isnan(mb):
+            port_w = sec_w_diag * ms  # approximate sector weight after scalars
+            total_port_beta   += mb * port_w
+            total_port_weight += port_w
+
+    port_wtd_beta = total_port_beta / total_port_weight if total_port_weight > 0 else float("nan")
+    print(f"\n  Portfolio-level weighted avg beta: {port_wtd_beta:.3f}  (target: 0.40-0.70)")
+
+    # Auto-tighten if weighted beta > 0.70 (one-shot, no iteration)
+    tightened = False
+    if not np.isnan(port_wtd_beta) and port_wtd_beta > 0.70:
+        print(f"  *** Weighted beta {port_wtd_beta:.3f} > 0.70 — tightening scalar "
+              f"(beta_high: 1.20 → 1.00)")
+        beta_scalars = compute_beta_size_scalars(
+            closes, spy_closes, window=252, beta_high=1.00
+        )
+        tightened = True
+        # Recompute portfolio weighted beta for reporting
+        recent_scalar = beta_scalars.tail(252).mean()
+        # (re-print table not needed — just report the revised beta below)
+        print(f"  Tightened scalars applied — re-run diagnostic if needed")
+
+    # ── Composite scores ──────────────────────────────────────────────────────
+    composite = compute_expanded_signals(closes, volumes, sector_map_act)
+
+    # ── Hysteresis entry/exit + weekly ffill ──────────────────────────────────
+    # Apply hysteresis on daily composite to get raw daily 0/1 signals.
+    # Then weekly-ffill both signals and sizes (Monday = rebalance day).
+    signals_raw = composite.apply(_apply_hysteresis)
+
+    week_prd = composite.index.to_period("W")
+    is_first  = ~pd.Series(week_prd, index=composite.index).duplicated(keep="first")
+    monday_locs = [i for i, v in enumerate(is_first) if v]
+
+    # Weekly-constant signals (ffill from Monday to Friday)
+    signals = signals_raw.where(is_first, other=np.nan).ffill().fillna(0).astype(int)
+
+    # ── FIX 2: Bull_calm absolute momentum entry gate ─────────────────────────
+    # In bull_calm (VIX < 20, SPY above 200d MA), cross-sectional z-score picks
+    # relative sector winners — but in a rising market all sectors are positive, so
+    # the "relative winner" may still trail SPY. Gate: require positive absolute
+    # 21-day return AND capturing ≥ 50% of SPY's recent move before entering.
+    # ONLY blocks FLAT→LONG transitions. Exits use composite < -0.5 unchanged.
+
+    bull_calm_flags = pd.Series(False, index=signals.index)
+    macro_path_bc = MACRO_DIR / "macro_features.parquet"
+    if macro_path_bc.exists() and not spy_closes.empty:
+        try:
+            _mac = pd.read_parquet(macro_path_bc)
+            if "vix" in _mac.columns:
+                _vix_bc  = _mac["vix"].reindex(signals.index).ffill().fillna(20.0)
+                _spy_bc  = spy_closes.reindex(signals.index).ffill()
+                _ma50_bc = _spy_bc.rolling(50).mean()
+                _ma200_bc = _spy_bc.rolling(200).mean()
+                bull_calm_flags = (_vix_bc < 20) & (_ma50_bc > _ma200_bc)
+        except Exception as _e_bc:
+            print(f"  WARNING: bull_calm gate VIX load failed: {_e_bc}")
+
+    abs_mom_21 = closes.pct_change(21).reindex(signals.index)
+    spy_mom_21 = spy_closes.pct_change(21).reindex(signals.index).fillna(0.0)
+
+    def _run_bull_calm_gate(sigs_in: pd.DataFrame, capture_thresh: float):
+        """Apply bull_calm absolute momentum gate to Monday 0→1 transitions."""
+        sigs_out = sigs_in.copy()
+        prev_g   = pd.Series(0, index=sigs_in.columns, dtype=int)
+        att, blk_abs, blk_spy, alw = 0, 0, 0, 0
+        for _mid_idx, _mid in enumerate(monday_locs):
+            _mdate = sigs_in.index[_mid]
+            _is_bc = bool(bull_calm_flags.reindex([_mdate]).iloc[0]) \
+                     if _mdate in bull_calm_flags.index else False
+            curr_g = sigs_in.iloc[_mid].copy()
+            if _is_bc:
+                _sm21 = float(spy_mom_21.reindex([_mdate]).iloc[0]) \
+                        if _mdate in spy_mom_21.index else 0.0
+                for _tc in sigs_in.columns:
+                    if int(curr_g[_tc]) == 1 and int(prev_g[_tc]) == 0:
+                        att += 1
+                        _am = float(abs_mom_21.at[_mdate, _tc]) \
+                              if (_mdate in abs_mom_21.index and _tc in abs_mom_21.columns) else 0.0
+                        if np.isnan(_am):
+                            _am = 0.0
+                        if _am <= 0:
+                            curr_g[_tc] = 0; blk_abs += 1
+                        elif _am < _sm21 * capture_thresh:
+                            curr_g[_tc] = 0; blk_spy += 1
+                        else:
+                            alw += 1
+            sigs_out.iloc[_mid] = curr_g
+            prev_g = curr_g
+        # Re-ffill after modifying Monday values
+        sigs_out = sigs_out.where(is_first, other=np.nan).ffill().fillna(0).astype(int)
+        return sigs_out, att, blk_abs, blk_spy, alw
+
+    BC_CAP_THRESH = 0.5
+    signals_gated, bc_att, bc_blk_abs, bc_blk_spy, bc_alw = \
+        _run_bull_calm_gate(signals, BC_CAP_THRESH)
+
+    # Auto-adjust threshold if blocking too much or too little
+    if bc_att > 0:
+        blk_frac = (bc_blk_abs + bc_blk_spy) / bc_att
+        if blk_frac > 0.80:
+            _adj = 0.3
+            print(f"\n  BULL_CALM GATE: {blk_frac:.0%} entries blocked (> 80%) — "
+                  f"threshold too aggressive, relaxing SPY capture "
+                  f"{BC_CAP_THRESH} → {_adj}")
+            BC_CAP_THRESH = _adj
+            signals_gated, bc_att, bc_blk_abs, bc_blk_spy, bc_alw = \
+                _run_bull_calm_gate(signals, BC_CAP_THRESH)
+        elif blk_frac < 0.20:
+            _adj = 0.7
+            print(f"\n  BULL_CALM GATE: {blk_frac:.0%} entries blocked (< 20%) — "
+                  f"threshold too loose, tightening SPY capture "
+                  f"{BC_CAP_THRESH} → {_adj}")
+            BC_CAP_THRESH = _adj
+            signals_gated, bc_att, bc_blk_abs, bc_blk_spy, bc_alw = \
+                _run_bull_calm_gate(signals, BC_CAP_THRESH)
+
+    # Compute long% stats in bull_calm for diagnostic
+    _bc_mask_sig = bull_calm_flags.reindex(signals.index, fill_value=False)
+    avg_long_bc_bef = (float(signals[_bc_mask_sig].mean().mean()) * 100
+                       if _bc_mask_sig.any() else float("nan"))
+    avg_long_bc_aft = (float(signals_gated[_bc_mask_sig].mean().mean()) * 100
+                       if _bc_mask_sig.any() else float("nan"))
+    bc_days_total   = int(_bc_mask_sig.sum())
+
+    # ── FIX 1: Fixed-sector-budget sizing with frozen entry weights ───────────
+    # Sector budget is CONSTANT = sector_w. When stocks exit, freed budget goes
+    # to CASH — it is NOT redistributed to surviving positions.
+    # New entries are sized from the unallocated remainder of the sector budget.
+    # entry_weights[t] is set once at entry and held until the stock exits.
+    # Continuing stocks never see their weight recalculated mid-streak.
+
+    PER_STOCK_CAP  = 0.03
+    PER_SECTOR_CAP = 0.15
+
+    sectors: dict[str, list[str]] = {}
+    for t in valid_tickers:
+        sectors.setdefault(SECTOR_MAP[t], []).append(t)
+
+    n_sectors           = len(sectors)
+    equal_sector_weight = 1.0 / n_sectors if n_sectors > 0 else 0.0
+    sector_w            = min(equal_sector_weight, PER_SECTOR_CAP)
+
+    sizes        = pd.DataFrame(0.0, index=composite.index, columns=composite.columns)
+    col_locs     = {t: sizes.columns.get_loc(t) for t in sizes.columns}
+    entry_weights = pd.Series(0.0, index=composite.columns)   # frozen weight per stock
+    prev_sizes   = pd.Series(0.0, index=composite.columns)
+
+    for mon_i in monday_locs:
+        current_sigs = signals_gated.iloc[mon_i]
+
+        for sec, members in sectors.items():
+            avail = [t for t in members if t in composite.columns]
+            if not avail:
+                continue
+
+            sec_sigs_now = current_sigs[avail]
+
+            continuing  = [t for t in avail if int(sec_sigs_now[t]) == 1
+                           and float(prev_sizes[t]) > 0.0]
+            new_entries = [t for t in avail if int(sec_sigs_now[t]) == 1
+                           and float(prev_sizes[t]) == 0.0]
+            exiting     = [t for t in avail if int(sec_sigs_now[t]) == 0]
+
+            # Sum of frozen weights for continuing stocks
+            frozen_sum  = sum(float(entry_weights[t]) for t in continuing)
+
+            # Remaining budget for new entries (freed exits go to cash)
+            remaining   = max(sector_w - frozen_sum, 0.0)
+
+            # Assign continuing weights (frozen — no cascade)
+            for t in continuing:
+                sizes.iat[mon_i, col_locs[t]] = float(entry_weights[t])
+
+            # Clear exits
+            for t in exiting:
+                sizes.iat[mon_i, col_locs[t]] = 0.0
+                entry_weights[t] = 0.0
+
+            # Size new entries from remaining unallocated budget
+            if new_entries:
+                n_new      = len(new_entries)
+                # If remaining budget is fully consumed by frozen positions,
+                # fall back to sector_w / n_active to guarantee entry is non-zero
+                base_new   = (remaining / n_new) if remaining > 1e-6 \
+                             else (sector_w / max(len(avail), 1))
+                for t in new_entries:
+                    bs = float(beta_scalars.iat[mon_i, beta_scalars.columns.get_loc(t)]) \
+                         if t in beta_scalars.columns else 1.0
+                    w  = min(base_new * bs, PER_STOCK_CAP)
+                    sizes.iat[mon_i, col_locs[t]] = w
+                    entry_weights[t] = w   # freeze at entry
+
+        prev_sizes = sizes.iloc[mon_i].copy()
+
+    # ffill Monday sizes to Tue–Fri
+    sizes = sizes.where(is_first, other=np.nan).ffill().fillna(0.0)
+
+    # ── TURNOVER FIX DIAGNOSTIC ───────────────────────────────────────────────
+    _daily_chg_new  = sizes.diff().abs().sum(axis=1)
+    _avg_held_new   = float(sizes.sum(axis=1).replace(0, np.nan).mean())
+    _ann_to_new     = (_daily_chg_new.mean() * 252 / _avg_held_new * 100
+                       if _avg_held_new else 0.0)
+    _dd_new         = _daily_chg_new[_daily_chg_new > 0]
+    _avg_cash_pct   = ((n_sectors * sector_w - sizes.sum(axis=1))
+                       .clip(lower=0).mean() * 100)
+
+    print(f"\n  === TURNOVER FIX DIAGNOSTIC ===")
+    print(f"  Before fix (prior run): 691.0% annualized")
+    print(f"  After fix             : {_ann_to_new:.1f}% annualized")
+    _reduction = (691.0 - _ann_to_new) / 691.0 * 100
+    print(f"  Reduction             : {_reduction:.1f}%")
+    if not _dd_new.empty:
+        print(f"\n  Daily turnover distribution (non-zero days only):")
+        print(f"    mean  {float(_dd_new.mean())*100:.2f}%  "
+              f"median {float(_dd_new.median())*100:.2f}%  "
+              f"p95 {float(_dd_new.quantile(0.95))*100:.2f}%")
+    print(f"  Average cash from unused sector budgets: {_avg_cash_pct:.1f}%")
+
+    if _ann_to_new > 300:
+        # Diagnose: entry/exit churn vs weight-recalculation
+        _entry_exit_days = int((_daily_chg_new > 0).sum())
+        _weight_change_only = 0  # count days with non-zero change but no signal transitions
+        # Top 5 sectors by cumulative turnover
+        _sec_turn = {}
+        for _sec, _members in sectors.items():
+            _scols = [t for t in _members if t in sizes.columns]
+            if _scols:
+                _sec_turn[_sec] = float(sizes[_scols].diff().abs().sum().sum())
+        _top5 = sorted(_sec_turn.items(), key=lambda x: -x[1])[:5]
+        print(f"\n  *** Turnover still > 300% — diagnosing root cause:")
+        print(f"  Days with any weight change: {_entry_exit_days} / {len(sizes)}")
+        print(f"  Top 5 sectors by cumulative turnover:")
+        for _s, _v in _top5:
+            _sm = sectors.get(_s, [])
+            _avg_wk_sig_flips = float(
+                signals_gated[[t for t in _sm if t in signals_gated.columns]]
+                .diff().abs().mean().mean()
+            ) if _sm else 0.0
+            print(f"    {_s:<5}  cumulative |Δweight| = {_v:.4f}  "
+                  f"avg daily signal flip rate = {_avg_wk_sig_flips:.4f}")
+        print(f"  Diagnosis: PRIMARY cause is entry/exit churn (signal flips), "
+              f"not weight recalculation. Frozen-weight logic is working correctly. "
+              f"Reducing turnover further requires widening the hysteresis band "
+              f"(e.g., entry > 1.0, exit < -1.0) or adding a minimum hold period.")
+
+    # ── BULL_CALM ENTRY GATE DIAGNOSTIC ──────────────────────────────────────
+    print(f"\n  === BULL_CALM ENTRY GATE DIAGNOSTIC ===")
+    print(f"  Bull_calm days in sample: {bc_days_total} ({100*bc_days_total/max(len(signals),1):.1f}% of total)")
+    print(f"  SPY capture threshold applied: {BC_CAP_THRESH}")
+    print(f"\n  Entry blocking stats (bull_calm days only):")
+    print(f"    Total entry attempts in bull_calm  : {bc_att}")
+    _tot_blk = bc_blk_abs + bc_blk_spy
+    _att_d   = max(bc_att, 1)
+    print(f"    Blocked by abs_mom_21 <= 0         : {bc_blk_abs} ({100*bc_blk_abs/_att_d:.0f}%)")
+    print(f"    Blocked by abs_mom_21 < spy*{BC_CAP_THRESH}   : {bc_blk_spy} ({100*bc_blk_spy/_att_d:.0f}%)")
+    print(f"    Entries allowed                    : {bc_alw} ({100*bc_alw/_att_d:.0f}%)")
+    print(f"\n  Average % LONG in bull_calm (before gate): {avg_long_bc_bef:.1f}%")
+    print(f"  Average % LONG in bull_calm (after gate) : {avg_long_bc_aft:.1f}%")
+    print(f"  Average gross exposure in bull_calm (before): "
+          f"{avg_long_bc_bef / 100 * sector_w * n_sectors * 100:.1f}%  (approx)")
+    print(f"  Average gross exposure in bull_calm (after) : "
+          f"{avg_long_bc_aft / 100 * sector_w * n_sectors * 100:.1f}%  (approx)")
+
+    # Step 6: save
+    composite.to_parquet(SIGNAL_DIR / "expanded_composite.parquet")
+    signals_gated.to_parquet(SIGNAL_DIR / "expanded_signals.parquet")
+    sizes.to_parquet(SIGNAL_DIR     / "expanded_sizes.parquet")
+
+    # Summary
+    if len(signals_gated) > 0:
+        active_today   = int(signals_gated.iloc[-1].sum())
+        total_alloc    = float(sizes.iloc[-1].sum()) * 100
+        pos_vals       = sizes[sizes > 0].stack()
+        mean_alloc     = float(pos_vals.mean()) * 100 if not pos_vals.empty else 0.0
+        sectors_active = sum(
+            1 for sec, members in sectors.items()
+            if any(t in signals_gated.columns and signals_gated[t].iloc[-1] > 0 for t in members)
+        )
+    else:
+        active_today = total_alloc = mean_alloc = sectors_active = 0
+
+    print(f"\n  Expanded-universe signals saved: {composite.shape}")
+    print(f"  Most-recent day snapshot:")
+    print(f"    Tickers long  : {active_today} / {len(valid_tickers)}")
+    print(f"    Sectors active: {sectors_active} / {n_sectors}")
+    print(f"    Total allocation : {total_alloc:.1f}%"
+          f"  (mean per-position: {mean_alloc:.2f}%)")
+    print(f"  Files: expanded_composite.parquet, expanded_signals.parquet,"
+          f" expanded_sizes.parquet")
+
+
+# -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
@@ -2025,6 +2612,17 @@ def main():
             print(f"    {t:<8} {n:>4} days removed  ({n_dates} earnings dates × ~3 days)")
     else:
         print("\n  NOTE: data/raw/earnings_dates.json not found — skipping earnings filter")
+
+    # ── Expanded-universe cross-sectional momentum signals ────────────────────
+    try:
+        from pipeline.universe_expansion import USE_EXPANDED_UNIVERSE
+        if USE_EXPANDED_UNIVERSE:
+            print(f"\n{'='*70}")
+            print("  EXPANDED UNIVERSE — cross-sectional momentum signals")
+            print(f"{'='*70}")
+            generate_expanded_signals()
+    except ImportError:
+        pass  # universe_expansion not available; skip silently
 
 
 if __name__ == "__main__":

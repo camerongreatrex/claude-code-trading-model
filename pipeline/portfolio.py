@@ -139,6 +139,16 @@ SAFE_HAVEN_FLOOR = {
     "WTMF": 0.04,   # 4% — bear_stress corr +0.138 (managed futures)
 }
 
+# Sleeve-based allocation split between the core (MA50/200) universe and the
+# expanded cross-sectional momentum universe.  Each sleeve is independently
+# managed; their returns are summed as a weighted blend.
+# Core = existing 37 tickers.  Expanded = 115 new tickers from SECTOR_STOCKS.
+# DISABLED: Only used when USE_EXPANDED_UNIVERSE=True (universe_expansion.py).
+ALLOCATION_SPLIT: dict[str, float] = {
+    "core":     0.50,   # 50% of capital allocated to the core MA50/200 sleeve
+    "expanded": 0.50,   # 50% of capital allocated to the expanded CS-momentum sleeve
+}
+
 
 def load_dead_weight_scalars(
     floor: float = 0.70,
@@ -2297,6 +2307,113 @@ def walk_forward(signals: pd.DataFrame, returns: pd.DataFrame,
     return pd.DataFrame(results)
 
 
+def apply_vol_targeting(
+    returns: pd.Series,
+    target_vol: float | None = None,
+    scale_cap: float = 1.5,
+    scale_floor: float = 0.3,
+    lookback: int = 63,
+) -> tuple[pd.Series, dict]:
+    """
+    Moreira & Muir (2017) volatility targeting overlay.
+
+    If target_vol is None: set to the strategy's own realized annual vol
+    (computed over the full IS period). This ensures we're normalizing vol,
+    not leveraging up.
+
+    At each day t:
+      realized_vol = std(returns[t-lookback:t]) * sqrt(252)
+      scale = target_vol / realized_vol
+      scale = clip(scale, scale_floor, scale_cap)
+      adjusted_return[t] = returns[t] * scale
+
+    The scale_floor of 0.3 means we never go below 30% exposure (avoid
+    being whipsawed out of positions entirely during vol spikes).
+
+    The scale_cap of 1.5 means modest leverage in calm periods.
+    NOTE: If we want strictly unlevered, set scale_cap=1.0. Test both.
+
+    Returns: adjusted_returns Series, plus diagnostics dict with:
+      - mean_scale, median_scale, min_scale, max_scale
+      - pct_days_deleveraged (scale < 1.0)
+      - pct_days_leveraged (scale > 1.0)
+      - realized_vol_before, realized_vol_after
+    """
+    returns = returns.dropna()
+    if len(returns) < lookback + 1:
+        diag = {
+            "mean_scale": 1.0, "median_scale": 1.0,
+            "min_scale": 1.0, "max_scale": 1.0,
+            "pct_days_deleveraged": 0.0, "pct_days_leveraged": 0.0,
+            "realized_vol_before": float("nan"), "realized_vol_after": float("nan"),
+            "target_vol": float("nan"),
+        }
+        return returns.copy(), diag
+
+    # Compute realized daily vol using a lookback-day rolling window
+    # Use shift(1) so we never use current day's return to set today's scale
+    rolling_vol = returns.shift(1).rolling(lookback, min_periods=lookback // 2).std() * np.sqrt(252)
+    rolling_vol = rolling_vol.replace(0, np.nan).ffill()
+
+    # Set target_vol to natural strategy vol if not provided
+    if target_vol is None:
+        target_vol = float(returns.std() * np.sqrt(252))
+
+    scale = (target_vol / rolling_vol).clip(lower=scale_floor, upper=scale_cap)
+    scale = scale.fillna(1.0)  # warm-up: no scaling until we have enough history
+
+    adjusted = returns * scale
+
+    realized_vol_before = float(returns.std() * np.sqrt(252))
+    realized_vol_after  = float(adjusted.std() * np.sqrt(252))
+
+    diag = {
+        "mean_scale"           : float(scale.mean()),
+        "median_scale"         : float(scale.median()),
+        "min_scale"            : float(scale.min()),
+        "max_scale"            : float(scale.max()),
+        "pct_days_deleveraged" : float((scale < 1.0).mean() * 100),
+        "pct_days_leveraged"   : float((scale > 1.0).mean() * 100),
+        "realized_vol_before"  : realized_vol_before,
+        "realized_vol_after"   : realized_vol_after,
+        "target_vol"           : target_vol,
+    }
+    return adjusted, diag
+
+
+def expanded_sleeve_sizes(
+    expanded_sizes: pd.DataFrame,
+    capital: float,
+) -> pd.DataFrame:
+    """
+    Convert fractional expanded-universe sizes into dollar position sizes.
+
+    The sizes from expanded_sizes.parquet are fractions of the *expanded
+    sleeve* (already position-capped at 3% per stock, 15% per sector).
+    This function scales them to dollar amounts using the expanded sleeve's
+    capital = capital × ALLOCATION_SPLIT['expanded'].
+
+    Args:
+        expanded_sizes: DataFrame (date × ticker) of fractional allocations
+                        output by generate_expanded_signals().
+        capital:        Total portfolio capital (e.g. CAPITAL = 100 000).
+
+    Returns:
+        DataFrame (date × ticker) of dollar position sizes for the expanded
+        sleeve, compatible with portfolio_returns().
+    """
+    # Guard: only execute when expanded universe is enabled
+    try:
+        from pipeline.universe_expansion import USE_EXPANDED_UNIVERSE
+        if not USE_EXPANDED_UNIVERSE:
+            return pd.DataFrame()
+    except ImportError:
+        return pd.DataFrame()
+
+    sleeve_capital = capital * ALLOCATION_SPLIT["expanded"]
+    return expanded_sizes * sleeve_capital
+
+
 def main():
     print("Building portfolio...\n")
 
@@ -2986,6 +3103,156 @@ def main():
     print(f"\nEquity curves saved -> {RESULTS_DIR / 'portfolio_comparison.parquet'}")
     print(f"Walk-forward saved  -> {RESULTS_DIR / 'walk_forward_regime.parquet'}")
     print(f"OOS selection saved -> {RESULTS_DIR / 'oos_selection.parquet'}")
+
+    # ── Expanded-universe sleeve + combined portfolio validation ───────────────
+    exp_signals_path = SIGNAL_DIR / "expanded_signals.parquet"
+    exp_sizes_path   = SIGNAL_DIR / "expanded_sizes.parquet"
+    exp_comp_path    = SIGNAL_DIR / "expanded_composite.parquet"
+
+    if not (exp_signals_path.exists() and exp_sizes_path.exists()):
+        print("\n  NOTE: expanded_signals.parquet not found — run signal_generation.py"
+              " with USE_EXPANDED_UNIVERSE=True to generate expanded-sleeve results")
+    else:
+        print(f"\n{'='*70}")
+        print("  EXPANDED UNIVERSE — sleeve allocation and validation gate")
+        print(f"{'='*70}")
+
+        try:
+            from pipeline.universe_expansion import USE_EXPANDED_UNIVERSE
+            if not USE_EXPANDED_UNIVERSE:
+                print("  USE_EXPANDED_UNIVERSE=False — skipping expanded sleeve")
+                raise SystemExit
+        except ImportError:
+            pass
+
+        exp_sizes_raw = pd.read_parquet(exp_sizes_path)
+        exp_signals   = pd.read_parquet(exp_signals_path)
+
+        # ── Build expanded returns matrix ──────────────────────────────────────
+        exp_ret_cols: dict = {}
+        for t in exp_signals.columns:
+            feat_path = FEATURE_DIR / f"{t}.parquet"
+            if feat_path.exists():
+                try:
+                    df = pd.read_parquet(feat_path)
+                    df.index = pd.to_datetime(df.index)
+                    if "Close" in df.columns:
+                        exp_ret_cols[t] = df["Close"].pct_change()
+                except Exception:
+                    pass
+        exp_returns = pd.DataFrame(exp_ret_cols).sort_index()
+
+        # ── Dollar sizes for the expanded sleeve ──────────────────────────────
+        exp_dollar_sizes = expanded_sleeve_sizes(exp_sizes_raw, CAPITAL)
+        exp_ret_series   = portfolio_returns(
+            exp_dollar_sizes.reindex(exp_returns.index),
+            exp_returns,
+        ).dropna()
+
+        # ── OOS split: last 252 days are out-of-sample ───────────────────────
+        OOS_DAYS = 252
+        if len(exp_ret_series) > OOS_DAYS * 2:
+            exp_is  = exp_ret_series.iloc[:-OOS_DAYS]
+            exp_oos = exp_ret_series.iloc[-OOS_DAYS:]
+        else:
+            exp_is  = exp_ret_series
+            exp_oos = exp_ret_series
+
+        exp_oos_sharpe  = sharpe_ratio(exp_oos)
+        exp_full_sharpe = sharpe_ratio(exp_ret_series)
+        exp_max_dd      = max_drawdown((1 + exp_ret_series).cumprod()) * 100
+
+        # ── Annualised one-way turnover of the expanded sleeve ────────────────
+        sleeve_cap   = CAPITAL * ALLOCATION_SPLIT["expanded"]
+        daily_chg    = exp_dollar_sizes.diff().abs().sum(axis=1)
+        exp_turnover = float(daily_chg.mean() * 252 / sleeve_cap * 100)  # % p.a.
+
+        # ── Combined portfolio (core + expanded sleeves) ──────────────────────
+        # Core sleeve: scale best_ret by ALLOCATION_SPLIT['core'] fraction.
+        # best_ret is already a fractional return on CAPITAL, so weighting by
+        # core fraction gives the core sleeve's contribution to total returns.
+        common_idx   = exp_ret_series.index.intersection(best_ret.index)
+        core_slice   = best_ret.reindex(common_idx).fillna(0) * ALLOCATION_SPLIT["core"]
+        exp_slice    = exp_ret_series.reindex(common_idx).fillna(0)
+        combined_ret = core_slice + exp_slice
+
+        comb_sharpe = sharpe_ratio(combined_ret.dropna())
+        comb_max_dd = max_drawdown((1 + combined_ret.dropna()).cumprod()) * 100
+        corr_ce     = float(core_slice.corr(exp_slice))
+
+        # ── Bull-calm alpha for combined portfolio ────────────────────────────
+        regimes_c, _ = _load_regime_data(combined_ret.index)
+        if "SPY" in returns.columns:
+            spy_c = returns["SPY"].reindex(combined_ret.index).fillna(0)
+        else:
+            spy_c = pd.Series(0.0, index=combined_ret.index)
+
+        bull_calm_mask = regimes_c == "bull_calm"
+        if bull_calm_mask.sum() > 5:
+            bc_port = float(combined_ret[bull_calm_mask].mean()) * 100
+            bc_spy  = float(spy_c[bull_calm_mask].mean()) * 100
+            bc_alpha = (bc_port - bc_spy) * 100   # bps/day
+        else:
+            bc_alpha = float("nan")
+
+        # ── Print validation gate results ─────────────────────────────────────
+        GATE_EXP_SHARPE  = 0.80
+        GATE_COMB_SHARPE = 1.40
+        GATE_BC_ALPHA    = -4.0     # bps/day (must be > this)
+        GATE_CORR        = 0.60     # core/expanded correlation (must be < this)
+        GATE_TURNOVER    = 300.0    # % p.a. (must be < this)
+        GATE_MAX_DD      = -7.0     # % (must be > this i.e. drawdown shallower)
+
+        pass_exp_sharpe  = exp_oos_sharpe  >  GATE_EXP_SHARPE
+        pass_comb_sharpe = comb_sharpe     >  GATE_COMB_SHARPE
+        pass_bc_alpha    = (not np.isnan(bc_alpha)) and (bc_alpha > GATE_BC_ALPHA)
+        pass_corr        = corr_ce         <  GATE_CORR
+        pass_turnover    = exp_turnover    <  GATE_TURNOVER
+        pass_max_dd      = exp_max_dd      >  GATE_MAX_DD
+
+        def _gate(ok: bool) -> str:
+            return "PASS" if ok else "FAIL"
+
+        print(f"\n  {'Metric':<38} {'Value':>10}  {'Gate':>6}  {'Status'}")
+        print(f"  {'-'*65}")
+        print(f"  {'Expanded OOS Sharpe (last 252d)':<38} {exp_oos_sharpe:>10.3f}  "
+              f"{f'>{GATE_EXP_SHARPE}':>6}  {_gate(pass_exp_sharpe)}")
+        print(f"  {'Expanded full-history Sharpe':<38} {exp_full_sharpe:>10.3f}  "
+              f"{'—':>6}")
+        print(f"  {'Combined (core+exp) Sharpe':<38} {comb_sharpe:>10.3f}  "
+              f"{f'>{GATE_COMB_SHARPE}':>6}  {_gate(pass_comb_sharpe)}")
+        print(f"  {'Bull-calm combined alpha (bps/day)':<38} "
+              f"{bc_alpha if not np.isnan(bc_alpha) else float('nan'):>10.2f}  "
+              f"{f'>{GATE_BC_ALPHA}':>6}  {_gate(pass_bc_alpha)}")
+        print(f"  {'Core / expanded return correlation':<38} {corr_ce:>10.3f}  "
+              f"{f'<{GATE_CORR}':>6}  {_gate(pass_corr)}")
+        print(f"  {'Expanded turnover (% p.a.)':<38} {exp_turnover:>10.1f}  "
+              f"{f'<{GATE_TURNOVER}':>6}  {_gate(pass_turnover)}")
+        print(f"  {'Expanded max drawdown (%)':<38} {exp_max_dd:>10.2f}  "
+              f"{f'>{GATE_MAX_DD}':>6}  {_gate(pass_max_dd)}")
+        print(f"  {'-'*65}")
+
+        all_pass = all([pass_exp_sharpe, pass_comb_sharpe, pass_bc_alpha,
+                        pass_corr, pass_turnover, pass_max_dd])
+        gate_str = "ALL GATES PASSED" if all_pass else "GATE FAILURE — check metrics above"
+        print(f"\n  Expanded sleeve validation: {gate_str}")
+
+        if not all_pass:
+            print("  WARNING: Expanded sleeve does not meet all quality gates.")
+            print("           Review sector composition and signal parameters before")
+            print("           deploying the expanded sleeve in live trading.")
+
+        # ── Save combined portfolio equity curve ──────────────────────────────
+        exp_curve  = equity_curve(exp_ret_series, CAPITAL * ALLOCATION_SPLIT["expanded"])
+        comb_curve = equity_curve(combined_ret,   CAPITAL)
+        pd.DataFrame({
+            "core_sleeve"     : equity_curve(best_ret.reindex(common_idx).fillna(0) * ALLOCATION_SPLIT["core"],
+                                             CAPITAL * ALLOCATION_SPLIT["core"]),
+            "expanded_sleeve" : exp_curve.reindex(common_idx),
+            "combined"        : comb_curve,
+        }).to_parquet(RESULTS_DIR / "combined_portfolio.parquet")
+        print(f"\n  Combined portfolio equity curve saved -> "
+              f"{RESULTS_DIR / 'combined_portfolio.parquet'}")
 
 
 if __name__ == "__main__":
