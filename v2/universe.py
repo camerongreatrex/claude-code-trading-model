@@ -1,0 +1,117 @@
+"""
+v2/universe.py
+--------------
+Cross-asset ETF universe for macro regime rotation.
+
+~30 ETFs spanning equities, fixed income, commodities, currencies, and real
+assets.  Selected for: (1) sufficient history (inception pre-2008 preferred),
+(2) high AUM / tight spreads, (3) minimal overlap within each asset class.
+
+Output
+──────
+  data/v2/universe.parquet  — ticker, asset_class, sub_class, description, inception
+  Prints summary table on run.
+"""
+
+import pandas as pd
+from pathlib import Path
+
+DATA_DIR = Path("data/v2")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── ETF Universe Definition ──────────────────────────────────────────────────
+# Each tuple: (ticker, asset_class, sub_class, description, approx_inception)
+
+UNIVERSE = [
+    # ── US Equities ──────────────────────────────────────────────────────────
+    ("SPY",  "equity",    "us_large",     "S&P 500",                          "1993-01-29"),
+    ("QQQ",  "equity",    "us_tech",      "Nasdaq 100",                       "1999-03-10"),
+    ("IWM",  "equity",    "us_small",     "Russell 2000 Small Cap",           "2000-05-22"),
+    ("IWD",  "equity",    "us_value",     "Russell 1000 Value",               "2000-05-22"),
+    ("IWF",  "equity",    "us_growth",    "Russell 1000 Growth",              "2000-05-22"),
+
+    # ── International Equities ───────────────────────────────────────────────
+    ("EFA",  "equity",    "intl_dev",     "MSCI EAFE (Developed ex-US)",      "2001-08-14"),
+    ("EEM",  "equity",    "intl_em",      "MSCI Emerging Markets",            "2003-04-07"),
+
+    # ── US Fixed Income ──────────────────────────────────────────────────────
+    ("SHY",  "fixed_income", "us_short",  "1-3Y Treasuries (cash proxy)",     "2002-07-22"),
+    ("IEF",  "fixed_income", "us_mid",    "7-10Y Treasuries",                 "2002-07-22"),
+    ("TLT",  "fixed_income", "us_long",   "20+Y Treasuries",                  "2002-07-22"),
+    ("TIP",  "fixed_income", "us_tips",   "TIPS (inflation-linked bonds)",    "2003-12-04"),
+    ("LQD",  "fixed_income", "us_ig",     "Investment Grade Corporate Bonds", "2002-07-22"),
+    ("HYG",  "fixed_income", "us_hy",     "High Yield Corporate Bonds",       "2007-04-04"),
+
+    # ── Commodities ──────────────────────────────────────────────────────────
+    ("GLD",  "commodity",  "gold",         "Gold",                             "2004-11-18"),
+    ("SLV",  "commodity",  "silver",       "Silver",                           "2006-04-28"),
+    ("DBC",  "commodity",  "broad",        "Broad Commodities (energy/metals/ag)", "2006-02-03"),
+    ("USO",  "commodity",  "oil",          "Crude Oil",                        "2006-04-10"),
+
+    # ── Real Assets ──────────────────────────────────────────────────────────
+    ("VNQ",  "real_asset", "us_reit",      "US REITs",                         "2004-09-23"),
+    ("VNQI", "real_asset", "intl_reit",    "International REITs",              "2010-11-01"),
+
+    # ── Currencies / Dollar ──────────────────────────────────────────────────
+    ("UUP",  "currency",  "usd_long",     "US Dollar Bullish (DXY proxy)",    "2007-02-20"),
+    ("FXE",  "currency",  "eur",          "Euro",                             "2005-12-09"),
+    ("FXY",  "currency",  "jpy",          "Japanese Yen",                     "2007-02-12"),
+
+    # ── Sector Tilts (for regime-specific overweight) ────────────────────────
+    ("XLE",  "sector",    "energy",       "Energy Select SPDR",               "1998-12-16"),
+    ("XLU",  "sector",    "utilities",    "Utilities Select SPDR",            "1998-12-16"),
+    ("XLK",  "sector",    "technology",   "Technology Select SPDR",           "1998-12-16"),
+    ("XLF",  "sector",    "financials",   "Financials Select SPDR",           "1998-12-16"),
+    ("XLP",  "sector",    "staples",      "Consumer Staples Select SPDR",     "1998-12-16"),
+    ("XLV",  "sector",    "healthcare",   "Healthcare Select SPDR",           "1998-12-16"),
+]
+
+
+def get_universe() -> pd.DataFrame:
+    """Return the ETF universe as a DataFrame."""
+    df = pd.DataFrame(UNIVERSE, columns=["ticker", "asset_class", "sub_class",
+                                          "description", "inception"])
+    df["inception"] = pd.to_datetime(df["inception"])
+    return df
+
+
+def get_tickers() -> list[str]:
+    """Return just the ticker list."""
+    return [t[0] for t in UNIVERSE]
+
+
+def get_asset_class_map() -> dict[str, str]:
+    """Return ticker → asset_class mapping."""
+    return {t[0]: t[1] for t in UNIVERSE}
+
+
+def get_sub_class_map() -> dict[str, str]:
+    """Return ticker → sub_class mapping."""
+    return {t[0]: t[2] for t in UNIVERSE}
+
+
+def save_universe():
+    """Save universe definition to parquet."""
+    df = get_universe()
+    path = DATA_DIR / "universe.parquet"
+    df.to_parquet(path, index=False)
+    print(f"Saved universe: {len(df)} ETFs → {path}")
+    return df
+
+
+if __name__ == "__main__":
+    df = save_universe()
+
+    print(f"\n{'='*70}")
+    print(f"  V2 Cross-Asset ETF Universe: {len(df)} instruments")
+    print(f"{'='*70}")
+
+    for ac in df["asset_class"].unique():
+        subset = df[df["asset_class"] == ac]
+        print(f"\n  {ac.upper()} ({len(subset)})")
+        for _, row in subset.iterrows():
+            print(f"    {row['ticker']:5s}  {row['description']:45s}  since {row['inception'].date()}")
+
+    print(f"\n  Earliest inception: {df['inception'].min().date()}")
+    print(f"  Latest inception:  {df['inception'].max().date()}")
+    print(f"  Full overlap from: ~2011 (all ETFs trading)")

@@ -3,34 +3,18 @@ run.py
 ------
 Pipeline orchestrator — runs each module as a subprocess in sequence.
 
-Architecture
-────────────
-Each pipeline stage is a standalone Python module that reads from and
-writes to the ``data/`` directory. Running stages as subprocesses (rather
-than importing them) ensures each step starts in a clean interpreter state,
-preventing silent state corruption between stages.
+Supports both v1 (trend-following) and v2 (macro regime rotation) pipelines.
 
-Data flow
-─────────
-  data_pipeline.py       reads  yfinance              writes  data/raw/
-  feature_engineering.py reads  data/raw/             writes  data/features/
-  feature_research.py    reads  data/features/        writes  data/research/feature_ic.parquet
-  macro_features.py      reads  yfinance + FRED        writes  data/macro/
-  signal_generation.py   reads  data/features/ + macro + research  writes  data/signals/
-  backtester.py          reads  data/signals/ + features  writes  data/results/
-  portfolio.py           reads  data/signals/ + features  writes  data/results/
-
-  feature_research must run after feature_engineering: the IC table (feature_ic.parquet)
-  is consumed by ensemble_signal() in signal_generation.py for feature selection and
-  static IC fallback weights.  Stale IC → wrong feature selection → broken ensemble.
-
-Shortcut flags (skip expensive upstream stages when data is still fresh)
-────────────────────────────────────────────────────────────────────────
-  python run.py              — full run (all 7 stages, ~5–10 min)
-  python run.py signals      — skip data download; restart from feature_engineering
-  python run.py portfolio    — run portfolio stage only (seconds)
-  python run.py backtest     — run backtester + portfolio
-  python run.py macro        — run from macro_features onward
+Usage
+─────
+  python run.py              — full v1 run (all stages)
+  python run.py v2           — full v2 run (universe → regime → allocation → backtest)
+  python run.py v2 backtest  — v2 backtest only
+  python run.py v2 regime    — v2 from regime classification onward
+  python run.py signals      — v1 shortcut: skip data download
+  python run.py portfolio    — v1 shortcut: portfolio only
+  python run.py backtest     — v1 shortcut: backtester + portfolio
+  python run.py macro        — v1 shortcut: from macro onward
 """
 
 import subprocess
@@ -96,12 +80,33 @@ def run_step(module: str, description: str) -> bool:
     return True
 
 
+# ── V2 pipeline steps (macro regime rotation) ────────────────────────────────
+V2_STEPS = [
+    ("v2.universe",                "Building cross-asset ETF universe"),
+    ("v2.regimes.macro_features",  "Fetching macro regime features (FRED)"),
+    ("v2.regimes.market_features", "Fetching market-implied stress signals"),
+    ("v2.regimes.classifier",      "Running hybrid regime classifier"),
+    ("v2.regimes.validation",      "Validating regime classification (NBER)"),
+    ("v2.backtester",              "Running full backtest (portfolio + risk + walk-forward)"),
+]
+
+V2_SHORTCUTS = {
+    "backtest"  : "v2.backtester",              # backtest only (portfolio already built)
+    "regime"    : "v2.regimes.macro_features",   # from regime classification onward
+}
+
+
 def main():
     """
     Parse the optional shortcut argument, slice the STEPS list, and run
     each stage in order. Exits with code 1 on the first failure so CI
     systems can detect broken runs.
     """
+    # Check for v2 pipeline
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "v2":
+        main_v2()
+        return
+
     # determine start step from command line arg
     start_from = None
     if len(sys.argv) > 1:
@@ -115,7 +120,7 @@ def main():
         elif arg in SHORTCUTS:
             start_from = SHORTCUTS[arg]
         else:
-            all_opts = list(SHORTCUTS.keys()) + list(DIAGNOSTICS.keys())
+            all_opts = list(SHORTCUTS.keys()) + list(DIAGNOSTICS.keys()) + ["v2"]
             print(f"Unknown shortcut '{arg}'. Options: {all_opts}")
             sys.exit(1)
 
@@ -140,6 +145,43 @@ def main():
     total_time = time.time() - overall_start
     print(f"\n{'='*60}")
     print(f"  All {total} steps completed in {total_time:.1f}s")
+    print(f"{'='*60}\n")
+
+
+def main_v2():
+    """Run the v2 macro regime rotation pipeline."""
+    # Check for v2 shortcut
+    start_from = None
+    if len(sys.argv) > 2:
+        arg = sys.argv[2].lower()
+        if arg in V2_SHORTCUTS:
+            start_from = V2_SHORTCUTS[arg]
+        else:
+            print(f"Unknown v2 shortcut '{arg}'. Options: {list(V2_SHORTCUTS.keys())}")
+            sys.exit(1)
+
+    step_names = [s[0] for s in V2_STEPS]
+    start_index = step_names.index(start_from) if start_from else 0
+    steps_to_run = V2_STEPS[start_index:]
+    total = len(steps_to_run)
+
+    print(f"\n{'='*60}")
+    print(f"  V2 Macro Regime Rotation Pipeline")
+    print(f"  Running {total} step(s)")
+    print(f"{'='*60}")
+
+    overall_start = time.time()
+
+    for i, (module, description) in enumerate(steps_to_run, 1):
+        print(f"\n[{i}/{total}]", end="")
+        ok = run_step(module, description)
+        if not ok:
+            print(f"\nV2 pipeline stopped at step {i}/{total}: {module}")
+            sys.exit(1)
+
+    total_time = time.time() - overall_start
+    print(f"\n{'='*60}")
+    print(f"  V2 pipeline: {total} steps completed in {total_time:.1f}s")
     print(f"{'='*60}\n")
 
 

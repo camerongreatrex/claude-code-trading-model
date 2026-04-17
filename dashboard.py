@@ -72,6 +72,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from datetime import datetime
+from config import MODEL_VERSION
 from live_signals import get_live_signals
 from paper_trader import (
     load_state, load_trades, load_history, catchup,
@@ -1835,5 +1836,432 @@ def main():
         _vs_sp_section()
 
 
+def main_v2():
+    """V2 Macro Regime Rotation Dashboard."""
+    from pathlib import Path
+
+    V2_RESULTS = Path("data/v2/results")
+    V2_REGIME  = Path("data/v2/regime_features")
+
+    st.markdown("## V2: Macro Regime Rotation")
+    st.markdown(
+        "<span style='color:#666;font-size:.82rem'>"
+        "Cross-asset ETF allocation | 6-regime hybrid classifier | Monthly rebalance"
+        "</span>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Check data availability ───────────────────────────────────────────────
+    has_equity = (V2_RESULTS / "equity_curves.parquet").exists()
+    has_weights = (V2_RESULTS / "portfolio_weights.parquet").exists()
+    has_probs = (V2_REGIME / "regime_probabilities.parquet").exists()
+    has_labels = (V2_REGIME / "regime_labels.parquet").exists()
+
+    if not has_equity:
+        st.warning("V2 backtest not yet run. Execute `python -m v2.backtester` first.")
+        return
+
+    # ── Load data ─────────────────────────────────────────────────────────────
+    eq_df = pd.read_parquet(V2_RESULTS / "equity_curves.parquet")
+    weights_df = pd.read_parquet(V2_RESULTS / "portfolio_weights.parquet") if has_weights else None
+    probs = pd.read_parquet(V2_REGIME / "regime_probabilities.parquet") if has_probs else None
+    labels = pd.read_parquet(V2_REGIME / "regime_labels.parquet")["regime"] if has_labels else None
+
+    # Compute metrics from equity curves
+    strat_ret = eq_df["strategy_net"].pct_change().dropna()
+    spy_ret = eq_df["spy"].pct_change().dropna()
+    n_years = len(strat_ret) / 252
+
+    ann_ret = strat_ret.mean() * 252
+    ann_vol = strat_ret.std() * np.sqrt(252)
+    sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
+    peak = eq_df["strategy_net"].expanding().max()
+    dd = (eq_df["strategy_net"] - peak) / peak
+    max_dd = dd.min()
+    beta = strat_ret.cov(spy_ret) / spy_ret.var() if spy_ret.var() > 0 else 0
+    alpha = (strat_ret.mean() - beta * spy_ret.mean()) * 252
+
+    spy_ann = spy_ret.mean() * 252
+    spy_vol = spy_ret.std() * np.sqrt(252)
+    spy_sharpe = spy_ann / spy_vol if spy_vol > 0 else 0
+    spy_peak = eq_df["spy"].expanding().max()
+    spy_dd = ((eq_df["spy"] - spy_peak) / spy_peak).min()
+
+    # ── Top metrics ───────────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Net Sharpe", f"{sharpe:.2f}", f"vs SPY {spy_sharpe:.2f}")
+    c2.metric("Ann. Return", f"{ann_ret:.1%}")
+    c3.metric("Ann. Vol", f"{ann_vol:.1%}", f"vs SPY {spy_vol:.1%}")
+    c4.metric("Max DD", f"{max_dd:.1%}", f"vs SPY {spy_dd:.1%}")
+    c5.metric("Beta", f"{beta:.2f}")
+    c6.metric("Alpha", f"{alpha:.1%}")
+
+    # ── Current regime ────────────────────────────────────────────────────────
+    if probs is not None and len(probs) > 0:
+        latest_probs = probs.iloc[-1]
+        dominant = latest_probs.idxmax()
+        regime_colors = {
+            "expansion": "#50fa7b", "slowdown": "#f1fa8c", "recession": "#ff5555",
+            "recovery": "#8be9fd", "stagflation": "#ffb86c", "late_cycle": "#bd93f9",
+        }
+        dominant_color = regime_colors.get(dominant, "#ccc")
+        st.markdown(
+            f"<div style='background:{dominant_color}22;border-left:4px solid {dominant_color};"
+            f"padding:8px 12px;margin:8px 0;border-radius:4px'>"
+            f"<b>Current Regime:</b> {dominant.replace('_',' ').title()} "
+            f"({latest_probs[dominant]*100:.0f}% confidence) &mdash; "
+            f"as of {probs.index[-1].strftime('%Y-%m-%d')}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    tab_eq, tab_regime, tab_weights, tab_attr, tab_live = st.tabs([
+        "Equity Curves", "Regime Timeline", "Cross-Asset Weights",
+        "Regime Performance", "Live Signals",
+    ])
+
+    REGIME_COLORS = {
+        "expansion": "#50fa7b", "slowdown": "#f1fa8c", "recession": "#ff5555",
+        "recovery": "#8be9fd", "stagflation": "#ffb86c", "late_cycle": "#bd93f9",
+    }
+    REGIME_LABELS = {
+        "expansion": "Expansion", "slowdown": "Slowdown", "recession": "Recession",
+        "recovery": "Recovery", "stagflation": "Stagflation", "late_cycle": "Late Cycle",
+    }
+    REGIME_ID_NAMES = {0: "Expansion", 1: "Slowdown", 2: "Recession",
+                       3: "Recovery", 4: "Stagflation", 5: "Late Cycle"}
+
+    # ── Tab 1: Equity Curves ──────────────────────────────────────────────────
+    with tab_eq:
+        fig_eq = go.Figure()
+        fig_eq.add_trace(go.Scatter(
+            x=eq_df.index, y=eq_df["strategy_net"],
+            name="V2 Regime Rotation (net)", line=dict(color="#50fa7b", width=2.5),
+        ))
+        fig_eq.add_trace(go.Scatter(
+            x=eq_df.index, y=eq_df["strategy_gross"],
+            name="V2 (gross)", line=dict(color="#50fa7b", width=1, dash="dot"),
+            visible="legendonly",
+        ))
+        fig_eq.add_trace(go.Scatter(
+            x=eq_df.index, y=eq_df["spy"],
+            name="SPY Buy & Hold", line=dict(color="#bd93f9", width=1.5, dash="dash"),
+        ))
+
+        # Add regime background shading
+        if labels is not None:
+            regime_id_colors = {
+                0: "rgba(80,250,123,0.08)", 1: "rgba(241,250,140,0.08)",
+                2: "rgba(255,85,85,0.12)", 3: "rgba(139,233,253,0.08)",
+                4: "rgba(255,184,108,0.10)", 5: "rgba(189,147,249,0.08)",
+            }
+            monthly_labels = labels.resample("ME").last().dropna()
+            for i in range(len(monthly_labels) - 1):
+                regime = int(monthly_labels.iloc[i])
+                fig_eq.add_vrect(
+                    x0=monthly_labels.index[i], x1=monthly_labels.index[i+1],
+                    fillcolor=regime_id_colors.get(regime, "rgba(0,0,0,0)"),
+                    layer="below", line_width=0,
+                )
+
+        fig_eq.update_layout(
+            title="V2 Portfolio vs SPY (regime-shaded background)",
+            template="plotly_dark", height=500,
+            yaxis_title="Growth of $1", yaxis_type="log",
+            legend=dict(x=0.01, y=0.99),
+        )
+        st.plotly_chart(fig_eq, use_container_width=True)
+
+        # Drawdown
+        fig_dd = go.Figure()
+        fig_dd.add_trace(go.Scatter(
+            x=dd.index, y=dd * 100, name="V2 Drawdown",
+            fill="tozeroy", fillcolor="rgba(80,250,123,0.15)",
+            line=dict(color="#50fa7b", width=1),
+        ))
+        spy_dd_series = (eq_df["spy"] - spy_peak) / spy_peak
+        fig_dd.add_trace(go.Scatter(
+            x=spy_dd_series.index, y=spy_dd_series * 100, name="SPY Drawdown",
+            line=dict(color="#bd93f9", width=1, dash="dash"),
+        ))
+        fig_dd.update_layout(
+            title="Underwater Equity Curve",
+            template="plotly_dark", height=280,
+            yaxis_title="Drawdown %",
+            legend=dict(x=0.01, y=0.99),
+        )
+        st.plotly_chart(fig_dd, use_container_width=True)
+
+        # Rolling Sharpe
+        rolling_sharpe = strat_ret.rolling(252).mean() / strat_ret.rolling(252).std() * np.sqrt(252)
+        rolling_spy_sharpe = spy_ret.rolling(252).mean() / spy_ret.rolling(252).std() * np.sqrt(252)
+        fig_rs = go.Figure()
+        fig_rs.add_trace(go.Scatter(
+            x=rolling_sharpe.index, y=rolling_sharpe, name="V2 Rolling Sharpe",
+            line=dict(color="#50fa7b", width=1.5),
+        ))
+        fig_rs.add_trace(go.Scatter(
+            x=rolling_spy_sharpe.index, y=rolling_spy_sharpe, name="SPY Rolling Sharpe",
+            line=dict(color="#bd93f9", width=1, dash="dash"),
+        ))
+        fig_rs.add_hline(y=0, line_color="#666", line_width=0.5)
+        fig_rs.update_layout(
+            title="Rolling 1-Year Sharpe Ratio",
+            template="plotly_dark", height=280,
+            yaxis_title="Sharpe Ratio",
+            legend=dict(x=0.01, y=0.99),
+        )
+        st.plotly_chart(fig_rs, use_container_width=True)
+
+    # ── Tab 2: Regime Timeline ────────────────────────────────────────────────
+    with tab_regime:
+        if probs is not None:
+            # Current regime probability bar chart
+            st.subheader("Current Regime Probabilities")
+            latest = probs.iloc[-1].sort_values(ascending=True)
+            fig_bar = go.Figure()
+            fig_bar.add_trace(go.Bar(
+                x=latest.values * 100,
+                y=[REGIME_LABELS.get(r, r) for r in latest.index],
+                orientation="h",
+                marker_color=[REGIME_COLORS.get(r, "#ccc") for r in latest.index],
+                text=[f"{v:.0f}%" for v in latest.values * 100],
+                textposition="auto",
+            ))
+            fig_bar.update_layout(
+                template="plotly_dark", height=250,
+                xaxis_title="Probability %", yaxis_title="",
+                margin=dict(l=100),
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+            # Historical regime probabilities (stacked area)
+            st.subheader("Regime Probability History")
+            monthly_probs = probs.resample("ME").last().dropna()
+            fig_probs = go.Figure()
+            for col in ["expansion", "recovery", "slowdown", "late_cycle", "stagflation", "recession"]:
+                if col in monthly_probs.columns:
+                    fig_probs.add_trace(go.Scatter(
+                        x=monthly_probs.index, y=monthly_probs[col] * 100,
+                        name=REGIME_LABELS.get(col, col),
+                        stackgroup="one",
+                        line=dict(width=0),
+                        fillcolor=REGIME_COLORS.get(col, "#ccc"),
+                    ))
+            fig_probs.update_layout(
+                template="plotly_dark", height=400,
+                yaxis_title="Probability %", yaxis_range=[0, 100],
+                legend=dict(x=0.01, y=0.99),
+            )
+            st.plotly_chart(fig_probs, use_container_width=True)
+
+            # Regime distribution pie
+            if labels is not None:
+                dist = labels.map(REGIME_ID_NAMES).value_counts(normalize=True)
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("Regime Distribution")
+                    for name, pct in dist.items():
+                        st.markdown(f"**{name}**: {pct*100:.1f}%")
+                with col2:
+                    # Transition count
+                    transitions = (labels.diff() != 0).sum()
+                    monthly_labels_r = labels.resample("ME").last().dropna()
+                    avg_duration = len(monthly_labels_r) / max((monthly_labels_r.diff() != 0).sum(), 1)
+                    st.subheader("Regime Dynamics")
+                    st.metric("Total Transitions", f"{transitions}")
+                    st.metric("Avg Duration", f"{avg_duration:.1f} months")
+        else:
+            st.info("Regime data not available. Run the v2 pipeline first.")
+
+    # ── Tab 3: Cross-Asset Weights ────────────────────────────────────────────
+    with tab_weights:
+        if weights_df is not None and len(weights_df) > 0:
+            from v2.universe import get_asset_class_map
+            ac_map = get_asset_class_map()
+
+            # Aggregate by asset class for stacked area
+            ac_weights = pd.DataFrame(index=weights_df.index)
+            for ac in ["equity", "fixed_income", "commodity", "real_asset", "currency", "sector"]:
+                tickers_in_ac = [t for t in weights_df.columns if ac_map.get(t) == ac]
+                if tickers_in_ac:
+                    ac_weights[ac] = weights_df[tickers_in_ac].sum(axis=1)
+
+            ac_colors = {
+                "equity": "#50fa7b", "fixed_income": "#8be9fd", "commodity": "#ffb86c",
+                "real_asset": "#bd93f9", "currency": "#f1fa8c", "sector": "#ff79c6",
+            }
+            ac_labels = {
+                "equity": "Equities", "fixed_income": "Fixed Income", "commodity": "Commodities",
+                "real_asset": "Real Assets", "currency": "Currencies", "sector": "Sectors",
+            }
+
+            fig_ac = go.Figure()
+            for ac in ["equity", "sector", "fixed_income", "commodity", "real_asset", "currency"]:
+                if ac in ac_weights.columns:
+                    fig_ac.add_trace(go.Scatter(
+                        x=ac_weights.index, y=ac_weights[ac] * 100,
+                        name=ac_labels.get(ac, ac),
+                        stackgroup="one",
+                        line=dict(width=0),
+                        fillcolor=ac_colors.get(ac, "#ccc"),
+                    ))
+            fig_ac.update_layout(
+                title="Asset Class Allocation Over Time",
+                template="plotly_dark", height=450,
+                yaxis_title="Weight %", yaxis_range=[0, 100],
+                legend=dict(x=0.01, y=0.99),
+            )
+            st.plotly_chart(fig_ac, use_container_width=True)
+
+            # Current holdings table
+            st.subheader("Current Allocation")
+            latest_w = weights_df.iloc[-1].sort_values(ascending=False)
+            latest_w = latest_w[latest_w > 0.005]
+            alloc_df = pd.DataFrame({
+                "Ticker": latest_w.index,
+                "Weight": latest_w.values,
+                "Asset Class": [ac_map.get(t, "other") for t in latest_w.index],
+            })
+            st.dataframe(
+                alloc_df.style.format({"Weight": "{:.1%}"}),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Portfolio weights not available.")
+
+    # ── Tab 4: Regime Performance ─────────────────────────────────────────────
+    with tab_attr:
+        if labels is not None:
+            common = strat_ret.index.intersection(labels.index)
+            r = strat_ret.loc[common]
+            l = labels.loc[common]
+            spy_r = spy_ret.reindex(common).fillna(0)
+
+            st.subheader("Cumulative Return by Regime")
+
+            # Strategy cumulative return per regime
+            fig_cum = go.Figure()
+            for regime_id, name in REGIME_ID_NAMES.items():
+                mask = l == regime_id
+                if mask.sum() < 10:
+                    continue
+                regime_r = r.copy()
+                regime_r[~mask] = 0
+                cum_r = (1 + regime_r).cumprod() - 1
+                color_key = name.lower().replace(" ", "_")
+                fig_cum.add_trace(go.Scatter(
+                    x=cum_r.index, y=cum_r * 100, name=name,
+                    line=dict(color=REGIME_COLORS.get(color_key, "#ccc"), width=1.5),
+                ))
+            fig_cum.update_layout(
+                template="plotly_dark", height=400,
+                yaxis_title="Cumulative Return %",
+                legend=dict(x=0.01, y=0.99),
+            )
+            st.plotly_chart(fig_cum, use_container_width=True)
+
+            # Per-regime stats table
+            st.subheader("Per-Regime Statistics")
+            regime_stats = []
+            for regime_id, name in REGIME_ID_NAMES.items():
+                mask = l == regime_id
+                if mask.sum() < 10:
+                    continue
+                rr = r[mask]
+                sr = spy_r[mask]
+                regime_stats.append({
+                    "Regime": name,
+                    "Days": int(mask.sum()),
+                    "% Time": mask.mean(),
+                    "Ann Return (Strat)": rr.mean() * 252,
+                    "Ann Return (SPY)": sr.mean() * 252,
+                    "Ann Vol": rr.std() * np.sqrt(252),
+                    "Sharpe": rr.mean() / rr.std() * np.sqrt(252) if rr.std() > 0 else 0,
+                })
+            stats_df = pd.DataFrame(regime_stats)
+            st.dataframe(
+                stats_df.style.format({
+                    "% Time": "{:.1%}",
+                    "Ann Return (Strat)": "{:+.1%}",
+                    "Ann Return (SPY)": "{:+.1%}",
+                    "Ann Vol": "{:.1%}",
+                    "Sharpe": "{:.2f}",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Regime labels not available.")
+
+    # ── Tab 5: Live Signals ───────────────────────────────────────────────────
+    with tab_live:
+        if probs is not None and weights_df is not None:
+            st.subheader("Current Regime & Recommended Allocation")
+
+            # Regime probabilities
+            latest = probs.iloc[-1]
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Regime Probabilities**")
+                for regime in sorted(latest.index, key=lambda x: latest[x], reverse=True):
+                    pct = latest[regime] * 100
+                    color = REGIME_COLORS.get(regime, "#ccc")
+                    st.markdown(
+                        f"<span style='color:{color}'>"
+                        f"{REGIME_LABELS.get(regime, regime)}: {pct:.1f}%</span>",
+                        unsafe_allow_html=True,
+                    )
+
+            with col2:
+                # Stress score
+                mkt_path = V2_REGIME / "market_features.parquet"
+                if mkt_path.exists():
+                    mkt = pd.read_parquet(mkt_path)
+                    if "stress_score" in mkt.columns:
+                        stress = mkt["stress_score"].iloc[-1]
+                        stress_color = "#ff5555" if stress > 2.0 else "#f1fa8c" if stress > 1.0 else "#50fa7b"
+                        st.metric("Stress Score", f"{stress:.2f}")
+                        st.markdown(
+                            f"<span style='color:{stress_color}'>"
+                            f"{'ELEVATED - Override Active' if stress > 2.0 else 'Normal'}</span>",
+                            unsafe_allow_html=True,
+                        )
+                    if "vix" in mkt.columns:
+                        st.metric("VIX", f"{mkt['vix'].iloc[-1]:.1f}")
+                    if "hy_oas" in mkt.columns:
+                        st.metric("HY Spread", f"{mkt['hy_oas'].iloc[-1]:.0f} bps")
+
+            # Top-7 allocation
+            st.subheader("Recommended Top Holdings")
+            latest_w = weights_df.iloc[-1].sort_values(ascending=False)
+            top7 = latest_w.head(7)
+            top_df = pd.DataFrame({
+                "Ticker": top7.index,
+                "Weight": top7.values,
+            })
+            st.dataframe(
+                top_df.style.format({"Weight": "{:.1%}"}),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Run the v2 pipeline to generate live signals.")
+
+
+def main_wrapper():
+    """Route to v1 or v2 dashboard based on sidebar toggle."""
+    with st.sidebar:
+        model = st.radio(
+            "Model Version",
+            ["v1 (Trend Following)", "v2 (Macro Regime Rotation)"],
+            index=0 if MODEL_VERSION == "v1" else 1,
+        )
+
+    if model.startswith("v2"):
+        main_v2()
+    else:
+        main()
+
+
 if __name__ == "__main__":
-    main()
+    main_wrapper()

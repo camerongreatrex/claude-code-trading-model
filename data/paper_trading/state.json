@@ -1,5 +1,6 @@
 {
-  "cash": 2259.921298079502,
+
+  "cash": 2176.639429888164,
   "positions": {
     "IWM": {
       "shares": 18.65302074857011,
@@ -72,16 +73,16 @@
       "last_close": 701.6599731445312
     },
     "UUP": {
-      "shares": 610.2865400072626,
+      "shares": 613.3278350571328,
       "entry_price": 27.3700008392334,
       "entry_date": "2026-04-16",
-      "cost_basis": 16703.543112171625,
+      "cost_basis": 16786.78336023893,
       "last_close": 27.3700008392334
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
   "last_eod_date": "2026-04-16",
-  "portfolio_value": 106816.63324814617,
+  "portfolio_value": 106816.59162802214,
   "strategy": "multi_mom_tilt"
 }

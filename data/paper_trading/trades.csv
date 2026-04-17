@@ -36,5 +36,5 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-04-09,UUP,SELL,167.478159,27.48,4602.3,2.3,-19.05,catchup_signal_exit
 2026-04-10,XOM,SELL,29.204903,152.51,4454.04,2.23,-167.23,catchup_signal_exit
 2026-04-14,COST,SELL,4.738554,974.8,4619.14,2.31,-2.21,signal_exit
-2026-04-16,JNJ,SELL,19.440436,234.54,4559.56,2.28,-61.77,signal_exit
-2026-04-16,UUP,BUY,610.28654,27.37,16703.54,8.35,,signal_entry
+2026-04-16,JNJ,SELL,19.440436,234.54,4559.56,2.28,-61.77,catchup_signal_exit
+2026-04-16,UUP,BUY,613.327835,27.37,16786.78,8.39,,catchup_signal_entry
