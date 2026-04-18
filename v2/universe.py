@@ -10,14 +10,19 @@ assets.  Selected for: (1) sufficient history (inception pre-2008 preferred),
 Output
 ──────
   data/v2/universe.parquet  — ticker, asset_class, sub_class, description, inception
+  data/v2/results/etf_prices.parquet — adjusted close prices for all ETFs
   Prints summary table on run.
 """
 
 import pandas as pd
+import yfinance as yf
 from pathlib import Path
 
 DATA_DIR = Path("data/v2")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+RESULTS_DIR = Path("data/v2/results")
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── ETF Universe Definition ──────────────────────────────────────────────────
 # Each tuple: (ticker, asset_class, sub_class, description, approx_inception)
@@ -90,6 +95,34 @@ def get_sub_class_map() -> dict[str, str]:
     return {t[0]: t[2] for t in UNIVERSE}
 
 
+def download_prices(tickers: list[str], start: str = "1996-01-01") -> pd.DataFrame:
+    """Download adjusted close prices for all ETFs and cache to parquet."""
+    cache_path = RESULTS_DIR / "etf_prices.parquet"
+    if cache_path.exists():
+        prices = pd.read_parquet(cache_path)
+        print(f"  Loaded cached prices: {prices.shape}")
+        # Check if reasonably fresh (within 7 days)
+        if (pd.Timestamp.today() - prices.index.max()).days < 7:
+            return prices
+
+    print(f"  Downloading prices for {len(tickers)} ETFs...")
+    data = yf.download(tickers, start=start, progress=False, auto_adjust=True)
+
+    if isinstance(data.columns, pd.MultiIndex):
+        prices = data["Close"]
+    else:
+        prices = data[["Close"]]
+        prices.columns = tickers
+
+    prices.index = pd.to_datetime(prices.index).tz_localize(None)
+    prices.index.name = "Date"
+    prices = prices.ffill()
+
+    prices.to_parquet(cache_path)
+    print(f"  Saved prices: {prices.shape} -> {cache_path}")
+    return prices
+
+
 def save_universe():
     """Save universe definition to parquet."""
     df = get_universe()
@@ -115,3 +148,8 @@ if __name__ == "__main__":
     print(f"\n  Earliest inception: {df['inception'].min().date()}")
     print(f"  Latest inception:  {df['inception'].max().date()}")
     print(f"  Full overlap from: ~2011 (all ETFs trading)")
+
+    # Download prices as part of universe setup
+    print(f"\n  Downloading ETF prices...")
+    tickers = get_tickers()
+    download_prices(tickers)

@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 from pathlib import Path
 
 from v2.universe import get_tickers, get_asset_class_map
@@ -50,33 +49,17 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 REGIME_DIR = Path("data/v2/regime_features")
 
 
-# ── Data Download ─────────────────────────────────────────────────────────────
+# ── Data Loading ─────────────────────────────────────────────────────────────
 
-def download_prices(tickers: list[str], start: str = "1996-01-01") -> pd.DataFrame:
-    """Download adjusted close prices for all ETFs."""
+def load_prices() -> pd.DataFrame:
+    """Load cached ETF prices from disk (downloaded by universe.py)."""
     cache_path = DATA_DIR / "etf_prices.parquet"
-    if cache_path.exists():
-        prices = pd.read_parquet(cache_path)
-        print(f"  Loaded cached prices: {prices.shape}")
-        # Check if reasonably fresh (within 7 days)
-        if (pd.Timestamp.today() - prices.index.max()).days < 7:
-            return prices
-
-    print(f"  Downloading prices for {len(tickers)} ETFs...")
-    data = yf.download(tickers, start=start, progress=False, auto_adjust=True)
-
-    if isinstance(data.columns, pd.MultiIndex):
-        prices = data["Close"]
-    else:
-        prices = data[["Close"]]
-        prices.columns = tickers
-
-    prices.index = pd.to_datetime(prices.index).tz_localize(None)
-    prices.index.name = "Date"
-    prices = prices.ffill()
-
-    prices.to_parquet(cache_path)
-    print(f"  Saved prices: {prices.shape} -> {cache_path}")
+    if not cache_path.exists():
+        raise FileNotFoundError(
+            f"{cache_path} not found. Run the full pipeline first: python run.py v2"
+        )
+    prices = pd.read_parquet(cache_path)
+    print(f"  Loaded prices: {prices.shape}")
     return prices
 
 
@@ -328,11 +311,9 @@ def walk_forward_backtest(
 
 def run_full_backtest() -> dict:
     """Run complete backtest pipeline and return all results."""
-    tickers = get_tickers()
-
-    # 1. Download prices
-    print("\n  [1/7] Downloading ETF prices...")
-    prices = download_prices(tickers)
+    # 1. Load prices (downloaded by universe.py)
+    print("\n  [1/7] Loading ETF prices...")
+    prices = load_prices()
 
     # 2. Load regime data
     print("  [2/7] Loading regime classifications...")
