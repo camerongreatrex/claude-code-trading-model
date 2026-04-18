@@ -1,0 +1,43 @@
+# v2/config/instruments.yml
+# 27 ETF universe for macro regime rotation.
+# Canonical definition in v2/pipeline/data_pipeline.py (UNIVERSE list).
+
+equity:
+  - SPY   # S&P 500
+  - QQQ   # Nasdaq 100
+  - IWM   # Russell 2000 Small Cap
+  - IWD   # Russell 1000 Value
+  - IWF   # Russell 1000 Growth
+  - EFA   # MSCI EAFE (Developed ex-US)
+  - EEM   # MSCI Emerging Markets
+
+fixed_income:
+  - SHY   # 1-3Y Treasuries (cash proxy)
+  - IEF   # 7-10Y Treasuries
+  - TLT   # 20+Y Treasuries
+  - TIP   # TIPS (inflation-linked)
+  - LQD   # Investment Grade Corporate
+  - HYG   # High Yield Corporate
+
+commodity:
+  - GLD   # Gold
+  - SLV   # Silver
+  - DBC   # Broad Commodities
+  - USO   # Crude Oil
+
+real_asset:
+  - VNQ   # US REITs
+  - VNQI  # International REITs
+
+currency:
+  - UUP   # US Dollar (DXY proxy)
+  - FXE   # Euro
+  - FXY   # Japanese Yen
+
+sector:
+  - XLE   # Energy
+  - XLU   # Utilities
+  - XLK   # Technology
+  - XLF   # Financials
+  - XLP   # Consumer Staples
+  - XLV   # Healthcare

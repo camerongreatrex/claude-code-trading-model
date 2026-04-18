@@ -41,7 +41,7 @@ jobs:
       - name: Run catch-up and end-of-day update
         run: |
           python -c "
-          from paper_trader import catchup, end_of_day_update
+          from v1.scripts.paper_trader import catchup, end_of_day_update
           catchup()
           end_of_day_update()
           "
@@ -50,7 +50,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/paper_trading/state.json data/paper_trading/history.csv data/paper_trading/trades.csv
+          git add data/v1/paper_trading/state.json data/v1/paper_trading/history.csv data/v1/paper_trading/trades.csv
           # Only commit if something actually changed (avoids empty commits on holidays)
           git diff --staged --quiet && exit 0
           git commit -m "EOD update $(date -u '+%Y-%m-%d')"

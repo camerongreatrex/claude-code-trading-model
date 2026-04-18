@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git mv:*)",
+      "Bash(git rm:*)",
+      "Bash(find v1/ -name '*.py' -exec sed -i '' -e 's/from pipeline\\\\.data_pipeline/from v1.pipeline.data_pipeline/g' -e 's/from pipeline\\\\.feature_engineering/from v1.pipeline.feature_engineering/g' -e 's/from pipeline\\\\.signal_generation/from v1.pipeline.signal_generation/g' -e 's/from pipeline\\\\.backtester/from v1.pipeline.backtester/g' -e 's/from pipeline\\\\.carry_signal/from v1.pipeline.carry_signal/g' -e 's/from pipeline\\\\.feature_research/from v1.pipeline.feature_research/g' -e 's/from pipeline\\\\.macro_features/from v1.pipeline.macro_features/g' -e 's/from pipeline\\\\.fred_features/from v1.pipeline.fred_features/g' -e 's/from pipeline\\\\.cross_asset_signals/from v1.pipeline.cross_asset_signals/g' -e 's/from pipeline\\\\.optimizer/from v1.pipeline.optimizer/g' -e 's/from pipeline\\\\.universe_expansion/from v1.pipeline.universe_expansion/g' -e 's/from pipeline\\\\.universe_screen/from v1.pipeline.universe_screen/g' -e 's/from pipeline\\\\.sensitivity/from v1.pipeline.sensitivity/g' -e 's/import pipeline\\\\.signal_generation/import v1.pipeline.signal_generation/g' '{}' +)",
+      "Bash(find v1/ -name '*.py' -exec sed -i '' -e 's/from pipeline\\\\.regime_analysis/from v1.regimes.analysis/g' -e 's/from pipeline\\\\.risk_model/from v1.risk.risk_model/g' -e 's/from pipeline\\\\.correlation_diagnostic/from v1.risk.correlation_diagnostic/g' -e 's/from pipeline\\\\.capture_diagnostic/from v1.risk.capture_diagnostic/g' -e 's/from pipeline\\\\.integrity_audit/from v1.validation.integrity_audit/g' -e 's/from pipeline\\\\.portfolio/from v1.portfolio.portfolio/g' '{}' +)",
+      "Bash(find v1/ -name '*.py' -exec sed -i '' -e 's/from config import/from v1.config.params import/g' -e 's/from paper_trader import/from v1.scripts.paper_trader import/g' -e 's/from live_signals import/from v1.scripts.live_signals import/g' -e 's/from scheduler import/from v1.scripts.scheduler import/g' -e 's/from ui\\\\.styles import/from v1.ui.styles import/g' -e 's/from ui\\\\.charts import/from v1.ui.charts import/g' -e 's/from ui\\\\.data_loaders import/from v1.ui.data_loaders import/g' '{}' +)"
+    ]
+  }
+}

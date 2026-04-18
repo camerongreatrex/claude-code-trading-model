@@ -1,1 +1,1 @@
-"""v1/ — archived original trend-following long-only model (MA50/200 golden cross)."""
+"""v1/ — production momentum system (multi-asset trend-following, 42 tickers)."""

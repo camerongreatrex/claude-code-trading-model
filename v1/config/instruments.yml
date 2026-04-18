@@ -1,0 +1,56 @@
+# v1/config/instruments.yml
+# 42-ticker universe for the trend-following momentum system.
+# Ticker list is defined in v1/pipeline/data_pipeline.py (TICKERS dict).
+# This file serves as human-readable documentation of the universe.
+
+equity_index:
+  - SPY   # US large cap
+  - IWM   # US small cap
+  - EEM   # Emerging markets (China-heavy)
+  - EFA   # Developed international ex-US
+  - VWO   # Broad EM
+
+bond:
+  - TLT   # 20yr Treasury
+  - HYG   # High yield corporate
+  - TIP   # TIPS inflation-linked
+  - BWX   # International Treasury ex-US
+  - VGSH  # Short-Term Treasury (cash substitute)
+  - MUB   # Municipal Bond
+
+commodity:
+  - GLD   # Gold
+  - DBC   # Broad commodity basket
+  - UUP   # US Dollar Index
+  - DBA   # Agriculture
+  - FXE   # Euro/USD
+  - FXY   # Yen/USD (safe-haven)
+  - DBMF  # Managed futures (CTA replication)
+  - WTMF  # Managed futures (conservative)
+  - VXZ   # VIX mid-term (conditional hold)
+
+sector_etf:
+  - XLE   # Energy
+  - XLU   # Utilities
+  - XLF   # Financials
+  - VNQ   # REITs
+  - XLK   # Technology
+  - XLV   # Healthcare
+  - XLI   # Industrials
+  - XLC   # Communication services
+  - XLP   # Consumer staples
+
+stock:
+  - JPM   # Financials
+  - JNJ   # Healthcare
+  - XOM   # Energy
+  - AMZN  # Cloud/consumer
+  - NEE   # Clean energy utilities
+  - BRK-B # Conglomerate
+  - GS    # Investment banking
+  - COST  # Consumer staples
+  - MSFT  # Enterprise cloud
+  - NVDA  # GPU/AI
+  - GE    # Industrial (survivorship anchor)
+  - INTC  # Semiconductor (survivorship anchor)
+  - VZ    # Telecom (survivorship anchor)

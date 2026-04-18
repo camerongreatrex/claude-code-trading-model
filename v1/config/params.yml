@@ -1,0 +1,23 @@
+# v1/config/params.yml
+# Configuration parameters for the v1 momentum system.
+
+capital: 100000
+start_date: "2010-01-01"
+end_date: "2026-01-01"
+
+# Signal parameters (from signal_generation.py)
+ma_fast: 50
+ma_slow: 200
+adx_threshold: 25
+rsi_entry_threshold: 70
+atr_trailing_mult: 3.0
+min_hold_days: 5
+
+# Portfolio sizing
+risk_per_trade: 0.01        # 1% of capital per ATR
+max_position_pct: 0.15      # 15% max single position
+vol_target: 0.10            # 10% annualized vol target
+dd_trigger: -0.12           # drawdown circuit breaker
+
+# Transaction costs
+cost_per_side: 0.0005       # 5 bps per side (10 bps round-trip)
