@@ -37,6 +37,21 @@ STRESS_DEFENSIVE = 0.50      # force 50% into defensive basket
 STRESS_TICKERS = ["SHY", "TLT", "GLD"]  # defensive basket
 STRESS_WEIGHTS = [0.40, 0.35, 0.25]     # defensive basket weights
 
+# ── Regime-aware dynamic vol targeting ────────────────────────────────────────
+# When regime model is highly confident in risk-on regimes, we harvest more
+# return by raising the vol target. When it's confident in risk-off regimes,
+# we compress vol aggressively. Bullish = expansion + recovery. Bearish =
+# recession + stagflation. Neutral regimes sit near the base target.
+VOL_TARGET_BEAR   = 0.06     # bearish regime vol target
+VOL_TARGET_BASE   = 0.13     # neutral / mixed regime target
+VOL_TARGET_BULL   = 0.22     # high-confidence bull target
+VOL_BULL_CAP      = 2.5      # leverage cap when bullish + trend confirms
+VOL_NORMAL_CAP    = 1.5      # leverage cap in neutral regimes
+VOL_BEAR_CAP      = 0.8      # leverage cap (de-risk) in bear regimes
+TREND_LOOKBACK    = 150      # SPY 150d MA trend-confirmation window
+BULL_CONFIDENCE_GATE = 0.45  # P(expansion)+P(recovery) threshold for BULL cap
+BEAR_CONFIDENCE_GATE = 0.45  # P(recession)+P(stagflation) threshold for BEAR cap
+
 
 def compute_vol_scalar(
     portfolio_returns: pd.Series,
@@ -202,6 +217,86 @@ def apply_stress_override(
     return result
 
 
+def compute_regime_vol_target(probs: pd.DataFrame) -> pd.Series:
+    """
+    Regime-confidence-weighted vol target.
+
+    bull_score = P(expansion) + P(recovery)
+    bear_score = P(recession) + P(stagflation)
+
+    Target interpolates between VOL_TARGET_BEAR and VOL_TARGET_BULL:
+        net = bull_score - bear_score  (in [-1, 1])
+        target = BASE + max(0, net) * (BULL - BASE) + min(0, net) * (BASE - BEAR)
+    """
+    bull = probs.get("expansion", 0.0) + probs.get("recovery", 0.0)
+    bear = probs.get("recession", 0.0) + probs.get("stagflation", 0.0)
+    net = (bull - bear).clip(-1.0, 1.0)
+
+    target = pd.Series(VOL_TARGET_BASE, index=probs.index)
+    target = target + net.where(net > 0, 0) * (VOL_TARGET_BULL - VOL_TARGET_BASE)
+    target = target + net.where(net < 0, 0) * (VOL_TARGET_BASE - VOL_TARGET_BEAR)
+    return target
+
+
+def compute_regime_cap(probs: pd.DataFrame, trend_ok: pd.Series) -> pd.Series:
+    """
+    Dynamic leverage cap: bull regimes (with trend confirming) allow more
+    leverage; bear regimes force a hard cap below 1.0.
+    """
+    bull = probs.get("expansion", 0.0) + probs.get("recovery", 0.0)
+    bear = probs.get("recession", 0.0) + probs.get("stagflation", 0.0)
+
+    cap = pd.Series(VOL_NORMAL_CAP, index=probs.index)
+    trend_bool = trend_ok.reindex(probs.index).fillna(False).astype(bool)
+    strong_bull = (bull > BULL_CONFIDENCE_GATE) & trend_bool
+    strong_bear = bear > BEAR_CONFIDENCE_GATE
+    cap.loc[strong_bull] = VOL_BULL_CAP
+    cap.loc[strong_bear] = VOL_BEAR_CAP
+    return cap
+
+
+def apply_regime_vol_targeting(
+    weights_df: pd.DataFrame,
+    portfolio_returns: pd.Series,
+    probs: pd.DataFrame,
+    trend_ok: pd.Series,
+    cash_ticker: str = "SHY",
+) -> pd.DataFrame:
+    """
+    Vol-target scalar uses a regime-confidence-weighted target and a
+    dynamic leverage cap. Trend confirmation (SPY > 150d MA) is required
+    before we allow leverage above 1.0 in bullish regimes.
+    """
+    realized_vol = portfolio_returns.rolling(VOL_LOOKBACK, min_periods=10).std() * np.sqrt(252)
+
+    tgt = compute_regime_vol_target(probs).reindex(realized_vol.index).ffill().fillna(VOL_TARGET_BASE)
+    cap = compute_regime_cap(probs, trend_ok).reindex(realized_vol.index).ffill().fillna(VOL_NORMAL_CAP)
+
+    scalar = (tgt / realized_vol.replace(0, np.nan)).clip(VOL_SCALE_FLOOR, None).fillna(1.0)
+    # Apply dynamic cap
+    scalar = pd.concat([scalar, cap], axis=1).min(axis=1)
+
+    result = weights_df.copy()
+    for date in weights_df.index:
+        s = scalar.asof(date)
+        if pd.isna(s):
+            s = 1.0
+
+        row = weights_df.loc[date]
+        cash_weight = row.get(cash_ticker, 0.0)
+        risky = row.drop(cash_ticker, errors="ignore")
+        scaled_risky = risky * s
+        new_cash = max(0.0, 1.0 - scaled_risky.sum())
+
+        for ticker in scaled_risky.index:
+            result.loc[date, ticker] = scaled_risky[ticker]
+        result.loc[date, cash_ticker] = new_cash
+
+    row_sums = result.sum(axis=1)
+    result = result.div(row_sums.replace(0, 1), axis=0)
+    return result
+
+
 def apply_all_risk_overlays(
     weights_df: pd.DataFrame,
     portfolio_returns: pd.Series,
@@ -210,16 +305,25 @@ def apply_all_risk_overlays(
     apply_vol: bool = True,
     apply_dd: bool = True,
     apply_stress: bool = True,
+    probs: pd.DataFrame | None = None,
+    trend_ok: pd.Series | None = None,
 ) -> pd.DataFrame:
     """
     Apply all three risk overlays sequentially.
 
-    Order matters: vol targeting → drawdown breaker → stress override
+    Order matters: vol targeting → drawdown breaker → stress override.
+
+    When `probs` and `trend_ok` are provided, uses the regime-aware dynamic
+    vol target (higher leverage in confident bullish regimes, de-risking in
+    bearish regimes). Otherwise falls back to the static target.
     """
     result = weights_df.copy()
 
     if apply_vol:
-        result = apply_vol_targeting(result, portfolio_returns)
+        if probs is not None and trend_ok is not None:
+            result = apply_regime_vol_targeting(result, portfolio_returns, probs, trend_ok)
+        else:
+            result = apply_vol_targeting(result, portfolio_returns)
 
     if apply_dd:
         result = apply_drawdown_breaker(result, equity_curve)

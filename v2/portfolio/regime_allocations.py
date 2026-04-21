@@ -28,18 +28,17 @@ from v2.pipeline.data_pipeline import get_asset_class_map
 # Omitted tickers get 0 weight.
 
 EXPANSION = {
-    # Risk-on: heavy equities, growth/tech tilt, minimal bonds
-    "SPY": 0.22, "QQQ": 0.13, "IWM": 0.07, "IWF": 0.06,
-    "EFA": 0.06, "EEM": 0.05,
-    "XLK": 0.06, "XLF": 0.05,
-    "VNQ": 0.05,
-    "HYG": 0.04,
-    "LQD": 0.03,
-    "GLD": 0.03,
-    "DBC": 0.03,
+    # Risk-on: heavy equities, growth/tech tilt, trimmed bonds
+    "SPY": 0.25, "QQQ": 0.18, "IWF": 0.08, "IWM": 0.08,
+    "EFA": 0.06, "EEM": 0.04,
+    "XLK": 0.10, "XLF": 0.06,
+    "VNQ": 0.04,
+    "HYG": 0.03,
+    "GLD": 0.02,
+    "DBC": 0.01,
     "SHY": 0.01,
-    "IEF": 0.05,
-    "TLT": 0.06,
+    "IEF": 0.02,
+    "TLT": 0.02,
 }
 
 SLOWDOWN = {
@@ -67,17 +66,13 @@ RECESSION = {
 
 RECOVERY = {
     # Aggressive risk-on: small cap, value, EM, cyclicals, commodities
-    "SPY": 0.15, "IWM": 0.10, "IWD": 0.08,
-    "EFA": 0.06, "EEM": 0.06,
-    "XLF": 0.06, "XLE": 0.06, "XLK": 0.05,
-    "VNQ": 0.06, "VNQI": 0.03,
+    "SPY": 0.17, "QQQ": 0.07, "IWM": 0.12, "IWD": 0.08,
+    "EFA": 0.06, "EEM": 0.07,
+    "XLF": 0.12, "XLE": 0.06, "XLK": 0.05,
+    "VNQ": 0.06, "VNQI": 0.02,
     "HYG": 0.05,
-    "DBC": 0.05, "GLD": 0.02, "USO": 0.02,
-    "LQD": 0.03,
-    "IEF": 0.04,
-    "TLT": 0.03,
-    "SHY": 0.02,
-    "QQQ": 0.03,
+    "DBC": 0.04, "GLD": 0.01, "USO": 0.01,
+    "SHY": 0.01,
 }
 
 STAGFLATION = {

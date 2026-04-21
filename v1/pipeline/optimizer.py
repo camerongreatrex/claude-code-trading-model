@@ -44,7 +44,7 @@ import pandas as pd
 from scipy.optimize import minimize
 from typing import Optional
 
-from .risk_model import estimate_covariance
+from v1.risk.risk_model import estimate_covariance
 from .data_pipeline import ASSET_CLASS
 
 

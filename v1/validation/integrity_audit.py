@@ -24,7 +24,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── imports from pipeline ─────────────────────────────────────────────────────
-from .portfolio import (
+from v1.portfolio.portfolio import (
     regime_adaptive_sizes,
     adaptive_blend_sizes,
     momentum_tilt_sizes,
@@ -35,8 +35,8 @@ from .portfolio import (
     CAPITAL,
     MAX_POSITION_PCT,
 )
-from .backtester import sharpe_ratio
-from .data_pipeline import ASSET_CLASS
+from v1.pipeline.backtester import sharpe_ratio
+from v1.pipeline.data_pipeline import ASSET_CLASS
 
 SIGNAL_DIR   = Path("data/v1/signals")
 FEATURE_DIR  = Path("data/v1/features")

@@ -35,7 +35,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 REGIME_DIR = Path("data/v2/regime_features")
 
 MAX_SINGLE_ETF = 0.30
-MAX_ASSET_CLASS = 0.60
+MAX_ASSET_CLASS = 0.75   # relaxed from 0.60 — lets expansion regime run hotter on equities
 
 
 def blend_regime_allocations(probs: pd.Series) -> dict[str, float]:

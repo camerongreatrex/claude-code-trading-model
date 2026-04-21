@@ -335,11 +335,18 @@ def run_full_backtest() -> dict:
     gross_returns = gross_returns.loc[start_date:]
     weights = weights.loc[start_date:]
 
-    # 5. Apply risk overlays
+    # 5. Apply risk overlays (regime-aware dynamic vol targeting)
     print("  [5/7] Applying risk overlays...")
     equity_curve = (1 + gross_returns).cumprod()
+
+    # Trend confirmation: SPY above 150d SMA
+    spy_px = prices["SPY"]
+    spy_sma = spy_px.rolling(150, min_periods=60).mean()
+    trend_ok = (spy_px > spy_sma).reindex(weights.index, method="ffill").fillna(False)
+
     risk_weights = apply_all_risk_overlays(
         weights, gross_returns, equity_curve, stress_scores,
+        probs=probs, trend_ok=trend_ok,
     )
     risk_returns = compute_portfolio_returns(risk_weights, prices).loc[start_date:]
 

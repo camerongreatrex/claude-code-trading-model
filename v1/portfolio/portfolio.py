@@ -63,15 +63,15 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from .risk_model import estimate_covariance, risk_parity_weights, regime_conditional_covariance, hrp_weights
-from .optimizer import optimizer_sizes, minimum_variance_gated_weights
-from .regime_analysis import label_regimes
-from .backtester import (
+from v1.risk.risk_model import estimate_covariance, risk_parity_weights, regime_conditional_covariance, hrp_weights
+from v1.pipeline.optimizer import optimizer_sizes, minimum_variance_gated_weights
+from v1.regimes.analysis import label_regimes
+from v1.pipeline.backtester import (
     compute_strategy_returns, sharpe_ratio, max_drawdown,
     calmar_ratio, win_rate, profit_factor, summarise, equity_curve
 )
-from .data_pipeline import TICKER_LIST, ASSET_CLASS, HEDGE_MAP
-from .signal_generation import vix_position_scalar, ATR_PARTIAL_REMAIN
+from v1.pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS, HEDGE_MAP
+from v1.pipeline.signal_generation import vix_position_scalar, ATR_PARTIAL_REMAIN
 
 SIGNAL_DIR  = Path("data/v1/signals")
 FEATURE_DIR = Path("data/v1/features")
