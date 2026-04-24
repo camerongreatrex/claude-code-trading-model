@@ -1,433 +1,658 @@
 """
-v2/paper_trader.py
-------------------
-Paper trading engine for the macro regime rotation strategy.
+v2/scripts/paper_trader.py
+--------------------------
+Live paper trading engine for the V2 macro regime rotation strategy.
 
-Designed for Interactive Brokers integration:
-  - Monthly rebalance (first business day of each month)
-  - Long-only ETF portfolio (~28 instruments, highly liquid)
-  - Outputs IB-compatible order list (ticker, action, quantity, order_type)
-  - Tracks portfolio state in JSON, history in CSV
+Cadence
+───────
+  Monthly rebalance — target weights come from the latest row of
+  data/v2/results/portfolio_weights.parquet. On the first trading day
+  of a new month we sell exits and buy entries to match those weights.
+
+  Between rebalances — positions are checked daily against an ATR-14
+  trailing stop (3× ATR). Stopped tickers are moved to cash (SHY) until
+  the next monthly rebalance re-evaluates.
+
+State (data/v2/paper_trading/)
+──────────────────────────────
+  state.json  — V1-compatible schema: cash, positions{ticker: {shares,
+                entry_price, entry_date, cost_basis, last_close}},
+                initial_capital, initialized_date, last_eod_date,
+                last_rebalance, portfolio_value, strategy.
+  trades.csv  — date, ticker, action, shares, price, value, commission,
+                pnl, reason
+  history.csv — date, portfolio_value, cash, invested, n_positions,
+                daily_return
+
+The dashboard's `load_paper_state / load_paper_history / load_paper_trades`
+helpers read these files directly, so the schema must match V1's.
 
 Usage
 ─────
-  python -m v2.paper_trader init         — initialize with $100K
-  python -m v2.paper_trader rebalance    — run monthly rebalance
-  python -m v2.paper_trader status       — show current positions
-  python -m v2.paper_trader orders       — generate IB order list (no execution)
+  python -m v2.scripts.paper_trader init    — first-run: $100k, enter targets
+  python -m v2.scripts.paper_trader run     — EOD update (trailing stops +
+                                              monthly rebalance if due)
+  python -m v2.scripts.paper_trader status  — print current state
+  python -m v2.scripts.paper_trader orders  — dry-run: show rebalance orders
 """
 
 from __future__ import annotations
 
 import json
+import sys
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from v2.pipeline.data_pipeline import get_tickers, get_asset_class_map
-from v2.regimes.macro_features import build_macro_features
-from v2.regimes.market_features import build_market_features
-from v2.regimes.classification import classify_regimes
-from v2.portfolio.weights import build_portfolio_weights, blend_regime_allocations, apply_constraints, normalize_weights
-from v2.risk.overlays import (
-    compute_vol_scalar, STRESS_THRESHOLD, STRESS_DEFENSIVE,
-    STRESS_TICKERS, STRESS_WEIGHTS,
-)
+from v2.pipeline.data_pipeline import get_tickers
+from v2.risk.trailing_stops import atr_from_close, ATR_MULT, MIN_HOLD_DAYS
 
-STATE_DIR = Path("data/v2/paper_trading")
-STATE_DIR.mkdir(parents=True, exist_ok=True)
+# ── Constants ────────────────────────────────────────────────────────────────
+INITIAL_CAPITAL = 100_000.0
+COMMISSION_PCT  = 0.0005          # 5 bps/side — matches backtester
+ET_ZONE         = ZoneInfo("America/New_York")
+CASH_TICKER     = "SHY"
+MIN_TRADE_USD   = 200.0           # skip orders below this notional
+REBAL_THRESHOLD = 0.005           # 0.5% of portfolio — ignore drift below this
 
-STATE_FILE = STATE_DIR / "state.json"
-HISTORY_FILE = STATE_DIR / "history.csv"
-TRADES_FILE = STATE_DIR / "trades.csv"
-ORDERS_FILE = STATE_DIR / "pending_orders.csv"
+STRATEGY_KEY    = "macro_regime_rotation"
 
-INITIAL_CAPITAL = 100_000
+PT_DIR        = Path("data/v2/paper_trading")
+STATE_FILE    = PT_DIR / "state.json"
+TRADES_FILE   = PT_DIR / "trades.csv"
+HISTORY_FILE  = PT_DIR / "history.csv"
+ORDERS_FILE   = PT_DIR / "pending_orders.csv"
+WEIGHTS_FILE  = Path("data/v2/results/portfolio_weights.parquet")
+PT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ── State Management ─────────────────────────────────────────────────────────
+# ── Time helpers ─────────────────────────────────────────────────────────────
+
+def _today_et() -> str:
+    return str(datetime.now(ET_ZONE).date())
+
+
+def _is_trading_day(d: date | None = None) -> bool:
+    if d is None:
+        d = datetime.now(ET_ZONE).date()
+    return d.weekday() < 5
+
+
+def _is_new_month(last_rebalance: str | None, today: str) -> bool:
+    """True if `today` falls in a later calendar month than `last_rebalance`."""
+    if not last_rebalance:
+        return True
+    prev = pd.Timestamp(last_rebalance)
+    cur  = pd.Timestamp(today)
+    return (cur.year, cur.month) != (prev.year, prev.month) and cur >= prev
+
+
+# ── State I/O ────────────────────────────────────────────────────────────────
 
 def load_state() -> dict:
-    """Load portfolio state from JSON."""
-    if STATE_FILE.exists():
-        with open(STATE_FILE) as f:
-            return json.load(f)
-    return {}
+    if not STATE_FILE.exists():
+        return {}
+    with open(STATE_FILE, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def save_state(state: dict):
-    """Save portfolio state to JSON."""
-    with open(STATE_FILE, "w") as f:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, default=str)
 
 
-def load_history() -> pd.DataFrame:
-    """Load portfolio value history."""
-    if HISTORY_FILE.exists():
-        return pd.read_csv(HISTORY_FILE)
-    return pd.DataFrame()
-
-
 def load_trades() -> pd.DataFrame:
-    """Load trade log."""
-    if TRADES_FILE.exists():
-        return pd.read_csv(TRADES_FILE)
-    return pd.DataFrame()
+    if not TRADES_FILE.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(TRADES_FILE)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
 
 
-def _append_csv(path: Path, row: dict):
-    """Append a row to a CSV file, creating headers if needed."""
-    df = pd.DataFrame([row])
-    write_header = not path.exists() or path.stat().st_size == 0
-    df.to_csv(path, mode="a", header=write_header, index=False)
+def load_history() -> pd.DataFrame:
+    if not HISTORY_FILE.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(HISTORY_FILE)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values("date").reset_index(drop=True)
 
 
-# ── Initialization ────────────────────────────────────────────────────────────
+def _append_csv(path: Path, record: dict):
+    row = pd.DataFrame([record])
+    row.to_csv(path, mode="a", header=not path.exists(), index=False)
 
-def init_portfolio(capital: float = INITIAL_CAPITAL):
-    """Initialize a fresh paper trading portfolio."""
-    state = {
-        "initial_capital": capital,
-        "cash": capital,
-        "positions": {},  # ticker → {"shares": int, "avg_price": float}
-        "portfolio_value": capital,
-        "last_rebalance": None,
-        "created_at": datetime.now().isoformat(),
-    }
-    save_state(state)
-    _append_csv(HISTORY_FILE, {
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "portfolio_value": capital,
-        "cash": capital,
-        "n_positions": 0,
+
+# ── yfinance fetchers ────────────────────────────────────────────────────────
+
+def _fetch_daily(ticker: str, lookback_days: int = 260) -> pd.DataFrame:
+    """Download ~1 year of OHLC daily bars (enough for ATR-14 warm-up)."""
+    end   = datetime.today() + timedelta(days=1)
+    start = end - timedelta(days=lookback_days)
+    df = yf.download(
+        ticker,
+        start=start.strftime("%Y-%m-%d"),
+        end=end.strftime("%Y-%m-%d"),
+        auto_adjust=True, progress=False,
+        multi_level_index=False,
+    )
+    if df.empty:
+        return df
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(1)
+    df.index = pd.to_datetime(df.index)
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+    df.index.name = "Date"
+    return df
+
+
+def _fetch_closes_batch(tickers: list[str], lookback_days: int = 260) -> dict[str, pd.Series]:
+    """Batch-fetch close series for a list of tickers. Skips failures silently."""
+    out: dict[str, pd.Series] = {}
+    for t in tickers:
+        try:
+            df = _fetch_daily(t, lookback_days)
+            if df.empty or "Close" not in df.columns:
+                continue
+            s = df["Close"]
+            if isinstance(s, pd.DataFrame):
+                s = s.iloc[:, 0]
+            out[t] = s.dropna()
+        except Exception:
+            continue
+    return out
+
+
+def _latest_prices(closes: dict[str, pd.Series]) -> dict[str, float]:
+    return {t: float(s.iloc[-1]) for t, s in closes.items() if len(s)}
+
+
+# ── Target weights ───────────────────────────────────────────────────────────
+
+def load_target_weights() -> pd.Series:
+    """Latest row of portfolio_weights.parquet (monthly, already V2-constructed)."""
+    if not WEIGHTS_FILE.exists():
+        raise FileNotFoundError(
+            f"{WEIGHTS_FILE} missing. Run the V2 pipeline first "
+            "(v2/scripts/run_v2.py) to produce portfolio weights."
+        )
+    w = pd.read_parquet(WEIGHTS_FILE)
+    latest = w.iloc[-1].astype(float)
+    latest = latest[latest > 1e-6]
+    total = latest.sum()
+    if total > 0:
+        latest = latest / total
+    return latest
+
+
+# ── Portfolio valuation ──────────────────────────────────────────────────────
+
+def _portfolio_value(state: dict, prices: dict[str, float]) -> float:
+    return state["cash"] + sum(
+        pos["shares"] * prices.get(t, pos.get("last_close", pos["entry_price"]))
+        for t, pos in state["positions"].items()
+    )
+
+
+# ── Trade execution ──────────────────────────────────────────────────────────
+
+def _buy(state: dict, ticker: str, price: float, dollar_amount: float,
+         reason: str, trade_date: str) -> dict:
+    """
+    Enter or add to a position. For add-to, we weight-average entry_price
+    (matches how V1 treats top-ups) so cost_basis stays consistent.
+    """
+    if dollar_amount < MIN_TRADE_USD:
+        return state
+    commission = dollar_amount * COMMISSION_PCT
+    total_cost = dollar_amount + commission
+    if total_cost > state["cash"] * 1.01:
+        dollar_amount = max(0.0, state["cash"] * 0.99 - commission)
+        if dollar_amount < MIN_TRADE_USD:
+            return state
+        commission = dollar_amount * COMMISSION_PCT
+        total_cost = dollar_amount + commission
+
+    shares = dollar_amount / price
+    state["cash"] -= total_cost
+
+    if ticker in state["positions"]:
+        pos = state["positions"][ticker]
+        total_shares = pos["shares"] + shares
+        new_cost = pos.get("cost_basis", pos["shares"] * pos["entry_price"]) + dollar_amount
+        pos["shares"]      = total_shares
+        pos["entry_price"] = new_cost / total_shares
+        pos["cost_basis"]  = new_cost
+        pos["last_close"]  = price
+    else:
+        state["positions"][ticker] = {
+            "shares"     : shares,
+            "entry_price": price,
+            "entry_date" : trade_date,
+            "cost_basis" : dollar_amount,
+            "last_close" : price,
+        }
+
+    _append_csv(TRADES_FILE, {
+        "date": trade_date, "ticker": ticker, "action": "BUY",
+        "shares": round(shares, 6), "price": round(price, 4),
+        "value": round(dollar_amount, 2), "commission": round(commission, 2),
+        "pnl": "", "reason": reason,
     })
-    print(f"  Initialized paper portfolio: ${capital:,.0f}")
+    print(f"  BUY  {ticker:<6} {shares:10.4f} sh @ ${price:8.2f}  "
+          f"(${dollar_amount:>10,.0f})  [{reason}]")
     return state
 
 
-# ── Price Fetching ────────────────────────────────────────────────────────────
+def _sell(state: dict, ticker: str, price: float, reason: str, trade_date: str,
+          shares_to_sell: float | None = None) -> dict:
+    """Full sale by default. If `shares_to_sell` is given, partial sale."""
+    if ticker not in state["positions"]:
+        return state
+    pos = state["positions"][ticker]
+    full = shares_to_sell is None or shares_to_sell >= pos["shares"] - 1e-9
+    n = pos["shares"] if full else float(shares_to_sell)
+    if n <= 0:
+        return state
 
-def get_current_prices(tickers: list[str]) -> dict[str, float]:
-    """Fetch current prices for all tickers."""
-    prices = {}
-    for ticker in tickers:
-        try:
-            data = yf.download(ticker, period="5d", progress=False, auto_adjust=True)
-            if not data.empty:
-                close = data["Close"].squeeze()
-                if isinstance(close, pd.DataFrame):
-                    close = close.iloc[:, 0]
-                prices[ticker] = float(close.iloc[-1])
-        except Exception:
+    proceeds   = n * price
+    commission = proceeds * COMMISSION_PCT
+    net        = proceeds - commission
+    cb_frac    = pos.get("cost_basis", n * pos["entry_price"]) * (n / pos["shares"])
+    pnl        = net - cb_frac
+    state["cash"] += net
+
+    if full:
+        state["positions"].pop(ticker, None)
+    else:
+        pos["shares"]    -= n
+        pos["cost_basis"] = pos.get("cost_basis", 0.0) - cb_frac
+        pos["last_close"] = price
+
+    _append_csv(TRADES_FILE, {
+        "date": trade_date, "ticker": ticker, "action": "SELL",
+        "shares": round(n, 6), "price": round(price, 4),
+        "value": round(proceeds, 2), "commission": round(commission, 2),
+        "pnl": round(pnl, 2), "reason": reason,
+    })
+    pnl_s = f"+${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
+    print(f"  SELL {ticker:<6} {n:10.4f} sh @ ${price:8.2f}  "
+          f"P&L {pnl_s:>10}  [{reason}]")
+    return state
+
+
+# ── Trailing-stop check (run daily between rebalances) ───────────────────────
+
+def _check_trailing_stops(state: dict, closes: dict[str, pd.Series],
+                          prices: dict[str, float], today_str: str) -> dict:
+    """
+    For each open position, compute the trailing-high since entry and the
+    ATR-at-entry × ATR_MULT stop level. If today's close is below the stop
+    AND the position has been held at least MIN_HOLD_DAYS, exit to cash.
+
+    Uses close-only ATR (matches v2.risk.trailing_stops.atr_from_close).
+    """
+    for ticker in list(state["positions"]):
+        if ticker == CASH_TICKER:
+            continue  # never stop-out the cash sleeve
+        if ticker not in closes:
             continue
-    return prices
+
+        pos      = state["positions"][ticker]
+        s        = closes[ticker]
+        entry_dt = pd.Timestamp(pos["entry_date"])
+        window   = s.loc[s.index >= entry_dt]
+        if len(window) < MIN_HOLD_DAYS + 1:
+            continue
+
+        # ATR at entry — stable stop width across the hold.
+        atr_series = atr_from_close(s)
+        atr_at_entry = atr_series.loc[atr_series.index <= entry_dt]
+        if atr_at_entry.empty or not np.isfinite(atr_at_entry.iloc[-1]) \
+                or atr_at_entry.iloc[-1] <= 0:
+            continue
+        atr0 = float(atr_at_entry.iloc[-1])
+
+        trailing_high = float(window.cummax().iloc[-1])
+        stop_level    = trailing_high - ATR_MULT * atr0
+        today_px      = prices.get(ticker, float(window.iloc[-1]))
+
+        if today_px < stop_level:
+            state = _sell(state, ticker, today_px,
+                          reason="atr_trailing_stop", trade_date=today_str)
+    return state
 
 
-# ── Target Weight Computation ─────────────────────────────────────────────────
+# ── Rebalance ────────────────────────────────────────────────────────────────
 
-def compute_target_weights() -> dict[str, float]:
+def _rebalance_to_targets(state: dict, targets: pd.Series,
+                          prices: dict[str, float], today_str: str) -> dict:
     """
-    Run the full regime pipeline and return current target weights.
+    Bring positions into line with `targets` (weights summing to ~1).
 
-    Steps:
-      1. Fetch/update macro features
-      2. Fetch/update market features
-      3. Classify current regime
-      4. Blend allocations by regime probabilities
-      5. Apply constraints
+    Steps (V1 order: sells first to free cash, then buys):
+      1. For every non-CASH ticker, compute delta = target_value - current_value.
+         If |delta| below REBAL_THRESHOLD × portfolio_value, skip (save fees).
+      2. SELL any excess (full exit if target weight is 0).
+      3. BUY any deficit.
+      4. Cash ticker (SHY) is treated as the residual and not explicitly traded
+         here — SHY buys/sells arise naturally when target weight differs from
+         held position. We route the normal delta calc through it too.
     """
-    print("  Updating macro features...")
-    macro = build_macro_features(use_cache=False)
+    pv = _portfolio_value(state, prices)
+    min_delta = REBAL_THRESHOLD * pv
+    all_tickers = set(targets.index) | set(state["positions"].keys())
 
-    print("  Updating market features...")
-    market = build_market_features(use_cache=False)
-
-    print("  Classifying regime...")
-    probs, labels = classify_regimes()
-
-    # Get latest regime probabilities
-    latest_probs = probs.iloc[-1]
-    print(f"  Current regime: {latest_probs.idxmax()} ({latest_probs.max():.0%})")
-
-    # Blend allocations
-    blended = blend_regime_allocations(latest_probs)
-    constrained = apply_constraints(blended.copy())
-    normalized = normalize_weights(constrained)
-
-    # Check for stress override
-    if "stress_score" in market.columns:
-        stress = market["stress_score"].iloc[-1]
-        print(f"  Stress score: {stress:.2f}")
-        if stress > STRESS_THRESHOLD:
-            print(f"  STRESS OVERRIDE ACTIVE — forcing {STRESS_DEFENSIVE:.0%} defensive")
-            remaining = 1.0 - STRESS_DEFENSIVE
-            for ticker in normalized:
-                normalized[ticker] *= remaining
-            for ticker, weight in zip(STRESS_TICKERS, STRESS_WEIGHTS):
-                normalized[ticker] = normalized.get(ticker, 0) + STRESS_DEFENSIVE * weight
-            total = sum(normalized.values())
-            normalized = {t: w / total for t, w in normalized.items()}
-
-    return normalized
-
-
-# ── Order Generation (IB-compatible) ─────────────────────────────────────────
-
-def generate_orders(
-    target_weights: dict[str, float],
-    current_prices: dict[str, float],
-    state: dict,
-) -> list[dict]:
-    """
-    Generate IB-compatible order list.
-
-    Each order: {ticker, action (BUY/SELL), quantity, order_type, notional}
-
-    Only generates orders where the position change exceeds 0.5% of portfolio
-    to avoid excessive small trades.
-    """
-    portfolio_value = state["portfolio_value"]
-    positions = state.get("positions", {})
-    min_trade_pct = 0.005  # 0.5% minimum trade threshold
-
-    orders = []
-
-    # All tickers (union of current positions and targets)
-    all_tickers = set(target_weights.keys()) | set(positions.keys())
-
-    for ticker in sorted(all_tickers):
-        target_weight = target_weights.get(ticker, 0)
-        price = current_prices.get(ticker)
+    # Build delta table
+    deltas: list[tuple[str, float, float]] = []  # (ticker, delta_usd, price)
+    for t in all_tickers:
+        price = prices.get(t)
         if price is None or price <= 0:
             continue
-
-        target_shares = int((target_weight * portfolio_value) / price)
-        current_shares = positions.get(ticker, {}).get("shares", 0)
-        delta = target_shares - current_shares
-
-        if delta == 0:
+        tgt_w   = float(targets.get(t, 0.0))
+        tgt_val = tgt_w * pv
+        cur_val = state["positions"].get(t, {}).get("shares", 0.0) * price
+        delta   = tgt_val - cur_val
+        if abs(delta) < min_delta:
             continue
+        deltas.append((t, delta, price))
 
-        # Check minimum trade threshold
-        trade_notional = abs(delta * price)
-        trade_pct = trade_notional / portfolio_value
-        if trade_pct < min_trade_pct:
+    # Sells first (negative delta = reduce / exit)
+    for t, d, px in sorted(deltas, key=lambda x: x[1]):
+        if d >= 0:
+            break
+        pos = state["positions"].get(t)
+        if pos is None:
             continue
-
-        orders.append({
-            "ticker": ticker,
-            "action": "BUY" if delta > 0 else "SELL",
-            "quantity": abs(delta),
-            "order_type": "MKT",  # market order for liquid ETFs
-            "notional": round(trade_notional, 2),
-            "target_weight": round(target_weight * 100, 1),
-            "current_shares": current_shares,
-            "target_shares": target_shares,
-        })
-
-    # Sort: sells first (free up cash), then buys
-    orders.sort(key=lambda x: (x["action"] == "BUY", -x["notional"]))
-
-    return orders
-
-
-# ── Rebalance Execution (paper) ───────────────────────────────────────────────
-
-def execute_rebalance():
-    """Run a full paper rebalance."""
-    state = load_state()
-    if not state:
-        print("  No portfolio state. Run 'init' first.")
-        return
-
-    # Get target weights
-    target_weights = compute_target_weights()
-
-    # Get current prices
-    tickers = list(set(get_tickers()) | set(state.get("positions", {}).keys()))
-    print(f"\n  Fetching prices for {len(tickers)} tickers...")
-    prices = get_current_prices(tickers)
-
-    # Update portfolio value
-    positions = state.get("positions", {})
-    position_value = sum(
-        pos["shares"] * prices.get(ticker, pos.get("avg_price", 0))
-        for ticker, pos in positions.items()
-    )
-    state["portfolio_value"] = state["cash"] + position_value
-
-    # Generate orders
-    orders = generate_orders(target_weights, prices, state)
-
-    if not orders:
-        print("  No rebalance needed — positions within threshold.")
-        state["last_rebalance"] = datetime.now().isoformat()
-        save_state(state)
-        return
-
-    # Execute orders (paper)
-    print(f"\n  Executing {len(orders)} orders...")
-    for order in orders:
-        ticker = order["ticker"]
-        price = prices[ticker]
-        shares = order["quantity"]
-
-        if order["action"] == "SELL":
-            # Reduce/close position
-            pos = positions.get(ticker, {"shares": 0, "avg_price": 0})
-            sell_shares = min(shares, pos["shares"])
-            proceeds = sell_shares * price
-            state["cash"] += proceeds
-            pos["shares"] -= sell_shares
-            if pos["shares"] <= 0:
-                positions.pop(ticker, None)
-            else:
-                positions[ticker] = pos
+        # If target is 0 → full exit; else partial
+        tgt_w = float(targets.get(t, 0.0))
+        if tgt_w <= 0:
+            state = _sell(state, t, px, reason="rebalance_exit",
+                          trade_date=today_str)
         else:
-            # Buy
-            cost = shares * price
-            if cost > state["cash"]:
-                shares = int(state["cash"] / price)
-                cost = shares * price
-            if shares <= 0:
-                continue
-            state["cash"] -= cost
-            if ticker in positions:
-                old = positions[ticker]
-                total_shares = old["shares"] + shares
-                avg_price = (old["shares"] * old["avg_price"] + cost) / total_shares
-                positions[ticker] = {"shares": total_shares, "avg_price": round(avg_price, 4)}
-            else:
-                positions[ticker] = {"shares": shares, "avg_price": round(price, 4)}
+            shares_to_sell = min(pos["shares"], abs(d) / px)
+            state = _sell(state, t, px, reason="rebalance_trim",
+                          trade_date=today_str,
+                          shares_to_sell=shares_to_sell)
 
-        # Log trade
-        _append_csv(TRADES_FILE, {
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "ticker": ticker,
-            "action": order["action"],
-            "shares": shares,
-            "price": round(price, 4),
-            "notional": round(shares * price, 2),
-            "target_weight": order["target_weight"],
-        })
+    # Then buys
+    for t, d, px in sorted(deltas, key=lambda x: -x[1]):
+        if d <= 0:
+            continue
+        state = _buy(state, t, px, dollar_amount=min(d, state["cash"] * 0.995),
+                     reason="rebalance_entry", trade_date=today_str)
 
-        print(f"    {order['action']:4s} {shares:5d} {ticker:5s} @ ${price:8.2f} = ${shares*price:10,.2f}")
+    return state
 
-    # Update state
-    state["positions"] = positions
-    position_value = sum(
-        pos["shares"] * prices.get(ticker, pos.get("avg_price", 0))
-        for ticker, pos in positions.items()
-    )
-    state["portfolio_value"] = state["cash"] + position_value
-    state["last_rebalance"] = datetime.now().isoformat()
+
+# ── Initialisation ───────────────────────────────────────────────────────────
+
+def init_portfolio():
+    """Create a fresh $100k paper portfolio at the latest target weights."""
+    if STATE_FILE.exists():
+        print(f"Already initialised. Delete {STATE_FILE} to reset.")
+        return
+
+    today_str = _today_et()
+    print(f"\nInitialising V2 paper portfolio  ({today_str})")
+    print(f"Strategy: {STRATEGY_KEY}\n")
+
+    targets = load_target_weights()
+    print(f"Loaded target weights for {len(targets)} tickers "
+          f"(sum={targets.sum():.4f}).")
+
+    tickers_to_fetch = sorted(set(targets.index) | {CASH_TICKER})
+    print(f"Fetching prices for {len(tickers_to_fetch)} tickers...\n")
+    closes = _fetch_closes_batch(tickers_to_fetch)
+    prices = _latest_prices(closes)
+
+    missing = [t for t in targets.index if t not in prices]
+    if missing:
+        print(f"  [warn] no price for {missing} — dropping from targets.")
+        targets = targets.drop(missing)
+        targets = targets / targets.sum()
+
+    state = {
+        "cash"            : INITIAL_CAPITAL,
+        "positions"       : {},
+        "initial_capital" : INITIAL_CAPITAL,
+        "initialized_date": today_str,
+        "last_eod_date"   : today_str,
+        "last_rebalance"  : today_str,
+        "portfolio_value" : INITIAL_CAPITAL,
+        "strategy"        : STRATEGY_KEY,
+    }
+
+    state = _rebalance_to_targets(state, targets, prices, today_str)
+
+    pv = _portfolio_value(state, prices)
+    state["portfolio_value"] = pv
     save_state(state)
 
-    # Log history
     _append_csv(HISTORY_FILE, {
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "portfolio_value": round(state["portfolio_value"], 2),
+        "date": today_str,
+        "portfolio_value": round(pv, 2),
         "cash": round(state["cash"], 2),
-        "n_positions": len(positions),
+        "invested": round(pv - state["cash"], 2),
+        "n_positions": len(state["positions"]),
+        "daily_return": 0.0,
     })
 
-    pnl = state["portfolio_value"] - state["initial_capital"]
-    print(f"\n  Portfolio value: ${state['portfolio_value']:,.2f}  (P&L: ${pnl:+,.2f})")
-    print(f"  Cash: ${state['cash']:,.2f}")
-    print(f"  Positions: {len(positions)}")
+    print(f"\n{'='*52}")
+    print(f"  Positions   : {len(state['positions'])}")
+    print(f"  Invested    : ${pv - state['cash']:>10,.2f}")
+    print(f"  Cash        : ${state['cash']:>10,.2f}")
+    print(f"  Total value : ${pv:>10,.2f}")
+    print(f"{'='*52}")
+    print(f"\nState -> {STATE_FILE}")
 
 
-# ── Display Functions ─────────────────────────────────────────────────────────
+# ── End-of-day update ────────────────────────────────────────────────────────
+
+def end_of_day_update():
+    """
+    Daily update. On the first trading day of a new month, rebalance to
+    the latest portfolio_weights targets. Otherwise, check trailing stops
+    on all open positions, then snapshot.
+    """
+    state = load_state()
+    if not state:
+        print("No portfolio. Run 'init' first.")
+        return
+
+    today_str = _today_et()
+    if not _is_trading_day():
+        print(f"Today is {datetime.now(ET_ZONE).strftime('%A')} — markets closed, skipping.")
+        return
+    if state.get("last_eod_date") == today_str:
+        print(f"EOD already ran for {today_str} — skipping.")
+        return
+
+    prev_value = state.get("portfolio_value", INITIAL_CAPITAL)
+    print(f"\nEnd-of-day update  ({today_str})\n")
+
+    # Decide whether to rebalance
+    do_rebalance = _is_new_month(state.get("last_rebalance"), today_str)
+
+    # Fetch closes for held + target universe
+    if do_rebalance:
+        targets = load_target_weights()
+        universe = sorted(set(targets.index) | set(state["positions"].keys()) | {CASH_TICKER})
+    else:
+        targets = None
+        universe = sorted(set(state["positions"].keys()) | {CASH_TICKER})
+
+    print(f"Fetching prices for {len(universe)} tickers...\n")
+    closes = _fetch_closes_batch(universe)
+    prices = _latest_prices(closes)
+
+    # Daily trailing-stop check (runs every day, including rebalance day —
+    # a mid-month stop-out reduces the size of the rebalance buy anyway)
+    state = _check_trailing_stops(state, closes, prices, today_str)
+
+    if do_rebalance and targets is not None:
+        print(f"\n  [rebalance] New month — aligning to latest target weights.")
+        # Drop targets we couldn't price
+        targets = targets[[t for t in targets.index if t in prices]]
+        if targets.sum() > 0:
+            targets = targets / targets.sum()
+            state = _rebalance_to_targets(state, targets, prices, today_str)
+            state["last_rebalance"] = today_str
+
+    # Refresh last_close on every held position for the dashboard
+    for t, pos in state["positions"].items():
+        if t in prices:
+            pos["last_close"] = prices[t]
+
+    pv        = _portfolio_value(state, prices)
+    daily_ret = (pv / prev_value - 1) if prev_value > 0 else 0.0
+    total_ret = (pv / INITIAL_CAPITAL - 1) * 100
+
+    state["portfolio_value"] = pv
+    state["last_eod_date"]   = today_str
+    save_state(state)
+
+    _append_csv(HISTORY_FILE, {
+        "date": today_str,
+        "portfolio_value": round(pv, 2),
+        "cash": round(state["cash"], 2),
+        "invested": round(pv - state["cash"], 2),
+        "n_positions": len(state["positions"]),
+        "daily_return": round(daily_ret * 100, 4),
+    })
+
+    print(f"\n{'='*52}")
+    print(f"  Portfolio value : ${pv:>10,.2f}")
+    print(f"  Cash            : ${state['cash']:>10,.2f}")
+    print(f"  Positions       : {len(state['positions'])}")
+    print(f"  Daily return    : {daily_ret*100:>+8.2f}%")
+    print(f"  Total return    : {total_ret:>+8.2f}%")
+    print(f"  Last rebalance  : {state.get('last_rebalance')}")
+    print(f"{'='*52}")
+
+
+# ── Status ───────────────────────────────────────────────────────────────────
 
 def show_status():
-    """Print current portfolio status."""
     state = load_state()
     if not state:
-        print("  No portfolio. Run 'init' first.")
+        print("No portfolio. Run 'init' first.")
         return
 
     positions = state.get("positions", {})
-    print(f"\n  Portfolio Value: ${state['portfolio_value']:,.2f}")
-    print(f"  Cash:           ${state['cash']:,.2f}")
-    print(f"  Positions:      {len(positions)}")
-    print(f"  Last Rebalance: {state.get('last_rebalance', 'Never')}")
+    pv        = state.get("portfolio_value", INITIAL_CAPITAL)
+    cash      = state.get("cash", 0.0)
+    total_ret = (pv / state.get("initial_capital", INITIAL_CAPITAL) - 1) * 100
+
+    print(f"\nV2 Paper Portfolio")
+    print(f"{'─'*52}")
+    print(f"  Portfolio Value : ${pv:>10,.2f}  ({total_ret:+.2f}%)")
+    print(f"  Cash            : ${cash:>10,.2f}")
+    print(f"  Positions       : {len(positions)}")
+    print(f"  Last EOD        : {state.get('last_eod_date', 'Never')}")
+    print(f"  Last Rebalance  : {state.get('last_rebalance', 'Never')}")
 
     if positions:
-        print(f"\n  {'Ticker':6s} {'Shares':>7s} {'Avg Price':>10s} {'Value':>12s} {'Weight':>7s}")
-        print(f"  {'─'*50}")
+        print(f"\n  {'Ticker':6s} {'Shares':>10s} {'Entry':>9s} {'Last':>9s} "
+              f"{'Value':>12s} {'Weight':>7s} {'P&L%':>7s}")
+        print(f"  {'─'*70}")
+        rows = []
+        for t, p in positions.items():
+            px    = p.get("last_close", p["entry_price"])
+            value = p["shares"] * px
+            rows.append((t, p, value, px))
+        for t, p, value, px in sorted(rows, key=lambda r: -r[2]):
+            weight = value / pv if pv > 0 else 0
+            pnl_pct = (px / p["entry_price"] - 1) * 100
+            print(f"  {t:6s} {p['shares']:>10.4f} ${p['entry_price']:>8.2f} "
+                  f"${px:>8.2f} ${value:>11,.2f} {weight:>6.1%} {pnl_pct:>+6.2f}%")
 
-        total = state["portfolio_value"]
-        for ticker, pos in sorted(positions.items(), key=lambda x: -x[1]["shares"] * x[1]["avg_price"]):
-            value = pos["shares"] * pos["avg_price"]
-            weight = value / total if total > 0 else 0
-            print(f"  {ticker:6s} {pos['shares']:7d} ${pos['avg_price']:9.2f} ${value:11,.2f} {weight:6.1%}")
 
+# ── Orders preview ───────────────────────────────────────────────────────────
 
 def show_orders():
-    """Generate and display IB-compatible orders without executing."""
+    """Compute what a rebalance would do right now without executing."""
     state = load_state()
     if not state:
-        print("  No portfolio. Run 'init' first.")
+        print("No portfolio. Run 'init' first.")
         return
 
-    target_weights = compute_target_weights()
-    tickers = list(set(get_tickers()) | set(state.get("positions", {}).keys()))
-    prices = get_current_prices(tickers)
+    today_str = _today_et()
+    targets   = load_target_weights()
+    universe  = sorted(set(targets.index) | set(state["positions"].keys()) | {CASH_TICKER})
+    closes    = _fetch_closes_batch(universe)
+    prices    = _latest_prices(closes)
+    pv        = _portfolio_value(state, prices)
 
-    # Update portfolio value
-    positions = state.get("positions", {})
-    position_value = sum(
-        pos["shares"] * prices.get(ticker, pos.get("avg_price", 0))
-        for ticker, pos in positions.items()
-    )
-    state["portfolio_value"] = state["cash"] + position_value
+    targets = targets[[t for t in targets.index if t in prices]]
+    targets = targets / targets.sum()
 
-    orders = generate_orders(target_weights, prices, state)
+    rows = []
+    for t in sorted(set(targets.index) | set(state["positions"].keys())):
+        px    = prices.get(t)
+        if px is None or px <= 0:
+            continue
+        tgt_w = float(targets.get(t, 0.0))
+        cur_v = state["positions"].get(t, {}).get("shares", 0.0) * px
+        tgt_v = tgt_w * pv
+        delta = tgt_v - cur_v
+        if abs(delta) < REBAL_THRESHOLD * pv:
+            continue
+        rows.append({
+            "ticker"     : t,
+            "action"     : "BUY" if delta > 0 else "SELL",
+            "shares"     : round(abs(delta) / px, 4),
+            "price"      : round(px, 2),
+            "notional"   : round(abs(delta), 2),
+            "target_pct" : round(tgt_w * 100, 2),
+            "current_pct": round(cur_v / pv * 100, 2) if pv > 0 else 0.0,
+        })
 
-    if not orders:
-        print("  No orders needed — portfolio within rebalance threshold.")
+    if not rows:
+        print("No orders — portfolio within rebalance threshold.")
         return
 
-    print(f"\n  IB Order List ({len(orders)} orders)")
-    print(f"  {'Action':6s} {'Qty':>6s} {'Ticker':6s} {'Type':5s} {'Notional':>12s} {'Target':>7s}")
-    print(f"  {'─'*50}")
-    total_notional = 0
-    for o in orders:
-        print(f"  {o['action']:6s} {o['quantity']:6d} {o['ticker']:6s} {o['order_type']:5s} "
-              f"${o['notional']:11,.2f} {o['target_weight']:6.1f}%")
-        total_notional += o["notional"]
+    # Sells first, then buys (free cash before deploying)
+    rows.sort(key=lambda r: (r["action"] == "BUY", -r["notional"]))
+    df = pd.DataFrame(rows)
+    df.to_csv(ORDERS_FILE, index=False)
 
-    print(f"\n  Total turnover: ${total_notional:,.2f} ({total_notional/state['portfolio_value']*100:.1f}% of portfolio)")
-
-    # Save orders to CSV for IB import
-    orders_df = pd.DataFrame(orders)
-    orders_df.to_csv(ORDERS_FILE, index=False)
+    print(f"\nRebalance preview  ({today_str})  — {len(rows)} orders")
+    print(f"{'─'*72}")
+    print(f"  {'Action':6s} {'Ticker':6s} {'Shares':>10s} {'Price':>9s} "
+          f"{'Notional':>12s} {'Cur%':>7s} {'Tgt%':>7s}")
+    for r in rows:
+        print(f"  {r['action']:6s} {r['ticker']:6s} {r['shares']:>10.4f} "
+              f"${r['price']:>8.2f} ${r['notional']:>11,.2f} "
+              f"{r['current_pct']:>6.2f}% {r['target_pct']:>6.2f}%")
+    turnover = sum(r["notional"] for r in rows)
+    print(f"\n  Total turnover: ${turnover:,.2f} ({turnover/pv*100:.1f}% of PV)")
     print(f"  Orders saved to {ORDERS_FILE}")
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+def _usage():
+    print("Usage: python -m v2.scripts.paper_trader {init|run|status|orders}")
+
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) < 2:
-        print("Usage: python -m v2.paper_trader {init|rebalance|status|orders}")
-        sys.exit(1)
-
+        _usage(); sys.exit(1)
     cmd = sys.argv[1].lower()
-
     if cmd == "init":
-        capital = float(sys.argv[2]) if len(sys.argv) > 2 else INITIAL_CAPITAL
-        init_portfolio(capital)
-    elif cmd == "rebalance":
-        execute_rebalance()
+        init_portfolio()
+    elif cmd == "run":
+        end_of_day_update()
     elif cmd == "status":
         show_status()
     elif cmd == "orders":
         show_orders()
     else:
         print(f"Unknown command: {cmd}")
-        print("Usage: python -m v2.paper_trader {init|rebalance|status|orders}")
-        sys.exit(1)
+        _usage(); sys.exit(1)

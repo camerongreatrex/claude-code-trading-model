@@ -32,6 +32,7 @@ from v2.ui.charts import (
     chart_walk_forward, chart_monthly_heatmap,
     chart_regime_stack, chart_regime_label_strip, chart_current_allocation,
     chart_macro_overlay, chart_regime_bars,
+    chart_paper_portfolio, chart_regime_transitions,
 )
 from v2.ui.data_loaders import (
     load_equity_curves, load_net_returns, load_portfolio_weights,
@@ -61,7 +62,7 @@ def _delta_vs_spy(stat_val: float, spy_val: float, fmt: str = "{:+.1%}",
     return fmt.format(diff)
 
 
-def render_header(eq_df: pd.DataFrame):
+def render_header(eq_df: pd.DataFrame, wf: pd.DataFrame | None = None):
     lcol, rcol = st.columns([3, 1])
     with lcol:
         st.markdown("## 📈 V2 Macro Regime Rotation — Dashboard")
@@ -91,33 +92,66 @@ def render_header(eq_df: pd.DataFrame):
     m = metrics(strat_ret)
     ms = metrics(spy_ret) if not spy_ret.empty else {}
 
+    # OOS Sharpe from walk-forward: mean of OOS windows when available
+    oos_sharpe = None
+    if wf is not None and not wf.empty and "oos_sharpe" in wf.columns:
+        oos_sharpe = float(wf["oos_sharpe"].mean())
+    sharpe_disp = oos_sharpe if oos_sharpe is not None else m["sharpe"]
+
+    # Active Sharpe — walk-forward OOS active return (strategy − SPY) Sharpe
+    active_sharpe = None
+    active_ret = strat_ret - spy_ret.reindex(strat_ret.index).fillna(0) if not spy_ret.empty else None
+    if active_ret is not None and not active_ret.empty:
+        vol = active_ret.std() * (252 ** 0.5)
+        active_sharpe = (active_ret.mean() * 252) / vol if vol > 0 else None
+
+    pf = m.get("profit_factor", float("inf"))
+
     st.markdown('<div class="section-head">Full-sample out-of-sample performance</div>',
                 unsafe_allow_html=True)
-    cols = st.columns(8)
+
+    cols = st.columns(9)
+
+    def _delta(val, ref, pct=True):
+        d = val - ref
+        return f"{d*100:+.1f}%" if pct else f"{d:+.2f}"
 
     with cols[0]:
-        delta = _delta_vs_spy(m["ann_r"], ms.get("ann_r", 0))
-        st.metric("Ann. Return", f"{m['ann_r']*100:.1f}%", delta=delta)
+        st.metric("Ann. Return", f"{m['ann_r']*100:.1f}%",
+                  delta=_delta(m['ann_r'], ms.get('ann_r', 0)),
+                  help="CAGR over the backtest. Arrow shows vs SPY buy & hold.")
     with cols[1]:
-        delta = _delta_vs_spy(m["sharpe"], ms.get("sharpe", 0), fmt="{:+.2f}")
-        st.metric("Sharpe", f"{m['sharpe']:.2f}", delta=delta)
+        st.metric("Sharpe Ratio", f"{sharpe_disp:.2f}",
+                  delta=_delta(sharpe_disp, ms.get('sharpe', 0), pct=False),
+                  help="OOS walk-forward Sharpe when available; else full-sample. "
+                       ">1.0 good, >2.0 exceptional. Arrow vs SPY.")
     with cols[2]:
-        delta = _delta_vs_spy(m["vol"], ms.get("vol", 0))
-        st.metric("Volatility", f"{m['vol']*100:.1f}%", delta=delta,
-                  delta_color="inverse")
+        st.metric("Volatility", f"{m['vol']*100:.1f}%",
+                  delta=_delta(m['vol'], ms.get('vol', 0)), delta_color="inverse",
+                  help="Annualised std of daily returns. Lower = smoother ride.")
     with cols[3]:
-        delta = _delta_vs_spy(m["max_dd"], ms.get("max_dd", 0))
-        st.metric("Max DD", f"{m['max_dd']*100:.1f}%", delta=delta)
+        st.metric("Max Drawdown", f"{m['max_dd']*100:.1f}%",
+                  delta=_delta(m['max_dd'], ms.get('max_dd', 0)),
+                  help="Worst peak-to-trough loss. Green arrow = shallower than SPY.")
     with cols[4]:
-        delta = _delta_vs_spy(m["calmar"], ms.get("calmar", 0), fmt="{:+.2f}")
-        st.metric("Calmar", f"{m['calmar']:.2f}", delta=delta)
+        st.metric("Calmar Ratio", f"{m['calmar']:.2f}",
+                  delta=_delta(m['calmar'], ms.get('calmar', 0), pct=False),
+                  help="Annualised return / |max DD|. >1.0 good.")
     with cols[5]:
-        st.metric("Win Rate", f"{m['win_rate']*100:.0f}%")
+        st.metric("Win Rate", f"{m['win_rate']*100:.0f}%",
+                  help="Percentage of active trading days with positive returns.")
     with cols[6]:
-        st.metric("VaR 95% (1d)", f"{m['var_95']*100:.2f}%")
+        st.metric("Profit Factor", f"{pf:.2f}" if pf < 100 else "∞",
+                  help="Gross profit ÷ gross loss on daily returns. >1.5 good.")
     with cols[7]:
-        total = m["total"]
-        st.metric("Total Return", f"{total*100:+.0f}%")
+        st.metric("Active Sharpe",
+                  f"{active_sharpe:.2f}" if active_sharpe is not None else "—",
+                  help="Sharpe of excess returns (strategy − SPY). "
+                       ">0.5 = meaningful alpha.")
+    with cols[8]:
+        st.metric("VaR 95% (1d)", f"{m['var_95']*100:.2f}%",
+                  delta=_delta(m['var_95'], ms.get('var_95', 0)), delta_color="inverse",
+                  help="Daily 95% historical VaR. Lower = smaller tail risk.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -132,15 +166,15 @@ def main():
     market = load_market_features()
     prices = load_etf_prices()
 
-    render_header(eq_df)
+    render_header(eq_df, wf)
 
-    tab_port, tab_regime, tab_paper, tab_bt, tab_val, tab_risk = st.tabs([
-        "  📊  Portfolio",
-        "  🧭  Regime",
-        "  💼  Paper Trading",
-        "  🧪  Backtest",
-        "  🧯  Validation",
-        "  🎲  Risk",
+    tab_port, tab_sig, tab_sp, tab_bt, tab_val, tab_risk = st.tabs([
+        "  📈  Portfolio",
+        "  📡  Signals",
+        "  📊  vs S&P 500",
+        "  🔬  Backtest",
+        "  🔍  Validation",
+        "  ⚠️  Risk",
     ])
 
     # ── Portfolio tab ────────────────────────────────────────────────────────
@@ -181,8 +215,8 @@ def main():
                 config={"scrollZoom": False, "displayModeBar": False},
             )
 
-    # ── Regime tab ───────────────────────────────────────────────────────────
-    with tab_regime:
+    # ── Signals tab (regime transitions + current allocation) ───────────────
+    with tab_sig:
         if probs.empty:
             st.info("No regime probabilities found.")
         else:
@@ -207,6 +241,13 @@ def main():
                           delta=f"{(bear-0.45)*100:+.0f}pp vs gate")
             with k4:
                 st.metric("As of", str(c_date))
+
+            if not labels.empty:
+                st.plotly_chart(
+                    chart_regime_transitions(labels, lookback_days=252),
+                    theme=None, use_container_width=True,
+                    config={"scrollZoom": False, "displayModeBar": False},
+                )
 
             st.plotly_chart(
                 chart_regime_stack(probs.loc["2008":]),
@@ -283,29 +324,53 @@ def main():
                     st.dataframe(pd.DataFrame(rows), use_container_width=True,
                                  hide_index=True)
 
-    # ── Paper trading tab ────────────────────────────────────────────────────
-    with tab_paper:
+    # ── vs S&P 500 tab (live paper trader view) ─────────────────────────────
+    with tab_sp:
         state = load_paper_state()
         hist = load_paper_history()
         trades = load_paper_trades()
 
         if not state:
             st.info("Paper trading not yet initialized. Run "
-                    "`python -m v2.scripts.paper_trader --init`.")
+                    "`python -m v2.scripts.paper_trader init`.")
         else:
-            p1, p2, p3, p4 = st.columns(4)
+            nav = state.get("nav", state.get("portfolio_value",
+                                              state.get("equity", 100_000)))
+            cash = state.get("cash", 0)
+            n_pos = len(state.get("positions", {}))
+            last_rebal = state.get("last_rebalance",
+                                   state.get("last_eod_date", "—"))
+            init_cap = state.get("initial_capital", 100_000)
+            total_ret = (nav / init_cap - 1) * 100 if init_cap else 0.0
+
+            p1, p2, p3, p4, p5 = st.columns(5)
             with p1:
-                nav = state.get("nav", state.get("equity", 100_000))
-                st.metric("NAV", f"${nav:,.0f}")
+                st.metric("NAV", f"${nav:,.0f}",
+                          delta=f"{total_ret:+.2f}% vs start")
             with p2:
-                cash = state.get("cash", 0)
                 st.metric("Cash", f"${cash:,.0f}")
             with p3:
-                n_pos = len(state.get("positions", {}))
                 st.metric("Open positions", n_pos)
             with p4:
-                last_rebal = state.get("last_rebalance", "—")
                 st.metric("Last rebalance", str(last_rebal))
+            with p5:
+                st.metric("Total trades", len(trades) if not trades.empty else 0)
+
+            # Paper portfolio chart with SPY overlay
+            spy_curve = eq_df["spy"] * init_cap if "spy" in eq_df.columns and not eq_df.empty else None
+            entry_value = None
+            if not hist.empty and "portfolio_value" in hist.columns:
+                entry_value = float(hist["portfolio_value"].iloc[0])
+            st.plotly_chart(
+                chart_paper_portfolio(
+                    history_df=hist,
+                    trades_df=trades,
+                    spy_curve=spy_curve,
+                    entry_value=entry_value,
+                ),
+                theme=None, use_container_width=True,
+                config={"scrollZoom": True, "displayModeBar": True},
+            )
 
             if state.get("positions"):
                 st.markdown('<div class="section-head">Open positions</div>',
@@ -314,35 +379,24 @@ def main():
                 for ticker, pos in state["positions"].items():
                     if isinstance(pos, dict):
                         qty = pos.get("shares", pos.get("qty", 0))
-                        mval = pos.get("market_value", qty * pos.get("price", 0))
+                        last_close = pos.get("last_close", pos.get("price", 0))
+                        mval = pos.get("market_value",
+                                       qty * last_close if last_close else 0)
+                        cost = pos.get("cost_basis", 0)
+                        pnl = mval - cost if cost else 0
+                        pnl_pct = (pnl / cost * 100) if cost else 0
                         rows.append({
                             "Ticker": ticker,
-                            "Shares": f"{qty:,.0f}",
+                            "Shares": f"{qty:,.2f}",
+                            "Entry": f"${pos.get('entry_price', 0):,.2f}",
+                            "Last": f"${last_close:,.2f}",
                             "Market Value": f"${mval:,.0f}",
                             "Weight": f"{mval / max(nav, 1) * 100:.1f}%",
+                            "P&L": f"${pnl:+,.0f} ({pnl_pct:+.1f}%)",
                         })
                 if rows:
                     st.dataframe(pd.DataFrame(rows), use_container_width=True,
                                  hide_index=True)
-
-            if not hist.empty:
-                st.markdown('<div class="section-head">NAV history</div>',
-                            unsafe_allow_html=True)
-                date_col = "date" if "date" in hist.columns else hist.columns[0]
-                val_col = "nav" if "nav" in hist.columns else "equity" if "equity" in hist.columns else hist.columns[-1]
-                hist[date_col] = pd.to_datetime(hist[date_col])
-                fig = go.Figure(go.Scatter(
-                    x=hist[date_col], y=hist[val_col],
-                    line=dict(color=PALETTE["strategy_net"], width=2),
-                    name="NAV",
-                    hovertemplate="<b>%{x|%Y-%m-%d}</b><br>$%{y:,.0f}<extra></extra>",
-                ))
-                fig.update_layout(**_layout(
-                    height=360, dragmode="pan", uirevision="v2_paper_nav",
-                    yaxis=dict(title="$"),
-                ))
-                st.plotly_chart(fig, theme=None, use_container_width=True,
-                                config={"displayModeBar": False})
 
             if not trades.empty:
                 st.markdown('<div class="section-head">Recent trades</div>',

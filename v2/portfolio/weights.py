@@ -37,6 +37,46 @@ REGIME_DIR = Path("data/v2/regime_features")
 MAX_SINGLE_ETF = 0.30
 MAX_ASSET_CLASS = 0.75   # relaxed from 0.60 — lets expansion regime run hotter on equities
 
+# V1-style safe-haven floor adapted to the V2 universe. VGSH/DBMF/WTMF aren't
+# in V2's 28-ETF set, so we use SHY (short-duration treasuries) and GLD (gold)
+# as crisis-hedge floors that apply regardless of regime. Total 5% drag in
+# pure risk-on regimes; already exceeded in bearish regimes so no effect.
+SAFE_HAVEN_FLOOR = {
+    "SHY": 0.03,   # cash proxy floor; GLD floor tested but cost too much drag
+}
+
+
+def apply_safe_haven_floor(
+    weights: dict[str, float],
+    floor_map: dict[str, float] = SAFE_HAVEN_FLOOR,
+) -> dict[str, float]:
+    """
+    Enforce minimum allocations for safe-haven tickers, scaling risk assets
+    down proportionally to fund any lift. If the regime already allocates
+    more than the floor, the ticker is left alone.
+    """
+    adjusted = dict(weights)
+    need = 0.0
+    for t, min_w in floor_map.items():
+        cur = adjusted.get(t, 0.0)
+        if cur < min_w:
+            need += (min_w - cur)
+            adjusted[t] = min_w
+
+    if need <= 0:
+        return adjusted
+
+    # Scale every non-floor ticker down proportionally to fund the lift
+    floor_keys = set(floor_map.keys())
+    donor_total = sum(w for t, w in adjusted.items() if t not in floor_keys and w > 0)
+    if donor_total <= 0:
+        return adjusted
+    scale = max(0.0, 1.0 - need / donor_total)
+    for t in adjusted:
+        if t not in floor_keys and adjusted[t] > 0:
+            adjusted[t] *= scale
+    return adjusted
+
 
 def blend_regime_allocations(probs: pd.Series) -> dict[str, float]:
     """
@@ -136,15 +176,22 @@ def build_portfolio_weights(
     prices: pd.DataFrame | None = None,
     apply_momentum: bool = True,
     use_cache: bool = False,
+    use_sharpe_weighted: bool = True,
+    labels: pd.Series | None = None,
 ) -> pd.DataFrame:
     """
     Build monthly portfolio weights from regime probabilities.
 
     Args:
         probs: regime probability DataFrame (daily)
-        prices: ETF price DataFrame (for momentum overlay)
+        prices: ETF price DataFrame (for momentum overlay / Sharpe calc)
         apply_momentum: whether to apply cross-asset momentum filter
         use_cache: load cached results if available
+        use_sharpe_weighted: if True, use walk-forward regime-conditioned
+            Sharpe-weighted targets (QUANTT-style). If False, use hand-tuned
+            REGIME_ALLOCATIONS only.
+        labels: monthly or daily regime labels (int 0-5). Required when
+            use_sharpe_weighted=True.
 
     Returns:
         Monthly-frequency DataFrame of portfolio weights.
@@ -160,19 +207,43 @@ def build_portfolio_weights(
     monthly_probs = probs.resample("ME").last().dropna()
 
     all_tickers = get_all_tickers()
+
+    # ── Data-driven Sharpe-weighted targets (QUANTT) ─────────────────────
+    sharpe_targets = None
+    if use_sharpe_weighted and prices is not None:
+        from v2.portfolio.sharpe_weighted import build_sharpe_weighted_targets
+        if labels is None:
+            labels = pd.read_parquet(REGIME_DIR / "regime_labels.parquet")["regime"]
+        monthly_labels = labels.resample("ME").last().dropna()
+        # Align price columns to the union of universe (tickers present in prices)
+        sharpe_targets = build_sharpe_weighted_targets(
+            prices=prices,
+            monthly_probs=monthly_probs,
+            monthly_labels=monthly_labels,
+        )
+
     weights_data = []
 
     for date in monthly_probs.index:
         prob_row = monthly_probs.loc[date]
-        blended = blend_regime_allocations(prob_row)
-        constrained = apply_constraints(blended.copy())
+
+        if sharpe_targets is not None and date in sharpe_targets.index:
+            blended = sharpe_targets.loc[date].to_dict()
+        else:
+            blended = blend_regime_allocations(prob_row)
+
+        # V1-style safe-haven floor before constraints/normalization
+        floored = apply_safe_haven_floor(blended)
+        constrained = apply_constraints(floored)
         normalized = normalize_weights(constrained)
 
-        row = {t: normalized.get(t, 0.0) for t in all_tickers}
+        # Union the ticker universe with hand-tuned set so cash/fallback works
+        full_tickers = set(all_tickers) | set(normalized.keys())
+        row = {t: normalized.get(t, 0.0) for t in full_tickers}
         row["Date"] = date
         weights_data.append(row)
 
-    weights_df = pd.DataFrame(weights_data).set_index("Date")
+    weights_df = pd.DataFrame(weights_data).set_index("Date").fillna(0.0)
 
     # Apply momentum overlay if prices available
     if apply_momentum and prices is not None:
@@ -181,6 +252,11 @@ def build_portfolio_weights(
         # Re-normalize after momentum adjustments
         row_sums = weights_df.sum(axis=1)
         weights_df = weights_df.div(row_sums, axis=0)
+
+    # V1-style RSI entry filter — delay new exposure when tickers are overbought
+    if prices is not None:
+        from v2.risk.entry_filter import apply_rsi_entry_filter_df
+        weights_df = apply_rsi_entry_filter_df(weights_df, prices)
 
     weights_df.to_parquet(cache_path)
     print(f"  Saved portfolio weights: {weights_df.shape} -> {cache_path}")

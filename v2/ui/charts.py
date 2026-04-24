@@ -9,6 +9,8 @@ from plotly.subplots import make_subplots
 
 from v2.ui.styles import _layout, PALETTE, LABELS, get_color, get_label
 
+PAPER_INITIAL_CAPITAL = 100_000
+
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 def metrics(ret: pd.Series) -> dict:
@@ -28,8 +30,12 @@ def metrics(ret: pd.Series) -> dict:
     active = ret[ret != 0]
     wr     = (active > 0).sum() / len(active) if len(active) > 0 else 0
     var_95 = float(-np.percentile(ret, 5))
+    gross_win = ret[ret > 0].sum()
+    gross_loss = -ret[ret < 0].sum()
+    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else float("inf")
     return dict(ann_r=ann_r, vol=vol, sharpe=sharpe, max_dd=max_dd,
-                calmar=calmar, win_rate=wr, total=total, var_95=var_95)
+                calmar=calmar, win_rate=wr, total=total, var_95=var_95,
+                profit_factor=profit_factor)
 
 
 def metrics_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -40,15 +46,17 @@ def metrics_table(df: pd.DataFrame) -> pd.DataFrame:
         m = metrics(ret)
         if not m:
             continue
+        pf = m.get("profit_factor", float("inf"))
         rows.append({
-            "Method"      : get_label(col),
-            "Ann. Return" : f"{m['ann_r']*100:+.1f}%",
-            "Volatility"  : f"{m['vol']*100:.1f}%",
-            "Sharpe"      : f"{m['sharpe']:.2f}",
-            "Max DD"      : f"{m['max_dd']*100:.1f}%",
-            "Calmar"      : f"{m['calmar']:.2f}",
-            "Win Rate"    : f"{m['win_rate']*100:.0f}%",
-            "VaR 95%"     : f"{m['var_95']*100:.2f}%",
+            "Method"         : get_label(col),
+            "Ann. Return"    : f"{m['ann_r']*100:+.1f}%",
+            "Volatility"     : f"{m['vol']*100:.1f}%",
+            "Sharpe"         : f"{m['sharpe']:.2f}",
+            "Max DD"         : f"{m['max_dd']*100:.1f}%",
+            "Calmar"         : f"{m['calmar']:.2f}",
+            "Win Rate"       : f"{m['win_rate']*100:.0f}%",
+            "Profit Factor"  : f"{pf:.2f}" if pf < 100 else "∞",
+            "VaR 95%"        : f"{m['var_95']*100:.2f}%",
         })
     return pd.DataFrame(rows)
 
@@ -416,6 +424,195 @@ def chart_regime_bars(attribution: dict, height: int = 340) -> go.Figure:
         height=height, uirevision="v2_regime_bars",
         title=dict(text="Per-regime net Sharpe", font=dict(size=13)),
         yaxis=dict(title="Sharpe"),
+        showlegend=False,
+    ))
+    return fig
+
+
+# ── Paper portfolio chart (V1-style, adapted for V2) ──────────────────────────
+def chart_paper_portfolio(
+    history_df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    spy_curve: pd.Series | None = None,
+    entry_value: float | None = None,
+    height: int = 460,
+) -> go.Figure:
+    """
+    V1-style paper portfolio equity curve for V2. Shows:
+      - Daily NAV as candlesticks (open/close bracket each day)
+      - SPY benchmark normalised to the same starting NAV (dotted purple)
+      - BUY / SELL markers (triangles) on trade dates
+      - Reference lines at $100k start and optional entry value
+    """
+    fig = go.Figure()
+
+    # ── Daily NAV candlesticks ──────────────────────────────────────────────
+    if not history_df.empty and "portfolio_value" in history_df.columns:
+        hist = history_df.copy()
+        hist["date"] = pd.to_datetime(hist["date"])
+        # Drop market-holiday duplicates
+        hist = hist[hist["portfolio_value"].ne(hist["portfolio_value"].shift(1))].reset_index(drop=True)
+        if not hist.empty:
+            closes = hist["portfolio_value"].values
+            opens = np.concatenate([[closes[0]], closes[:-1]])
+            highs = np.maximum(opens, closes)
+            lows = np.minimum(opens, closes)
+            fig.add_trace(go.Candlestick(
+                x=hist["date"],
+                open=opens, high=highs, low=lows, close=closes,
+                name="NAV (daily)",
+                increasing=dict(line=dict(color="#50fa7b", width=1.2),
+                                fillcolor="rgba(80,250,123,0.7)"),
+                decreasing=dict(line=dict(color="#ff5555", width=1.2),
+                                fillcolor="rgba(255,85,85,0.7)"),
+            ))
+
+    # ── SPY benchmark overlay (normalised) ──────────────────────────────────
+    if spy_curve is not None and not spy_curve.empty and not history_df.empty:
+        start_nav = float(history_df["portfolio_value"].iloc[0])
+        spy_aligned = spy_curve.reindex(pd.to_datetime(history_df["date"]), method="ffill")
+        if len(spy_aligned.dropna()) > 0:
+            spy_norm = spy_aligned / spy_aligned.dropna().iloc[0] * start_nav
+            fig.add_trace(go.Scatter(
+                x=history_df["date"], y=spy_norm.values,
+                name="SPY (normalised)",
+                line=dict(color=PALETTE["spy"], width=1.6, dash="dot"),
+                hovertemplate="<b>SPY</b> %{x|%b %d}<br>$%{y:,.0f}<extra></extra>",
+            ))
+
+    # ── Trade markers ───────────────────────────────────────────────────────
+    if not trades_df.empty and not history_df.empty:
+        t = trades_df.copy()
+        t["date"] = pd.to_datetime(t["date"])
+        hist = history_df.copy()
+        hist["date"] = pd.to_datetime(hist["date"])
+        hist_val = hist.set_index("date")["portfolio_value"]
+        last_pv = float(hist_val.iloc[-1])
+
+        def _marker_rows(subset: pd.DataFrame) -> pd.DataFrame:
+            g = (subset.groupby(subset["date"].dt.normalize())["ticker"]
+                 .apply(lambda x: ", ".join(sorted(set(x))))
+                 .reset_index())
+            g.columns = ["date", "tickers"]
+            g["y"] = g["date"].map(lambda d: float(hist_val.get(d, last_pv)))
+            g["n"] = g["tickers"].str.split(",").str.len()
+            return g
+
+        buys = t[t["action"] == "BUY"]
+        sells = t[t["action"] == "SELL"]
+        if not buys.empty:
+            bg = _marker_rows(buys)
+            fig.add_trace(go.Scatter(
+                x=bg["date"], y=bg["y"],
+                mode="markers+text", name="Buy",
+                marker=dict(symbol="triangle-up", size=13,
+                            color=PALETTE["pos"],
+                            line=dict(color="#1c1c1c", width=1)),
+                text=bg["n"].apply(lambda n: f"+{n}"),
+                textposition="top center",
+                textfont=dict(size=9, color=PALETTE["pos"]),
+                customdata=bg["tickers"].tolist(),
+                hovertemplate="<b>BUY — %{customdata}</b><br>%{x|%b %d, %Y}<extra></extra>",
+            ))
+        if not sells.empty:
+            sg = _marker_rows(sells)
+            fig.add_trace(go.Scatter(
+                x=sg["date"], y=sg["y"],
+                mode="markers+text", name="Sell",
+                marker=dict(symbol="triangle-down", size=13,
+                            color=PALETTE["neg"],
+                            line=dict(color="#1c1c1c", width=1)),
+                text=sg["n"].apply(lambda n: f"−{n}"),
+                textposition="bottom center",
+                textfont=dict(size=9, color=PALETTE["neg"]),
+                customdata=sg["tickers"].tolist(),
+                hovertemplate="<b>SELL — %{customdata}</b><br>%{x|%b %d, %Y}<extra></extra>",
+            ))
+
+    fig.add_hline(
+        y=PAPER_INITIAL_CAPITAL, line_color="#444", line_dash="dot", line_width=1,
+        annotation_text=f"  Start ${PAPER_INITIAL_CAPITAL/1000:.0f}k",
+        annotation_font_color="#555",
+    )
+    if entry_value and abs(entry_value - PAPER_INITIAL_CAPITAL) > 1:
+        fig.add_hline(
+            y=entry_value, line_color="#666", line_dash="dash", line_width=1,
+            annotation_text=f"  Entry ${entry_value:,.0f}",
+            annotation_font_color="#888",
+        )
+
+    fig.update_layout(**_layout(
+        height=height, uirevision="v2_paper_portfolio",
+        title=dict(text="Paper Portfolio — Equity Curve vs SPY", font=dict(size=13)),
+        dragmode="pan",
+        yaxis=dict(title=dict(text="Value ($)", standoff=20),
+                   tickprefix="$", tickformat=",.0f",
+                   autorange=True, fixedrange=False),
+        xaxis=dict(type="date", tickformat="%b %d\n%Y",
+                   rangeslider=dict(visible=False),
+                   rangeselector=dict(
+                       bgcolor="#252525", activecolor="#3a3a3a",
+                       bordercolor="#444",
+                       font=dict(color="#c0c0c0", size=10),
+                       buttons=[
+                           dict(count=7, label="1W", step="day", stepmode="backward"),
+                           dict(count=1, label="1M", step="month", stepmode="backward"),
+                           dict(count=3, label="3M", step="month", stepmode="backward"),
+                           dict(step="all", label="All"),
+                       ],
+                   )),
+    ))
+    return fig
+
+
+# ── Regime transition signals ────────────────────────────────────────────────
+def chart_regime_transitions(labels: pd.Series, lookback_days: int = 252,
+                              height: int = 320) -> go.Figure:
+    """Regime label strip zoomed to the last N days with transition markers."""
+    from v2.ui.styles import PALETTE
+
+    regime_map = {0: "expansion", 1: "slowdown", 2: "recession",
+                  3: "recovery", 4: "stagflation", 5: "late_cycle"}
+    recent = labels.tail(lookback_days)
+    if recent.empty:
+        return go.Figure()
+
+    fig = go.Figure()
+    # Shaded background bands per regime
+    changes = recent.ne(recent.shift()).cumsum()
+    for seg_id, seg in recent.groupby(changes):
+        rname = regime_map.get(int(seg.iloc[0]), "expansion")
+        color = PALETTE.get(rname, "#888")
+        fig.add_shape(
+            type="rect",
+            x0=seg.index[0], x1=seg.index[-1],
+            y0=0, y1=1, yref="paper",
+            fillcolor=color, opacity=0.25, line=dict(width=0),
+            layer="below",
+        )
+
+    # Transition markers
+    transitions = recent[recent.ne(recent.shift()).fillna(False)]
+    if not transitions.empty:
+        labels_text = [regime_map.get(int(v), "?").replace("_", " ").title()
+                       for v in transitions.values]
+        fig.add_trace(go.Scatter(
+            x=transitions.index, y=[0.5] * len(transitions),
+            mode="markers+text",
+            marker=dict(size=10, color="#ffffff",
+                        line=dict(color="#1c1c1c", width=1)),
+            text=labels_text, textposition="top center",
+            textfont=dict(size=10, color="#c0c0c0"),
+            name="Regime change",
+            hovertemplate="<b>%{text}</b><br>%{x|%Y-%m-%d}<extra></extra>",
+        ))
+
+    fig.update_layout(**_layout(
+        height=height, uirevision="v2_regime_transitions",
+        title=dict(text=f"Regime transitions — last {lookback_days} trading days",
+                   font=dict(size=13)),
+        yaxis=dict(visible=False, range=[0, 1]),
+        xaxis=dict(showgrid=False),
         showlegend=False,
     ))
     return fig

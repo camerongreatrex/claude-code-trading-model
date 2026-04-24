@@ -294,7 +294,10 @@ def walk_forward_backtest(
         if len(test_probs) < 20:
             continue
 
-        test_weights = build_portfolio_weights(test_probs, prices, apply_momentum=False)
+        test_weights = build_portfolio_weights(
+            test_probs, prices, apply_momentum=False, labels=labels,
+            use_sharpe_weighted=True,
+        )
         test_returns = compute_portfolio_returns(test_weights, prices)
         test_returns = test_returns.loc[w["test_start"]:w["test_end"]]
 
@@ -322,9 +325,12 @@ def run_full_backtest() -> dict:
     market_features = pd.read_parquet(REGIME_DIR / "market_features.parquet")
     stress_scores = market_features["stress_score"] if "stress_score" in market_features.columns else pd.Series(dtype=float)
 
-    # 3. Build portfolio weights
+    # 3. Build portfolio weights (walk-forward Sharpe-weighted, QUANTT-style)
     print("  [3/7] Building portfolio weights...")
-    weights = build_portfolio_weights(probs, prices, apply_momentum=True)
+    weights = build_portfolio_weights(
+        probs, prices, apply_momentum=True, labels=labels,
+        use_sharpe_weighted=True,
+    )
 
     # 4. Compute gross returns
     print("  [4/7] Computing gross returns...")
