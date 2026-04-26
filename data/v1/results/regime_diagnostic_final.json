@@ -1,0 +1,44 @@
+{
+  "regime_stats": {
+    "bull_calm": {
+      "pct_days": 51.2,
+      "avg_daily_return_pct": 0.0927,
+      "avg_daily_spy_pct": 0.1679,
+      "daily_alpha_bps": -7.53,
+      "avg_gross_pct": 83.6,
+      "avg_positions": 30.2
+    },
+    "bull_stress": {
+      "pct_days": 22.4,
+      "avg_daily_return_pct": -0.0419,
+      "avg_daily_spy_pct": -0.0237,
+      "daily_alpha_bps": -1.82,
+      "avg_gross_pct": 82.3,
+      "avg_positions": 26.7
+    },
+    "bear_calm": {
+      "pct_days": 7.0,
+      "avg_daily_return_pct": 0.0269,
+      "avg_daily_spy_pct": 0.2658,
+      "daily_alpha_bps": -23.89,
+      "avg_gross_pct": 46.5,
+      "avg_positions": 13.7
+    },
+    "bear_stress": {
+      "pct_days": 19.5,
+      "avg_daily_return_pct": -0.0303,
+      "avg_daily_spy_pct": -0.2027,
+      "daily_alpha_bps": 17.24,
+      "avg_gross_pct": 66.1,
+      "avg_positions": 16.9
+    }
+  },
+  "upside_capture": 0.333,
+  "downside_capture": 0.296,
+  "hit_rate_spy_big_pct": 85.0,
+  "avg_positions_bull_calm": 30.2,
+  "avg_positions_bear_stress": 16.9,
+  "avg_gross_bull_calm_pct": 83.6,
+  "avg_gross_bear_stress_pct": 66.1,
+  "ols_beta": 0.184
+}

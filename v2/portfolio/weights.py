@@ -45,6 +45,109 @@ SAFE_HAVEN_FLOOR = {
     "SHY": 0.03,   # cash proxy floor; GLD floor tested but cost too much drag
 }
 
+# Low-quality regime override. When dominant regime (by probability) is one of
+# these, blend the regime's target with a pure defensive basket to cut
+# drawdowns. Calibrated from attribution: Late Cycle and Recovery historically
+# produce Sharpe < 0.4. Each regime gets its own basket and blend strength
+# because they fail differently — Late Cycle drifts sideways with creeping
+# correlation, Recovery whipsaws hard.
+LOW_QUALITY_REGIMES = {"late_cycle", "recovery"}
+# Per-regime blend ceilings/floors. Late Cycle gets the heaviest defensive
+# tilt because it's the largest drag (20.9% of time × 0.34 Sharpe).
+LATE_CYCLE_BLEND_MAX = 0.70    # max prob-weighted tilt toward late-cycle basket
+LATE_CYCLE_BLEND_MIN = 0.45    # floor when late_cycle is dominant regime
+RECOVERY_BLEND_MAX = 0.55
+RECOVERY_BLEND_MIN = 0.30
+# Hard cap on combined defensive tilt across both regimes; keeps the regime
+# book contributing at least (1 - COMBINED_OVERRIDE_CAP) of the position.
+COMBINED_OVERRIDE_CAP = 0.80
+# Late-cycle-specific basket — heavy gold + intermediate-duration treasuries +
+# vol-selling / low-vol equity for the small risky sliver. Late cycle is
+# usually choppy/sideways: PBP (buy-write) harvests the elevated vol premium,
+# USMV reduces beta below SPY. Pre-2011 USMV/PBP weights act like cash drag,
+# acceptable trade-off for post-2011 lift.
+LATE_CYCLE_BASKET = {
+    "SHY": 0.30,
+    "IEF": 0.25,
+    "TLT": 0.15,
+    "GLD": 0.20,
+    "TIP": 0.05,
+    "XLP": 0.03,   # consumer staples — quality defensive equity sliver
+    "XLU": 0.02,   # utilities
+}
+# Recovery basket — heavier cash to ride out classifier noise, less duration
+# (rates often rising into recovery so duration risks loss).
+RECOVERY_BASKET = {
+    "SHY": 0.55,
+    "IEF": 0.15,
+    "GLD": 0.20,
+    "TLT": 0.05,
+    "TIP": 0.05,
+}
+# Backwards-compatible alias used by older tests/refs
+DEFENSIVE_BASKET = LATE_CYCLE_BASKET
+
+
+def apply_low_quality_override(
+    weights: dict[str, float],
+    probs: pd.Series,
+) -> dict[str, float]:
+    """
+    Probability-weighted defensive tilt. Each low-quality regime contributes a
+    fractional tilt toward its own basket proportional to its current
+    probability — regardless of whether it's the dominant regime. This lets
+    the strategy de-risk gradually as classifier suspicion of late_cycle
+    rises, rather than waiting for a hard idxmax flip.
+
+        tilt_i = clip(prob_i, 0, BLEND_MAX_i)        # per regime
+        total_tilt = clip(sum(tilt_i), 0, COMBINED_CAP)
+        weights_new = (1-total_tilt)*orig + sum(tilt_i * basket_i) / total_tilt
+
+    Late Cycle gets the heaviest cap because it's the largest drag (20.9% of
+    time × 0.34 Sharpe). Recovery is rarer but more violent (-1.1 Sharpe).
+    """
+    if len(probs) == 0:
+        return weights
+
+    p_late = max(0.0, float(probs.get("late_cycle", 0.0)))
+    p_rec  = max(0.0, float(probs.get("recovery", 0.0)))
+
+    # Scale each regime's contribution: its raw prob, clipped at its max blend
+    tilt_late = min(p_late, LATE_CYCLE_BLEND_MAX)
+    tilt_rec  = min(p_rec,  RECOVERY_BLEND_MAX)
+    total_tilt = min(tilt_late + tilt_rec, COMBINED_OVERRIDE_CAP)
+    if total_tilt <= 1e-9:
+        return weights
+
+    # Apply per-regime floor: if either is the dominant regime, lift its tilt
+    # to its MIN floor so weak-but-decisive signals still trigger meaningful
+    # de-risking.
+    dominant = probs.idxmax()
+    if dominant == "late_cycle":
+        tilt_late = max(tilt_late, LATE_CYCLE_BLEND_MIN)
+    elif dominant == "recovery":
+        tilt_rec = max(tilt_rec, RECOVERY_BLEND_MIN)
+    total_tilt = min(tilt_late + tilt_rec, COMBINED_OVERRIDE_CAP)
+
+    # Compose blended defensive target weighted by per-regime tilts
+    rebalance = total_tilt / (tilt_late + tilt_rec) if (tilt_late + tilt_rec) > 0 else 0.0
+    tilt_late *= rebalance
+    tilt_rec  *= rebalance
+
+    all_tickers = set(weights.keys()) | set(LATE_CYCLE_BASKET.keys()) | set(RECOVERY_BASKET.keys())
+    blended = {}
+    for t in all_tickers:
+        orig = weights.get(t, 0.0)
+        def_w = (
+            tilt_late * LATE_CYCLE_BASKET.get(t, 0.0)
+            + tilt_rec * RECOVERY_BASKET.get(t, 0.0)
+        )
+        blended[t] = (1 - total_tilt) * orig + def_w
+    total = sum(blended.values())
+    if total > 0:
+        blended = {t: v / total for t, v in blended.items()}
+    return blended
+
 
 def apply_safe_haven_floor(
     weights: dict[str, float],
@@ -203,7 +306,10 @@ def build_portfolio_weights(
     if probs is None:
         probs = pd.read_parquet(REGIME_DIR / "regime_probabilities.parquet")
 
-    # Resample to month-end (rebalance dates)
+    # Monthly rebalance (month-end). Tested faster cadences with rigorous
+    # lookahead-corrected returns; gains were marginal once the bias was
+    # removed (monthly→weekly: ~+0.05 Sharpe at +25 bps cost). Monthly
+    # remains the production default for simplicity and lower turnover.
     monthly_probs = probs.resample("ME").last().dropna()
 
     all_tickers = get_all_tickers()
@@ -232,6 +338,10 @@ def build_portfolio_weights(
         else:
             blended = blend_regime_allocations(prob_row)
 
+        # Low-quality regime override: blend with defensive basket when the
+        # dominant regime has historically produced poor risk-adjusted returns.
+        blended = apply_low_quality_override(blended, prob_row)
+
         # V1-style safe-haven floor before constraints/normalization
         floored = apply_safe_haven_floor(blended)
         constrained = apply_constraints(floored)
@@ -245,6 +355,25 @@ def build_portfolio_weights(
 
     weights_df = pd.DataFrame(weights_data).set_index("Date").fillna(0.0)
 
+    # Cross-sectional momentum sleeve — small (10%) blend, picks top-N risky
+    # assets by trailing 12-1 return.
+    if prices is not None:
+        from v2.portfolio.cross_momentum import (
+            build_cross_momentum_sleeve, blend_books,
+        )
+        mom_sleeve = build_cross_momentum_sleeve(prices, monthly_probs)
+        weights_df = blend_books(weights_df, mom_sleeve, momentum_weight=0.10)
+
+    # Managed-futures (CTA) trend sleeve — pure time-series momentum across a
+    # cross-asset universe. Long if instrument is above 200d MA AND has
+    # positive 12m return; cash otherwise. Vol-scaled per instrument. Adds
+    # crisis-period diversification (long bonds in 2008, long commodities
+    # in 2022) that the regime classifier tends to lag.
+    if prices is not None:
+        from v2.portfolio.managed_futures import build_managed_futures_sleeve
+        mf_sleeve = build_managed_futures_sleeve(prices, monthly_probs.index)
+        weights_df = blend_books(weights_df, mf_sleeve, momentum_weight=0.20)
+
     # Apply momentum overlay if prices available
     if apply_momentum and prices is not None:
         from v2.portfolio.momentum_overlay import apply_momentum_overlay_df
@@ -252,6 +381,12 @@ def build_portfolio_weights(
         # Re-normalize after momentum adjustments
         row_sums = weights_df.sum(axis=1)
         weights_df = weights_df.div(row_sums, axis=0)
+
+    # Asset-level MA-based trend filter — zero out risky assets in confirmed
+    # downtrend, half-weight during choppy periods. Fixed income/currency exempt.
+    if prices is not None:
+        from v2.risk.trend_filter import apply_trend_filter_df
+        weights_df = apply_trend_filter_df(weights_df, prices)
 
     # V1-style RSI entry filter — delay new exposure when tickers are overbought
     if prices is not None:

@@ -32,6 +32,7 @@ from v2.portfolio.regime_allocations import (
     get_all_tickers as get_prior_tickers,
 )
 from v2.portfolio.factor_scoring import composite_factor_score
+from v2.risk.covariance import hrp_weights_for_subset
 
 # ── Parameters ───────────────────────────────────────────────────────────────
 # Per-regime top-N — our deviation from the paper's uniform N=7. Expansion
@@ -57,6 +58,16 @@ PROB_CONCENTRATION = 1.5     # power > 1 sharpens regime prob vector before blen
 # added DD risk on this 18-year window. Exposed as a knob for future research.
 # "sharpe" is the production default.
 SCORING_MODE = "sharpe"
+
+# Within-regime weighting after top-N selection. "hrp" uses Hierarchical Risk
+# Parity over a Ledoit-Wolf-shrunk covariance — splits correlated clusters
+# (e.g. QQQ/IWF/XLK) so the regime book stays diversified even when several
+# top-Sharpe names are nearly redundant. "score" reverts to the original
+# floor-shifted proportional Sharpe weighting.
+WITHIN_REGIME_WEIGHTING = "hrp"
+HRP_LOOKBACK_DAYS = 252      # 1y daily returns for covariance estimation
+HRP_MAX_WEIGHT = 0.40        # per-asset cap inside the top-N HRP solution
+HRP_MIN_FLOOR = 0.05         # minimum weight per selected top-N name post-HRP
 
 REGIME_COLS = ["expansion", "slowdown", "recession", "recovery", "stagflation", "late_cycle"]
 REGIME_COL_TO_ID = {
@@ -148,6 +159,60 @@ def top_n_weights(
     return {t: float(v / total) for t, v in adjusted.items()}
 
 
+def top_n_weights_hrp(
+    scores: pd.Series,
+    prices: pd.DataFrame,
+    as_of: pd.Timestamp,
+    top_n: int = TOP_N,
+    floor: float = HRP_MIN_FLOOR,
+    lookback_days: int = HRP_LOOKBACK_DAYS,
+    max_weight: float = HRP_MAX_WEIGHT,
+) -> dict[str, float]:
+    """
+    Select top-N by score, then weight via HRP over a Ledoit-Wolf covariance.
+
+    Falls back to floor-shifted proportional weighting if HRP yields a
+    degenerate solution. A small per-name floor keeps every selected ticker
+    materially in the book — pure HRP can otherwise zero out a name in a
+    tightly correlated cluster.
+    """
+    valid = scores.dropna()
+    if valid.empty:
+        return {}
+    top = valid.nlargest(top_n)
+    tickers = list(top.index)
+
+    hrp = hrp_weights_for_subset(
+        prices, tickers, as_of,
+        lookback_days=lookback_days,
+        max_weight=max_weight,
+    )
+    if not hrp or sum(hrp.values()) <= 1e-9:
+        return top_n_weights(scores, top_n=top_n, floor=floor)
+
+    # Apply per-name floor: lift any held name below `floor` up to it,
+    # take the lift proportionally from above-floor names.
+    held = [t for t in tickers if hrp.get(t, 0.0) > 1e-9]
+    if not held:
+        return top_n_weights(scores, top_n=top_n, floor=floor)
+
+    w = {t: hrp.get(t, 0.0) for t in held}
+    need = sum(max(0.0, floor - v) for v in w.values())
+    if need > 0:
+        donor_total = sum(v for v in w.values() if v > floor)
+        if donor_total > 0:
+            scale = max(0.0, 1.0 - need / donor_total)
+            for t in w:
+                if w[t] > floor:
+                    w[t] *= scale
+                else:
+                    w[t] = floor
+    s = sum(w.values())
+    if s <= 0:
+        return top_n_weights(scores, top_n=top_n, floor=floor)
+    return {t: v / s for t, v in w.items()}
+
+
 def build_per_regime_targets(
     prices: pd.DataFrame,
     monthly_labels: pd.Series,
@@ -158,6 +223,7 @@ def build_per_regime_targets(
     prior_blend: float = PRIOR_BLEND,
     prior_blend_cold: float = PRIOR_BLEND_COLD,
     scoring_mode: str = SCORING_MODE,
+    within_regime_weighting: str = WITHIN_REGIME_WEIGHTING,
 ) -> dict[str, dict[str, float]]:
     """
     Compute data-driven target allocations for each regime as of a given date.
@@ -211,7 +277,12 @@ def build_per_regime_targets(
             scores = sharpes
             if eligible:
                 scores = scores.loc[scores.index.intersection(eligible)]
-        data_weights = top_n_weights(scores, top_n=regime_top_n, floor=floor)
+        if within_regime_weighting == "hrp":
+            data_weights = top_n_weights_hrp(
+                scores, prices=prices, as_of=as_of, top_n=regime_top_n,
+            )
+        else:
+            data_weights = top_n_weights(scores, top_n=regime_top_n, floor=floor)
 
         if not data_weights:
             targets[regime_col] = prior
@@ -297,6 +368,7 @@ def build_sharpe_weighted_targets(
     min_months: int = MIN_MONTHS_PER_REGIME,
     prior_blend: float = PRIOR_BLEND,
     scoring_mode: str = SCORING_MODE,
+    within_regime_weighting: str = WITHIN_REGIME_WEIGHTING,
 ) -> pd.DataFrame:
     """
     Walk-forward: for each rebalance month, produce a blended target vector
@@ -324,6 +396,7 @@ def build_sharpe_weighted_targets(
             min_months=min_months,
             prior_blend=prior_blend,
             scoring_mode=scoring_mode,
+            within_regime_weighting=within_regime_weighting,
         )
         probs_row = monthly_probs.loc[date]
         blended = blend_with_probabilities(per_regime, probs_row)

@@ -126,7 +126,54 @@ TIME_DECAY_WINDOW = 21   # Trailing return window for the decay check: 1 calenda
 
 # 5 most liquid ETFs by AUM (published fact). MA20/50 fast overlay applied
 # only to these — individual stocks are excluded (MA20/50 whipsaws on stocks).
+# Tested extending the overlay to additional equity_index/sector ETFs (EFA, VWO,
+# XLK, XLF, XLE, XLV): preserved OOS Sharpe at 1.555 but widened max drawdown
+# from -4.64% to -7.12% on the production method.  The fast overlay's higher
+# turnover in equity sectors trades cleaner Sharpe for deeper drawdowns; not
+# worth it.  Reverted to original 5.
 FAST_SIGNAL_TICKERS = {"SPY", "IWM", "TLT", "GLD", "EEM"}
+
+# ── Trend ensemble parameters (Improvement #1) ───────────────────────────────
+# Three voters across short/medium/long timescales. Each voter is a binary MA
+# crossover; the ensemble score is the equal-weight mean → continuous in [0, 1].
+# Voters chosen to span ~1 month / ~3 month / ~6 month horizons, i.e. distinct
+# information content rather than three near-duplicates of MA50/200.
+#   Voter 1 (short) : MA20  > MA50    — captures emerging trends ~1 month early
+#   Voter 2 (medium): MA50  > MA150   — intermediate-term trend filter
+#   Voter 3 (long)  : MA100 > MA200   — structural trend (close to legacy MA50/200)
+TREND_ENS_SHORT_FAST  = 20
+TREND_ENS_SHORT_SLOW  = 50
+TREND_ENS_MED_FAST    = 50
+TREND_ENS_MED_SLOW    = 150
+TREND_ENS_LONG_FAST   = 100
+TREND_ENS_LONG_SLOW   = 200
+
+# Pullback re-entry — moderate dip within an established trend.
+#   Fires when ensemble_score >= 2/3 (medium + long voters agree at minimum)
+#   and price has just bounced off a moderate pullback.
+PULLBACK_RSI_LOW    = 40   # entry RSI floor (deeper than this → use oversold_bounce)
+PULLBACK_RSI_HIGH   = 55   # entry RSI ceiling (above this → not a pullback)
+PULLBACK_RSI_EXIT   = 65   # exit when momentum recovers past midline + buffer
+PULLBACK_ADX_MIN    = 18   # require some trend structure (Wilder's "weak trend")
+PULLBACK_LOOKBACK   = 5    # bars to look back for the dip touching MA20
+
+# Donchian-55 breakout (Turtle System 2, Dennis & Eckhardt 1983).
+# Looser than breakout_entry_signal: no squeeze requirement, no volume confirm.
+# Compensated by requiring the 55-day high (vs 20-day) — much higher bar so
+# false breakouts are rarer on their own.
+DONCHIAN_BREAKOUT_WINDOW = 55
+DONCHIAN_BREAKOUT_ADX_MIN = 18
+
+# Master switch for Improvement #1 new signals (pullback + Donchian-55).
+# Set to False to A/B-test the contribution of these signals against baseline
+# WITHOUT removing the code — useful for diagnosis when adding subsequent
+# improvements (#3 vol-regime gating, #4 Kelly sizing) that interact with them.
+IMPROVEMENT_1_NEW_SIGNALS: bool = True
+
+# Module-level counters: long-entry days added by each new signal source.
+# Printed in main() to validate that the new signals are firing as expected.
+_PULLBACK_EXTRA_ENTRIES: int = 0
+_DONCHIAN55_EXTRA_ENTRIES: int = 0
 
 DATA_DIR     = Path("data/v1/raw")
 FEATURE_DIR  = Path("data/v1/features")
@@ -1125,6 +1172,7 @@ def fast_signal(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.Series
 
     if asset_class == "equity_index":
         # Long-only: no structural reason to short broad equity indices.
+        # NOTE: sector_etf was tested here but caused max DD widening; reverted.
         fast_sig = (ma20 > ma50).astype(int) * gate
     else:
         # Two-sided for TLT (bond) and GLD (commodity): trends run both ways.
@@ -1472,6 +1520,166 @@ def volume_divergence_reentry(
     return result
 
 
+def trend_ensemble_score(df: pd.DataFrame) -> pd.Series:
+    """
+    Continuous [0, 1] trend strength from three MA crossover voters across
+    distinct timescales.
+
+    Each voter contributes 1/3 of the score:
+      short  (MA20  > MA50 ): captures trend initiations ~1 month early
+      medium (MA50  > MA150): intermediate-term trend filter
+      long   (MA100 > MA200): structural trend (similar to legacy MA50/200)
+
+    Score interpretation:
+      0.00 → no voter agrees      (downtrend or chop)
+      0.33 → only short voter     (early signal, possibly a head-fake)
+      0.66 → medium + long agree  (confirmed trend, mild pullback OK)
+      1.00 → all three agree      (full conviction trend, ride hard)
+
+    Used as a gate for pullback_reentry_signal and donchian55_breakout_signal,
+    and exposed on the output DataFrame as ``trend_ensemble`` so portfolio.py
+    can size positions by trend conviction in a follow-up improvement.
+    """
+    close = df["Close"]
+    s_short  = (close.rolling(TREND_ENS_SHORT_FAST).mean()
+                > close.rolling(TREND_ENS_SHORT_SLOW).mean()).astype(float)
+    s_medium = (close.rolling(TREND_ENS_MED_FAST).mean()
+                > close.rolling(TREND_ENS_MED_SLOW).mean()).astype(float)
+    s_long   = (close.rolling(TREND_ENS_LONG_FAST).mean()
+                > close.rolling(TREND_ENS_LONG_SLOW).mean()).astype(float)
+    return ((s_short + s_medium + s_long) / 3.0).fillna(0.0)
+
+
+def pullback_reentry_signal(
+    df: pd.DataFrame,
+    raw_ma_regime: pd.Series,
+    ensemble_score: pd.Series,
+    macro: pd.DataFrame,
+) -> pd.Series:
+    """
+    Re-enter long on a moderate pullback within an established uptrend.
+
+    This is the higher-frequency complement to oversold_bounce_signal:
+    oversold_bounce requires RSI < 35 and BB%B < 0.10 (deep capitulation,
+    fires ~3% of trend days), whereas this signal targets the *normal*
+    pullbacks that happen every few weeks in a healthy trend (RSI 40–55).
+
+    Entry conditions (ALL required):
+      (a) raw_ma_regime == 1            — slow MA50/200 trend intact
+      (b) ensemble_score >= 0.66        — at least medium + long voters agree
+      (c) Close touched MA20 within last PULLBACK_LOOKBACK days from above
+          (Low <= MA20 in the lookback window) — verified pullback, not chase
+      (d) Close > MA20 today            — bounce confirmation (price recovered)
+      (e) RSI in (PULLBACK_RSI_LOW, PULLBACK_RSI_HIGH] — moderate dip zone
+      (f) ADX > PULLBACK_ADX_MIN        — some directional structure remaining
+      (g) VIX gate                      — not on a fear-spike day
+
+    Exit conditions (ANY triggers):
+      (a) raw_ma_regime == 0            — death cross
+      (b) RSI > PULLBACK_RSI_EXIT       — bounce played out
+      (c) trailing stop fires (handled by apply_trailing_stop_signal below)
+
+    This function only ADDs entries (0→1) within trends; it never overrides
+    the main signal_r (which carries its own exit logic).
+
+    References:
+      Pullback continuation in trends: Jegadeesh & Titman (1993).
+      Buying near the 20-day MA in uptrends: Bollinger (2001).
+    """
+    ma20 = df["Close"].rolling(20).mean()
+    gate = vix_gate(macro, df.index)
+
+    # Verified dip: Low pierced MA20 in the lookback window (price *touched* support)
+    pierced_ma20 = (df["Low"] <= ma20).rolling(PULLBACK_LOOKBACK, min_periods=1).max()
+
+    entry = (
+        (raw_ma_regime == 1) &
+        (ensemble_score >= 2.0 / 3.0) &
+        (pierced_ma20 == 1) &
+        (df["Close"] > ma20) &
+        (df["rsi_14"] > PULLBACK_RSI_LOW) &
+        (df["rsi_14"] <= PULLBACK_RSI_HIGH) &
+        (df["adx"] > PULLBACK_ADX_MIN) &
+        (gate == 1)
+    )
+
+    result = pd.Series(0, index=df.index, dtype=int)
+    in_pos = False
+    for i in range(len(result)):
+        if not in_pos:
+            if entry.iloc[i]:
+                in_pos         = True
+                result.iloc[i] = 1
+        else:
+            if raw_ma_regime.iloc[i] == 0:
+                in_pos = False                                  # death cross
+            elif df["rsi_14"].iloc[i] > PULLBACK_RSI_EXIT:
+                in_pos = False                                  # bounce played out
+                result.iloc[i] = 0
+            else:
+                result.iloc[i] = 1                              # hold
+
+    signal, _ = apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
+    return signal
+
+
+def donchian55_breakout_signal(
+    df: pd.DataFrame,
+    raw_ma_regime: pd.Series,
+    ensemble_score: pd.Series,
+) -> pd.Series:
+    """
+    Turtle System 2 breakout: long on a new 55-day Donchian high inside a
+    confirmed trend.  Looser entry gate than breakout_entry_signal — no
+    squeeze or volume requirement — but compensated by the much longer
+    Donchian window so false breakouts are intrinsically rare.
+
+    Entry conditions (ALL required):
+      (a) raw_ma_regime == 1                 — MA50/200 trend intact
+      (b) ensemble_score >= 2/3              — medium + long voters confirm
+      (c) Close >= rolling 55-day High       — new 55-day breakout
+      (d) ADX > DONCHIAN_BREAKOUT_ADX_MIN    — directional structure present
+
+    Exit conditions:
+      (a) raw_ma_regime == 0                 — death cross
+      (b) trailing stop fires
+
+    NOTE: an earlier draft included an "emerging-trend" track that fired when
+    raw_ma_regime==0 but ensemble was strong.  Backtests showed this widened
+    drawdowns by ~4pp without improving Sharpe (entries were concentrated in
+    choppy reversal periods).  Reverted to confirmed-trend only.
+
+    Reference: Dennis & Eckhardt (1983), the original Turtle Trader system.
+    System 1 used a 20-day breakout (≈ V1's existing breakout_entry_signal);
+    System 2 used 55 days for slower-developing, higher-conviction trends.
+    """
+    donchian_high_55 = df["High"].rolling(DONCHIAN_BREAKOUT_WINDOW).max()
+    breakout = df["Close"] >= donchian_high_55
+
+    entry = (
+        (raw_ma_regime == 1) &
+        (ensemble_score >= 2.0 / 3.0) &
+        breakout &
+        (df["adx"] > DONCHIAN_BREAKOUT_ADX_MIN)
+    )
+
+    result = pd.Series(0, index=df.index, dtype=int)
+    in_pos = False
+    for i in range(len(result)):
+        if not in_pos:
+            if entry.iloc[i]:
+                in_pos         = True
+                result.iloc[i] = 1
+        else:
+            if raw_ma_regime.iloc[i] == 1:
+                result.iloc[i] = 1
+            else:
+                in_pos = False
+
+    signal, _ = apply_trailing_stop_signal(result, df["Close"], df["atr_14"])
+    return signal
+
+
 def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame:
     """
     Master signal generator — routes each ticker to the correct logic and
@@ -1693,6 +1901,13 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     # timers on top of the MA crossover for equity/sector/stock asset classes.
     # Bonds and commodities use the regime signal directly — their edge is in
     # direction (two-sided trend following), not entry timing.
+    # Trend ensemble score (Improvement #1) — continuous [0, 1] trend conviction.
+    # Computed for ALL asset classes (cheap; just three MA crossovers averaged).
+    # Equity multi-signal sources gate on this; bonds/commodities just expose it
+    # for downstream sizing.
+    ensemble_score = trend_ensemble_score(df)
+    out["trend_ensemble"] = ensemble_score
+
     if asset_class in {"equity_index", "sector_etf", "stock"}:
         # Use raw_ma_regime (not post-processed signal_r) as the regime gate.
         # This allows breakout/bounce/persistence to activate in windows where
@@ -1712,6 +1927,23 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         # Validation counter: extra long days from this signal specifically.
         global _VOL_DIV_EXTRA_ENTRIES
         _VOL_DIV_EXTRA_ENTRIES += int(((vol_div_sig == 1) & (signal_r != 1)).sum())
+
+        # ── Improvement #1: trend ensemble + pullback re-entry + Donchian-55 ──
+        # pullback_sig: moderate-RSI dip-buys within trends with ensemble >= 0.66.
+        #   Higher-frequency than oversold_bounce (RSI 40-55 vs <35).
+        # donchian55_sig: Turtle System 2 breakout (55-day high) with ensemble >= 2/3.
+        #   Higher-frequency than breakout_entry_signal (no squeeze/volume requirement).
+        # NOTE: gated by IMPROVEMENT_1_NEW_SIGNALS so the contribution can be A/B'd
+        # without removing the code.  Set to True after backtest validation.
+        pullback_sig    = pullback_reentry_signal(df, raw_ma_regime, ensemble_score, macro)
+        donchian55_sig  = donchian55_breakout_signal(df, raw_ma_regime, ensemble_score)
+        if IMPROVEMENT_1_NEW_SIGNALS:
+            _multi_sources.extend([pullback_sig, donchian55_sig])
+
+        # Validation counters — printed in main() to verify the new signals fire.
+        global _PULLBACK_EXTRA_ENTRIES, _DONCHIAN55_EXTRA_ENTRIES
+        _PULLBACK_EXTRA_ENTRIES   += int(((pullback_sig   == 1) & (signal_r != 1)).sum())
+        _DONCHIAN55_EXTRA_ENTRIES += int(((donchian55_sig == 1) & (signal_r != 1)).sum())
 
         # Cross-asset early entry: pre-position when MA50 is approaching MA200
         # from below and cross-asset conditions signal a risk-on environment.
@@ -2503,6 +2735,7 @@ def main():
     fast_overlay = pd.DataFrame({t: s["signal_fast_overlay"]  for t, s in all_signals.items()}).dropna()
     multi_fast   = pd.DataFrame({t: s["signal_multi_fast"]    for t, s in all_signals.items()}).dropna()
     half_size_mat = pd.DataFrame({t: s["half_size"]           for t, s in all_signals.items()}).dropna()
+    trend_ens_mat = pd.DataFrame({t: s["trend_ensemble"]      for t, s in all_signals.items()}).dropna()
 
     regime.to_parquet(SIGNAL_DIR         / "regime_signals.parquet")
     composite.to_parquet(SIGNAL_DIR      / "composite_signals.parquet")
@@ -2511,6 +2744,7 @@ def main():
     fast_overlay.to_parquet(SIGNAL_DIR   / "fast_overlay_signals.parquet")
     multi_fast.to_parquet(SIGNAL_DIR     / "multi_fast_signals.parquet")
     half_size_mat.to_parquet(SIGNAL_DIR  / "half_size.parquet")
+    trend_ens_mat.to_parquet(SIGNAL_DIR  / "trend_ensemble_score.parquet")
     print(f"Signal matrices saved: {regime.shape}")
 
     # Save carry signal matrix if carry was loaded into any ticker
@@ -2559,6 +2793,24 @@ def main():
           f"({RSI_ENTRY_THRESH_STRESS}, {RSI_ENTRY_THRESH_CALM}] on VIX<20 bars)")
     print(f"  ADX threshold relaxed to {ADX_MIN_CALM} (from {ADX_MIN_STRESS}) "
           f"on VIX<20 bars for equity_index regime scoring")
+
+    # ── IMPROVEMENT #1 VALIDATION: Trend ensemble + pullback + Donchian-55 ────
+    print(f"\n{'='*70}")
+    print("  IMPROVEMENT #1 — Trend ensemble + pullback + Donchian-55 breakout")
+    print(f"{'='*70}")
+    print(f"  Pullback re-entry extra long-days   (RSI 40-55, ensemble>=0.66): "
+          f"+{_PULLBACK_EXTRA_ENTRIES}")
+    print(f"  Donchian-55 breakout extra long-days (Turtle System 2):          "
+          f"+{_DONCHIAN55_EXTRA_ENTRIES}")
+    eq_tickers = [t for t in all_signals
+                  if ASSET_CLASS[t] in {"equity_index", "sector_etf", "stock"}]
+    if eq_tickers:
+        ens_means = [all_signals[t]["trend_ensemble"].mean() for t in eq_tickers]
+        full_conv = sum((all_signals[t]["trend_ensemble"] == 1.0).sum() for t in eq_tickers)
+        chop_days = sum((all_signals[t]["trend_ensemble"] == 0.0).sum() for t in eq_tickers)
+        print(f"  Trend ensemble — mean conviction across {len(eq_tickers)} equity tickers: "
+              f"{np.mean(ens_means):.2f}")
+        print(f"  Full conviction days (score=1.0): {full_conv}  |  Chop days (score=0.0): {chop_days}")
 
     # ── Pair-trade signal generation ──────────────────────────────────────
     print("\n  Generating pair-trade signals (spread MA50/200 filter)...")

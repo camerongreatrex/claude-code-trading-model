@@ -37,6 +37,7 @@ Usage
 """
 
 import json
+import os
 import sys
 import numpy as np
 import pandas as pd
@@ -252,8 +253,12 @@ def save_state(state: dict):
     Args:
         state: Portfolio state dict from load_state() or a modified version.
     """
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+    tmp = STATE_FILE.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, default=str)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATE_FILE)
 
 
 def load_trades() -> pd.DataFrame:

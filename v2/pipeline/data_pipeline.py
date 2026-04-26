@@ -69,6 +69,20 @@ UNIVERSE = [
     ("XLF",  "sector",    "financials",   "Financials Select SPDR",           "1998-12-16"),
     ("XLP",  "sector",    "staples",      "Consumer Staples Select SPDR",     "1998-12-16"),
     ("XLV",  "sector",    "healthcare",   "Healthcare Select SPDR",           "1998-12-16"),
+
+    # ── Yield Enhancement (vol-selling proxy) ────────────────────────────────
+    # PBP harvests the volatility risk premium by writing covered calls on the
+    # S&P 500 — earns option premium in choppy/sideways markets at the cost of
+    # capping upside in big rallies. Best in late_cycle/slowdown.
+    ("PBP",  "yield_enh", "buywrite",     "S&P 500 BuyWrite Covered Call",    "2007-12-20"),
+
+    # ── Equity Factor Sleeves ────────────────────────────────────────────────
+    # Pair-trading-style factor exposures wrapped in long-only ETFs. MTUM
+    # captures momentum (long winners), USMV captures the low-vol anomaly
+    # (long low-beta names, structurally lower DD). Only available from
+    # ~2013 — Sharpe allocator falls back to priors before then.
+    ("MTUM", "factor",    "momentum",     "MSCI USA Momentum Factor",         "2013-04-18"),
+    ("USMV", "factor",    "low_vol",      "MSCI USA Min-Vol Factor",          "2011-10-20"),
 ]
 
 

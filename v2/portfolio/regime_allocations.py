@@ -28,10 +28,11 @@ from v2.pipeline.data_pipeline import get_asset_class_map
 # Omitted tickers get 0 weight.
 
 EXPANSION = {
-    # Risk-on: heavy equities, growth/tech tilt, trimmed bonds
-    "SPY": 0.25, "QQQ": 0.18, "IWF": 0.08, "IWM": 0.08,
+    # Risk-on: heavy equities, growth/tech tilt, momentum factor, trimmed bonds
+    "SPY": 0.25, "QQQ": 0.14, "IWF": 0.06, "IWM": 0.08,
+    "MTUM": 0.08,             # momentum factor sleeve
     "EFA": 0.06, "EEM": 0.04,
-    "XLK": 0.10, "XLF": 0.06,
+    "XLK": 0.08, "XLF": 0.06,
     "VNQ": 0.04,
     "HYG": 0.03,
     "GLD": 0.02,
@@ -42,36 +43,40 @@ EXPANSION = {
 }
 
 SLOWDOWN = {
-    # Defensive rotation: reduce equity beta, add duration + quality
-    "SPY": 0.12, "IWD": 0.05, "EFA": 0.03,
+    # Defensive rotation: low-vol factor, buy-write yield, reduce beta
+    "SPY": 0.09, "IWD": 0.04, "EFA": 0.03,
+    "USMV": 0.05,             # low-vol factor
+    "PBP": 0.05,              # buy-write yield enhancement
     "XLP": 0.05, "XLV": 0.05, "XLU": 0.05,
-    "IEF": 0.12, "TLT": 0.10, "LQD": 0.08,
-    "TIP": 0.05,
+    "IEF": 0.11, "TLT": 0.08, "LQD": 0.08,
+    "TIP": 0.04,
     "GLD": 0.08, "SLV": 0.02,
-    "SHY": 0.10,
-    "VNQ": 0.05,
+    "SHY": 0.09,
+    "VNQ": 0.04,
     "UUP": 0.05,
 }
 
 RECESSION = {
-    # Maximum defensiveness: treasuries, gold, cash proxy, quality equities
-    "SHY": 0.20, "IEF": 0.15, "TLT": 0.15,
+    # Maximum defensiveness: treasuries, gold, low-vol equities, cash
+    "SHY": 0.18, "IEF": 0.13, "TLT": 0.15,
     "GLD": 0.12, "SLV": 0.03,
     "TIP": 0.05,
-    "SPY": 0.05,
+    "SPY": 0.04,
+    "USMV": 0.05,             # low-vol factor
     "XLP": 0.05, "XLV": 0.05, "XLU": 0.05,
     "UUP": 0.05,
     "FXY": 0.05,
 }
 
 RECOVERY = {
-    # Aggressive risk-on: small cap, value, EM, cyclicals, commodities
+    # Aggressive risk-on: small cap, value, EM, cyclicals, momentum factor
     "SPY": 0.17, "QQQ": 0.07, "IWM": 0.12, "IWD": 0.08,
+    "MTUM": 0.06,             # momentum factor sleeve
     "EFA": 0.06, "EEM": 0.07,
-    "XLF": 0.12, "XLE": 0.06, "XLK": 0.05,
+    "XLF": 0.09, "XLE": 0.04, "XLK": 0.05,
     "VNQ": 0.06, "VNQI": 0.02,
     "HYG": 0.05,
-    "DBC": 0.04, "GLD": 0.01, "USO": 0.01,
+    "DBC": 0.04, "GLD": 0.01,
     "SHY": 0.01,
 }
 
@@ -90,18 +95,22 @@ STAGFLATION = {
 }
 
 LATE_CYCLE = {
-    # Quality + defensives, reduce beta, add gold/bonds
-    "SPY": 0.14, "IWD": 0.06,
-    "XLP": 0.06, "XLV": 0.06, "XLU": 0.05,
+    # Choppy/sideways: low-vol factor + buy-write are the right tools.
+    # Cut equity beta hard, lean on gold + duration. Buy-write harvests vol
+    # premium that's elevated through late-cycle uncertainty.
+    "SPY": 0.10, "IWD": 0.05,
+    "USMV": 0.06,             # low-vol factor (lower DD than SPY)
+    "PBP": 0.06,              # buy-write yield in choppy tape
+    "XLP": 0.05, "XLV": 0.05, "XLU": 0.04,
     "IEF": 0.10, "TLT": 0.06, "LQD": 0.05,
     "TIP": 0.04,
     "GLD": 0.10, "SLV": 0.02,
     "SHY": 0.10,
-    "VNQ": 0.04,
-    "UUP": 0.04,
-    "EFA": 0.04,
+    "VNQ": 0.03,
+    "UUP": 0.03,
+    "EFA": 0.03,
     "FXY": 0.02,
-    "EEM": 0.02,
+    "EEM": 0.01,
 }
 
 # Map regime index → allocation dict

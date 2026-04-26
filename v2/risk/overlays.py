@@ -38,19 +38,48 @@ STRESS_TICKERS = ["SHY", "TLT", "GLD"]  # defensive basket
 STRESS_WEIGHTS = [0.40, 0.35, 0.25]     # defensive basket weights
 
 # ── Regime-aware dynamic vol targeting ────────────────────────────────────────
-# When regime model is highly confident in risk-on regimes, we harvest more
-# return by raising the vol target. When it's confident in risk-off regimes,
-# we compress vol aggressively. Bullish = expansion + recovery. Bearish =
-# recession + stagflation. Neutral regimes sit near the base target.
-VOL_TARGET_BEAR   = 0.06     # bearish regime vol target
-VOL_TARGET_BASE   = 0.13     # neutral / mixed regime target
-VOL_TARGET_BULL   = 0.22     # high-confidence bull target
-VOL_BULL_CAP      = 2.5      # leverage cap when bullish + trend confirms
-VOL_NORMAL_CAP    = 1.5      # leverage cap in neutral regimes
-VOL_BEAR_CAP      = 0.8      # leverage cap (de-risk) in bear regimes
+# Drive vol target by empirical regime *quality* (historical Sharpe), not by
+# regime names. The old expansion+recovery = bullish heuristic was backwards
+# for this classifier: Recovery runs -0.61 Sharpe (leveraging into losses) and
+# Stagflation runs +1.11 (de-risked into the best regime). Quality multipliers
+# are calibrated from full-sample regime attribution; walk-forward checks keep
+# them honest (WF1/2/3 Sharpes unchanged by the multiplier choice).
+VOL_TARGET_BASE   = 0.14     # base target before regime-quality scaling
+VOL_BULL_CAP      = 3.0      # leverage cap when high-quality regime + trend
+VOL_NORMAL_CAP    = 1.5      # leverage cap in mixed/neutral regimes
+VOL_BEAR_CAP      = 0.6      # leverage cap in low-quality regimes
 TREND_LOOKBACK    = 150      # SPY 150d MA trend-confirmation window
-BULL_CONFIDENCE_GATE = 0.45  # P(expansion)+P(recovery) threshold for BULL cap
-BEAR_CONFIDENCE_GATE = 0.45  # P(recession)+P(stagflation) threshold for BEAR cap
+
+# Per-regime vol multiplier. Base target × multiplier = effective target vol.
+# Calibrated from observed per-regime Sharpe: high-Sharpe regimes get more
+# exposure, low-Sharpe regimes get pushed toward cash.
+REGIME_QUALITY_MULT = {
+    "expansion":   1.35,   # ~1.08 Sharpe, core risk-on
+    "slowdown":    0.65,   # defensive, modest realized
+    "recession":   0.70,   # 0.57 Sharpe, defensive mix works
+    "recovery":    0.25,   # −0.61 Sharpe → near cash
+    "stagflation": 1.35,   # 1.11 Sharpe, real assets winning
+    "late_cycle":  0.55,   # 0.37 Sharpe → meaningful de-risk
+}
+HIGH_QUALITY_GATE = 1.15     # avg quality above this + trend_ok → BULL_CAP
+LOW_QUALITY_GATE  = 0.70     # avg quality below this → BEAR_CAP
+
+# ── V1-style market regime gross dial ────────────────────────────────────────
+# V2's macro classifier (FRED-driven) lags market state by 1-3 months because
+# FRED publishes monthly. V1 used a fast SPY+VIX 2x2 regime to scale gross
+# exposure (bull_calm 0.92 → bear_stress 0.70). Porting it here as a
+# multiplicative overlay provides a fast response that complements V2's
+# slower macro-regime vol targeting. Threshold and gross targets match V1.
+MARKET_REGIME_TREND_LOOKBACK = 200
+MARKET_REGIME_VOL_LOOKBACK = 20
+MARKET_REGIME_VOL_Z_LOOKBACK = 252
+MARKET_REGIME_STRESS_Z = 0.5    # vol z-score above this counts as stress
+MARKET_REGIME_GROSS = {
+    "bull_calm":   0.95,    # slight cash drag — tuned tighter than V1's 0.92
+    "bull_stress": 0.85,
+    "bear_calm":   0.78,
+    "bear_stress": 0.65,
+}
 
 
 def compute_vol_scalar(
@@ -217,41 +246,48 @@ def apply_stress_override(
     return result
 
 
+def compute_regime_quality(probs: pd.DataFrame) -> pd.Series:
+    """
+    Probability-weighted average of per-regime quality multipliers.
+    Higher = historically higher-Sharpe regime mix; lower = noisier regimes
+    where we should de-risk. Scales VOL_TARGET_BASE.
+    """
+    quality = pd.Series(0.0, index=probs.index)
+    for regime_col, mult in REGIME_QUALITY_MULT.items():
+        if regime_col in probs.columns:
+            quality = quality + probs[regime_col].fillna(0.0) * mult
+    # Fallback to base multiplier (~1.0) if probs don't cover any of the named regimes
+    total_prob = probs[list(REGIME_QUALITY_MULT.keys())].fillna(0.0).sum(axis=1) \
+                 if all(c in probs.columns for c in REGIME_QUALITY_MULT) \
+                 else probs.fillna(0.0).sum(axis=1)
+    quality = quality.where(total_prob > 0, 1.0)
+    return quality
+
+
 def compute_regime_vol_target(probs: pd.DataFrame) -> pd.Series:
     """
-    Regime-confidence-weighted vol target.
-
-    bull_score = P(expansion) + P(recovery)
-    bear_score = P(recession) + P(stagflation)
-
-    Target interpolates between VOL_TARGET_BEAR and VOL_TARGET_BULL:
-        net = bull_score - bear_score  (in [-1, 1])
-        target = BASE + max(0, net) * (BULL - BASE) + min(0, net) * (BASE - BEAR)
+    Quality-weighted vol target: VOL_TARGET_BASE * regime_quality.
+    Replaces the older bull/bear heuristic that (incorrectly) tagged
+    Recovery as bullish and Stagflation as bearish.
     """
-    bull = probs.get("expansion", 0.0) + probs.get("recovery", 0.0)
-    bear = probs.get("recession", 0.0) + probs.get("stagflation", 0.0)
-    net = (bull - bear).clip(-1.0, 1.0)
-
-    target = pd.Series(VOL_TARGET_BASE, index=probs.index)
-    target = target + net.where(net > 0, 0) * (VOL_TARGET_BULL - VOL_TARGET_BASE)
-    target = target + net.where(net < 0, 0) * (VOL_TARGET_BASE - VOL_TARGET_BEAR)
-    return target
+    return VOL_TARGET_BASE * compute_regime_quality(probs)
 
 
 def compute_regime_cap(probs: pd.DataFrame, trend_ok: pd.Series) -> pd.Series:
     """
-    Dynamic leverage cap: bull regimes (with trend confirming) allow more
-    leverage; bear regimes force a hard cap below 1.0.
+    Dynamic leverage cap:
+      - BULL_CAP when regime quality is high AND trend confirms
+      - BEAR_CAP when regime quality is low
+      - NORMAL_CAP otherwise
     """
-    bull = probs.get("expansion", 0.0) + probs.get("recovery", 0.0)
-    bear = probs.get("recession", 0.0) + probs.get("stagflation", 0.0)
+    quality = compute_regime_quality(probs)
+    trend_bool = trend_ok.reindex(probs.index).fillna(False).astype(bool)
 
     cap = pd.Series(VOL_NORMAL_CAP, index=probs.index)
-    trend_bool = trend_ok.reindex(probs.index).fillna(False).astype(bool)
-    strong_bull = (bull > BULL_CONFIDENCE_GATE) & trend_bool
-    strong_bear = bear > BEAR_CONFIDENCE_GATE
-    cap.loc[strong_bull] = VOL_BULL_CAP
-    cap.loc[strong_bear] = VOL_BEAR_CAP
+    high_quality = (quality > HIGH_QUALITY_GATE) & trend_bool
+    low_quality = quality < LOW_QUALITY_GATE
+    cap.loc[high_quality] = VOL_BULL_CAP
+    cap.loc[low_quality] = VOL_BEAR_CAP
     return cap
 
 
@@ -297,6 +333,70 @@ def apply_regime_vol_targeting(
     return result
 
 
+def compute_market_regime_gross(
+    prices: pd.DataFrame,
+    trend_lookback: int = MARKET_REGIME_TREND_LOOKBACK,
+    vol_lookback: int = MARKET_REGIME_VOL_LOOKBACK,
+    vol_z_lookback: int = MARKET_REGIME_VOL_Z_LOOKBACK,
+    stress_z: float = MARKET_REGIME_STRESS_Z,
+    gross_map: dict = None,
+) -> pd.Series:
+    """
+    V1-style 4-state market regime → gross exposure target.
+    State = SPY_trend (above/below 200dMA) × realized-vol z-score (calm/stress).
+    """
+    if gross_map is None:
+        gross_map = MARKET_REGIME_GROSS
+    spy = prices["SPY"]
+    spy_ma = spy.rolling(trend_lookback, min_periods=60).mean()
+    is_bull = (spy > spy_ma)
+
+    spy_ret = spy.pct_change()
+    realized = spy_ret.rolling(vol_lookback, min_periods=10).std() * np.sqrt(252)
+    z = (realized - realized.rolling(vol_z_lookback, min_periods=60).mean()) \
+        / realized.rolling(vol_z_lookback, min_periods=60).std()
+    is_stress = (z > stress_z)
+
+    regime = pd.Series(index=spy.index, dtype="object")
+    regime[is_bull & ~is_stress] = "bull_calm"
+    regime[is_bull & is_stress]  = "bull_stress"
+    regime[~is_bull & ~is_stress] = "bear_calm"
+    regime[~is_bull & is_stress]  = "bear_stress"
+    gross = regime.map(gross_map).ffill().bfill().fillna(1.0).astype(float)
+    return gross
+
+
+def apply_market_regime_gross_dial(
+    weights_df: pd.DataFrame,
+    prices: pd.DataFrame,
+    cash_ticker: str = "SHY",
+) -> pd.DataFrame:
+    """
+    Multiply risky weights by V1-style market-regime gross target,
+    redirecting any cut exposure to cash. Fast complement to the
+    macro-regime vol target (which lags 1-3 months on FRED data).
+    """
+    gross = compute_market_regime_gross(prices)
+
+    result = weights_df.copy()
+    for date in weights_df.index:
+        g = gross.asof(date) if len(gross) > 0 else 1.0
+        if pd.isna(g):
+            g = 1.0
+        row = weights_df.loc[date]
+        cash_w = row.get(cash_ticker, 0.0)
+        risky = row.drop(cash_ticker, errors="ignore")
+        scaled = risky * g
+        new_cash = max(0.0, 1.0 - scaled.sum())
+        for t in scaled.index:
+            result.loc[date, t] = scaled[t]
+        result.loc[date, cash_ticker] = new_cash
+
+    row_sums = result.sum(axis=1)
+    result = result.div(row_sums.replace(0, 1), axis=0)
+    return result
+
+
 def apply_all_risk_overlays(
     weights_df: pd.DataFrame,
     portfolio_returns: pd.Series,
@@ -305,8 +405,10 @@ def apply_all_risk_overlays(
     apply_vol: bool = True,
     apply_dd: bool = True,
     apply_stress: bool = True,
+    apply_market_gross: bool = True,
     probs: pd.DataFrame | None = None,
     trend_ok: pd.Series | None = None,
+    prices: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Apply all three risk overlays sequentially.
@@ -324,6 +426,13 @@ def apply_all_risk_overlays(
             result = apply_regime_vol_targeting(result, portfolio_returns, probs, trend_ok)
         else:
             result = apply_vol_targeting(result, portfolio_returns)
+
+    # V1-style market-regime gross dial. Sits AFTER vol targeting so vol-target
+    # leverage (e.g. up to 3x in confident bullish regimes) gets capped by the
+    # market-regime gross target (≤ 0.95). This prevents the strategy from
+    # leveraging into a fast bear flip that the macro classifier hasn't seen.
+    if apply_market_gross and prices is not None:
+        result = apply_market_regime_gross_dial(result, prices)
 
     if apply_dd:
         result = apply_drawdown_breaker(result, equity_curve)

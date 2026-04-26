@@ -70,17 +70,27 @@ def compute_portfolio_returns(
     prices: pd.DataFrame,
 ) -> pd.Series:
     """
-    Compute daily portfolio returns from monthly weights and daily prices.
+    Compute daily portfolio returns from rebalanced weights and daily prices.
 
-    Weights are held constant within each month (monthly rebalance).
+    Walk-forward semantics: weights known at end of day T are applied to the
+    return from T → T+1 (i.e. shifted forward by 1 day). At monthly rebalance
+    this barely matters; at weekly/daily it's the difference between honest
+    Sharpe and lookahead Sharpe.
     """
     daily_returns = prices.pct_change().fillna(0)
 
-    # Forward-fill monthly weights to daily
     common_tickers = weights_df.columns.intersection(daily_returns.columns)
-    weights_daily = weights_df[common_tickers].reindex(daily_returns.index).ffill().fillna(0)
+    # ffill across the daily index, then shift by 1 day so weights known at
+    # close of T are applied to the (T → T+1) return at index T+1.
+    weights_daily = (
+        weights_df[common_tickers]
+        .reindex(daily_returns.index)
+        .ffill()
+        .fillna(0)
+        .shift(1)
+        .fillna(0)
+    )
 
-    # Portfolio return = sum of weight * asset return
     port_returns = (weights_daily * daily_returns[common_tickers]).sum(axis=1)
     port_returns.name = "portfolio_return"
 
@@ -89,21 +99,20 @@ def compute_portfolio_returns(
 
 def compute_cost_drag(weights_df: pd.DataFrame, n_years: float) -> float:
     """
-    Estimate annualized cost drag from monthly turnover.
+    Estimate annualized cost drag from per-rebalance turnover.
 
     For ETFs: ~5 bps round-trip cost (tight spreads, low commissions).
-    Monthly rebalance with moderate turnover.
+    Frequency-aware: counts actual rebalances per year, not assumed monthly.
     """
-    if len(weights_df) < 2:
+    if len(weights_df) < 2 or n_years <= 0:
         return 0.0
 
-    # Monthly turnover = sum of absolute weight changes
-    turnover = weights_df.diff().abs().sum(axis=1).iloc[1:]
-    avg_monthly_turnover = turnover.mean()
+    # Total turnover summed across all rebalances
+    total_turnover = weights_df.diff().abs().sum(axis=1).iloc[1:].sum()
 
-    # Cost per unit turnover: ~5 bps for liquid ETFs
+    # Cost per unit turnover: ~5 bps round-trip for liquid ETFs
     cost_per_turnover = 0.0005
-    annual_cost = avg_monthly_turnover * 12 * cost_per_turnover
+    annual_cost = (total_turnover / n_years) * cost_per_turnover
 
     return annual_cost
 
@@ -352,7 +361,7 @@ def run_full_backtest() -> dict:
 
     risk_weights = apply_all_risk_overlays(
         weights, gross_returns, equity_curve, stress_scores,
-        probs=probs, trend_ok=trend_ok,
+        probs=probs, trend_ok=trend_ok, prices=prices,
     )
     risk_returns = compute_portfolio_returns(risk_weights, prices).loc[start_date:]
 

@@ -324,3 +324,33 @@ tornado.websocket.WebSocketClosedError
 2026-04-23 17:20:48  ERROR    
 1 Failed download:
 2026-04-23 17:20:48  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-04-26 08:08:17  ERROR    
+1 Failed download:
+2026-04-26 08:08:17  ERROR    ['XLF']: TypeError("'NoneType' object is not subscriptable")
+2026-04-26 08:25:16  ERROR    
+1 Failed download:
+2026-04-26 08:25:16  ERROR    ['GS']: TypeError("'NoneType' object is not subscriptable")
+2026-04-26 08:39:51  ERROR    
+1 Failed download:
+2026-04-26 08:39:51  ERROR    ['BWX']: TypeError("'NoneType' object is not subscriptable")
+2026-04-26 09:48:23  ERROR    Task exception was never retrieved
+future: <Task finished name='Task-47678' coro=<WebSocketProtocol13.write_message.<locals>.wrapper() done, defined at /opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py:1111> exception=WebSocketClosedError()>
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/streamlit/web/bootstrap.py", line 347, in run
+    if asyncio.get_running_loop().is_running():
+       ~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: no running event loop
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1113, in wrapper
+    await fut
+tornado.iostream.StreamClosedError: Stream is closed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1115, in wrapper
+    raise WebSocketClosedError()
+tornado.websocket.WebSocketClosedError

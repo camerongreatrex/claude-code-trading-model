@@ -21,3 +21,25 @@ dd_trigger: -0.12           # drawdown circuit breaker
 
 # Transaction costs
 cost_per_side: 0.0005       # 5 bps per side (10 bps round-trip)
+
+# Trend ensemble (Improvement #1 — signal_generation.py)
+trend_ensemble:
+  short_fast: 20    # Voter 1: MA20 > MA50 (early trend signal)
+  short_slow: 50
+  med_fast: 50      # Voter 2: MA50 > MA150 (intermediate trend)
+  med_slow: 150
+  long_fast: 100    # Voter 3: MA100 > MA200 (structural trend)
+  long_slow: 200
+
+# Pullback re-entry inside trends
+pullback:
+  rsi_low: 40       # entry RSI floor (deeper → use oversold_bounce)
+  rsi_high: 55      # entry RSI ceiling
+  rsi_exit: 65      # exit when momentum recovers
+  adx_min: 18       # require some trend structure
+  lookback_days: 5  # bars to look back for the dip touching MA20
+
+# Donchian-55 breakout (Turtle System 2)
+donchian55:
+  window: 55        # 55-day high (vs 20-day in breakout_entry_signal)
+  adx_min: 18
