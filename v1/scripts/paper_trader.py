@@ -80,6 +80,11 @@ STRATEGIES = {
     "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend",  "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},    # rank 3 composite 0.745
     "multi_atr_pure":       {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},   # rank 4 composite 0.738
     "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},    # rank 5 composite 0.708
+    # ── Production primary (pinned 2026-04-27) ───────────────────────────────
+    # atr_lev_1.5x = signal_multi × atr sizing × 1.5 leverage (applied by
+    # PRODUCTION_LEVERAGE inside _atr_size).  Pareto-dominates atr_pure on
+    # AnnRet / Sharpe / MaxDD / Calmar after pl_5_10 + ts_40 exit overlay.
+    "atr_lev_1.5x":         {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     # ── Removed by strategy audit 2026-04-08 ─────────────────────────────────
     # "equal_weight":       {"signal_col": "signal_regime", "sizing": "equal",           ...}  # OOS 1.307 composite 0.662
     # "multi_atr_macro":    {"signal_col": "signal_multi",  "sizing": "atr",             ...}  # not in walk-forward (subsumed by multi_atr_pure)
@@ -149,28 +154,35 @@ def get_production_method() -> tuple:
     """
     Single source of truth for production method selection.
 
-    Used by dashboard.py top metrics AND paper_trader.py strategy selection so
-    the same method is shown everywhere without separate gap-filter blocks.
-
-    Selection logic:
-      Stage 1 — filter to OOS Sharpe > 0.9 AND IS-OOS gap in [-0.20, +0.50]
-      Stage 2 — among qualifying methods, pick highest OOS Sharpe
-      Fallback — if no method qualifies, pick highest OOS Sharpe without filter
+    PINNED 2026-04-27: returns ("atr_lev_1.5x") as the locked-in production
+    sizer.  Reg-T compatible (<$100k overnight at IBKR), Pareto-dominates
+    atr_pure on AnnRet / Sharpe / MaxDD / Calmar after the pl_5_10 + ts_40
+    exit overlay (see signal_generation.py).  The auto-selection from
+    oos_selection.parquet is retained as a fallback only when atr_lev_1.5x
+    is missing from the OOS table.
 
     Returns:
-        (method_key, display_label) e.g. ("multi_mom_tilt", "Multi Mom Tilt ★")
+        (method_key, display_label) e.g. ("atr_lev_1.5x", "ATR Lev 1.5x ★")
     """
     from v1.ui.styles import get_label  # lazy import to avoid circular dependency
 
+    pinned_key = "atr_lev_1.5x"
     fallback_key = "equal_weight"
     try:
         oos = pd.read_parquet("data/v1/results/oos_selection.parquet")
     except Exception:
-        return fallback_key, get_label(fallback_key)
+        return pinned_key, get_label(pinned_key)
 
-    if oos.empty or "oos_sharpe" not in oos.columns or "method" not in oos.columns:
-        return fallback_key, get_label(fallback_key)
+    if oos.empty or "method" not in oos.columns:
+        return pinned_key, get_label(pinned_key)
 
+    methods = set(oos["method"].astype(str))
+    if pinned_key in methods or pinned_key in {_OOS_NAME_MAP.get(m, m) for m in methods}:
+        return pinned_key, get_label(pinned_key)
+
+    # Fallback only if the pinned method isn't in the OOS table — auto-select.
+    if "oos_sharpe" not in oos.columns:
+        return fallback_key, get_label(fallback_key)
     if "is_sharpe" in oos.columns:
         gaps     = oos["is_sharpe"] - oos["oos_sharpe"]
         mask     = (oos["oos_sharpe"] > 0.9) & (gaps >= -0.20) & (gaps <= 0.50)
@@ -178,7 +190,6 @@ def get_production_method() -> tuple:
         best_idx = filtered["oos_sharpe"].idxmax() if not filtered.empty else oos["oos_sharpe"].idxmax()
     else:
         best_idx = oos["oos_sharpe"].idxmax()
-
     best_method = oos.loc[best_idx, "method"]
     best_key    = _OOS_NAME_MAP.get(best_method,
                                     best_method.replace(" ", "_").replace("-", "_").lower())
@@ -521,14 +532,20 @@ def compute_live_signals() -> dict:
 
 # ── ATR position sizing (mirrors portfolio.py atr_sizes) ─────────────────────
 
+PRODUCTION_LEVERAGE = 1.5  # Mirrors atr_lev_1.5x in portfolio.py.  Reg-T compatible
+                            # (<$100k overnight at IBKR).  Validated 2026-04-27 as
+                            # a Pareto bump over atr_pure on AnnRet, Sharpe, MaxDD,
+                            # Calmar.  See feedback_position_sizing.md.
+
+
 def _atr_size(pv: float, atr: float, price: float) -> float:
     """
     Compute the ATR-based dollar position size for a single ticker.
 
-    Mirrors portfolio.atr_sizes() for a single asset:
+    Mirrors portfolio.atr_sizes() × PRODUCTION_LEVERAGE for a single asset:
       dollar_risk = portfolio_value × RISK_PER_TRADE
       shares      = dollar_risk / ATR
-      position $  = shares × price
+      position $  = shares × price × PRODUCTION_LEVERAGE
 
     Caps at MAX_POSITION_PCT × portfolio_value to prevent over-concentration.
     Falls back to equal-weight (capital / n_tickers) if ATR is zero or missing.
@@ -544,7 +561,7 @@ def _atr_size(pv: float, atr: float, price: float) -> float:
     if not atr or atr <= 0:
         return min(pv / len(TICKER_LIST), pv * MAX_POSITION_PCT)
     dollar_risk = pv * RISK_PER_TRADE
-    dollar_pos  = (dollar_risk / atr) * price
+    dollar_pos  = (dollar_risk / atr) * price * PRODUCTION_LEVERAGE
     return min(dollar_pos, pv * MAX_POSITION_PCT)
 
 

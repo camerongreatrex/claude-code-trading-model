@@ -597,7 +597,8 @@ def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
 
 def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                          fred: pd.DataFrame = None,
-                         height: int = 560) -> go.Figure:
+                         height: int = 560,
+                         primary_method: str = None) -> go.Figure:
     """
     Build a multi-panel subplot chart overlaying the portfolio equity curve
     with key macro regime indicators.
@@ -643,20 +644,29 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                         row_heights=row_heights,
                         subplot_titles=tuple(subtitles))
 
-    # Row 1: Equity
-    for col in ["equal_weight", "buy_hold"]:
-        if col in df_port.columns:
-            fig.add_trace(go.Scatter(
-                x=df_port.index, y=df_port[col], name=LABELS[col],
-                line=dict(color=PALETTE[col], width=1.6,
-                          dash="dot" if col == "buy_hold" else "solid"),
-                hovertemplate=(
-                    f"<b>{LABELS[col]}</b><br>"
-                    "$%{y:,.0f}<br>"
-                    "<i>Portfolio value on this date (started at $100k).</i>"
-                    "<extra></extra>"
-                ),
-            ), row=1, col=1)
+    # Row 1: Equity — show the production method (defaults to whatever is in
+    # df_port if `primary_method` is not provided / not present) plus B&H.
+    _row1_methods = []
+    if primary_method and primary_method in df_port.columns:
+        _row1_methods.append(primary_method)
+    elif "equal_weight" in df_port.columns:
+        _row1_methods.append("equal_weight")
+    if "buy_hold" in df_port.columns:
+        _row1_methods.append("buy_hold")
+    for col in _row1_methods:
+        _label = LABELS.get(col, col.replace("_", " ").title())
+        _color = PALETTE.get(col, "#888")
+        fig.add_trace(go.Scatter(
+            x=df_port.index, y=df_port[col], name=_label,
+            line=dict(color=_color, width=1.6,
+                      dash="dot" if col == "buy_hold" else "solid"),
+            hovertemplate=(
+                f"<b>{_label}</b><br>"
+                "$%{y:,.0f}<br>"
+                "<i>Portfolio value on this date (started at $100k).</i>"
+                "<extra></extra>"
+            ),
+        ), row=1, col=1)
 
     # Row 2: VIX
     if "vix" in macro.columns:

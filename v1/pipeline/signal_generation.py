@@ -84,10 +84,16 @@ ATR_TIGHTEN_THRESHOLD = 5.0  # Tighten stop once price is 5× ATR above entry pr
                                # revert more aggressively; protect them with a tighter stop.
 ATR_TIGHTEN_MULT      = 1.5  # Tightened stop distance: 1.5× ATR (vs 3× normal).
                                # Locks in most of a 5×-ATR gain while allowing trend to run.
-ATR_PROFIT_TARGET = 8.0   # Partial exit at 8× ATR gain above entry (Elder, published).
+ATR_PROFIT_TARGET = 12.0  # Partial exit at 12× ATR gain above entry.
+                           # Captures monster winners while still firing on real
+                           # extreme moves.  Higher (15-20×) saturates returns and
+                           # turns the partial exit into a no-op (de facto buy-and-hold).
                            # At 8× ATR the position has captured most of its initial move;
                            # exiting 50% locks in profit while letting 50% ride the trend.
-ATR_PARTIAL_REMAIN = 0.5  # Keep 50% of position after partial exit.
+ATR_PARTIAL_REMAIN = 0.75  # Keep 75% of position after partial exit.
+                              # An 8× ATR winner has demonstrated trend persistence;
+                              # cutting only 25% locks in profit while letting more
+                              # of the breakout run.  Tested 0.50 → 0.75 (iter 8).
 
 # Regime-conditional RSI and ADX thresholds (Improvement 1: Bull-calm exposure boost).
 # In bull_calm (VIX < 20) trend signals are most reliable; tighter filters kill gross
@@ -116,6 +122,17 @@ _EARLY_ENTRY_DAYS: int = 0
 # Module-level SPY close cache for bull_calm detection in generate() (Part 3).
 # Loaded once and reused across all 37+ tickers to avoid 37 parquet reads.
 _SPY_CLOSE_CACHE: pd.Series | None = None
+
+# ── Profit-lock + no-new-high time-stop (overlay on signal_multi) ───────────
+# Validated 2026-04-27 on atr_lev_1.5x: the pl_5_10 + ts_40 combo Pareto-dominates
+# baseline on every metric — AnnRet 14.6→15.35, Sharpe 1.248→1.355, MaxDD
+# -10.05%→-8.67%, Calmar 1.45→1.77.  Stable plateau across ts ∈ [35, 42].
+# Acts AFTER existing trailing/time-decay exits; can only fire EARLIER.
+PROFIT_LOCK_TARGET_1 = 0.05  # Once cumulative high since entry > +5%, lock stop at entry.
+PROFIT_LOCK_LOCK_1   = 0.0   # First-tier lock level (break-even).
+PROFIT_LOCK_TARGET_2 = 0.10  # Once high > +10%, raise lock to +5%.
+PROFIT_LOCK_LOCK_2   = 0.05  # Second-tier lock (5% gain locked).
+NO_NEW_HIGH_DAYS     = 40    # Exit if 40 trading days pass with no new high since entry.
 
 TIME_DECAY_DAYS   = 126  # Close stale longs held > 6 months that are drifting negative.
                            # 126 = half the MA200 lookback — a structural timescale.
@@ -170,10 +187,29 @@ DONCHIAN_BREAKOUT_ADX_MIN = 18
 # improvements (#3 vol-regime gating, #4 Kelly sizing) that interact with them.
 IMPROVEMENT_1_NEW_SIGNALS: bool = True
 
+# ── OU s-score parameters (Avellaneda-Lee 2010, residualised mean reversion) ──
+# Residualise stock returns against SPY (1-factor market model), cumulate the
+# residuals into X_k, fit AR(1): X_{k+1} = a + b·X_k + ξ.  OU equilibrium:
+#   m         = a / (1 - b)               long-run mean of cumulative residual
+#   σ_eq²     = var(ξ) / (1 - b²)         equilibrium variance
+#   s-score   = (X_now - m) / σ_eq        z-score against the OU equilibrium
+# Positive s = residual stretched ABOVE fair value vs SPY (overstretched).
+# Negative s = residual stretched BELOW fair value vs SPY (mean-reversion long).
+# Used as a soft entry-timing gate on pullback_reentry_signal so we don't
+# enter pullbacks where the residual is already overstretched up.
+OU_WINDOW       = 60     # Avellaneda-Lee's published window: ~3 trading months
+OU_SSCORE_HIGH  = 1.50   # don't enter pullbacks above this s-score (overstretched up)
+OU_OVERSHOOT    = 2.00   # exit pullbacks if s-score climbs past this (mean-rev risk)
+
+# Master switch for Improvement #2 (OU s-score gates).
+IMPROVEMENT_2_OU_SSCORE: bool = True
+
 # Module-level counters: long-entry days added by each new signal source.
 # Printed in main() to validate that the new signals are firing as expected.
 _PULLBACK_EXTRA_ENTRIES: int = 0
 _DONCHIAN55_EXTRA_ENTRIES: int = 0
+_OU_SSCORE_BLOCKED_ENTRIES: int = 0
+_OU_SSCORE_OVERSHOOT_EXITS: int = 0
 
 DATA_DIR     = Path("data/v1/raw")
 FEATURE_DIR  = Path("data/v1/features")
@@ -784,7 +820,9 @@ def apply_trailing_stop_signal(signal: pd.Series,
         # not the profit-target tighten which stays at ATR_TIGHTEN_MULT = 1.5×).
         if vix_series is not None:
             current_vix = float(vix_series.iloc[i])
-            if current_vix > 25:
+            if current_vix > 30:
+                effective_mult = max(trail_mult * 0.55, 1.5)  # ≈ 1.65× at 3.0 base
+            elif current_vix > 25:
                 effective_mult = max(trail_mult * 0.67, 1.5)  # ≈ 2.0× at 3.0 base
             elif current_vix > 20:
                 effective_mult = trail_mult * 0.83              # ≈ 2.5× at 3.0 base
@@ -959,6 +997,92 @@ def apply_time_decay_exit(signal: pd.Series, close: pd.Series) -> pd.Series:
                         cooldown       = TIME_DECAY_WINDOW  # stay out for 21 days
 
     return result.astype(int)
+
+
+def apply_profit_lock_timestop(signal: pd.Series, close: pd.Series) -> pd.Series:
+    """
+    Tier-2 profit-lock + 40-bar no-new-high time-stop overlay.
+
+    Tracks per-position state (entry price, highest-high since entry,
+    bars-since-last-new-high) and forces an exit when EITHER:
+      • Two-tier profit lock:
+          - Once the highest-high reaches +PROFIT_LOCK_TARGET_1 (5%) above
+            entry, exit if close < entry × (1 + PROFIT_LOCK_LOCK_1) (0%
+            = break-even).
+          - Once the highest-high reaches +PROFIT_LOCK_TARGET_2 (10%)
+            above entry, raise the lock to entry × (1 + PROFIT_LOCK_LOCK_2)
+            (+5%).  Surrendering more than this is the trigger.
+      • Time-stop: NO_NEW_HIGH_DAYS (40) consecutive bars without a new
+        highest-high since entry → exit (position has stalled).
+
+    Once an overlay-exit fires, the position stays flat until the upstream
+    `signal` cycles 0 → 1 (a fresh entry).  The overlay only converts 1's
+    to 0's; it never extends a position.
+
+    Applied AFTER apply_trailing_stop_signal and apply_time_decay_exit, so
+    it can only fire EARLIER than the existing exits.  Empirically a clean
+    Pareto improvement on AnnRet, Sharpe, MaxDD, and Calmar versus baseline
+    on atr_lev_1.5x sizing (see test_exits.py validation 2026-04-27).
+
+    Args:
+        signal: Binary 0/1 Series (post all current exits).
+        close:  Close price Series aligned to signal.index.
+
+    Returns:
+        Filtered Series (int).  Same shape and index.
+    """
+    out = signal.copy().astype(int)
+    in_pos = False
+    entry  = 0.0
+    high   = 0.0
+    bars_since_high = 0
+    overlay_exited  = False
+
+    s_arr = signal.values
+    p_arr = close.values
+
+    for i in range(len(out)):
+        s_val = int(s_arr[i]) if not pd.isna(s_arr[i]) else 0
+        p     = float(p_arr[i])
+
+        if not in_pos:
+            if s_val > 0:
+                in_pos = True
+                entry  = p
+                high   = p
+                bars_since_high = 0
+                overlay_exited  = False
+            continue
+
+        if s_val == 0:
+            in_pos = False
+            overlay_exited = False
+            continue
+
+        if overlay_exited:
+            out.iloc[i] = 0
+            continue
+
+        if p > high:
+            high = p
+            bars_since_high = 0
+        else:
+            bars_since_high += 1
+
+        gain = (high - entry) / entry if entry > 0 else 0.0
+        exit_now = False
+        if gain >= PROFIT_LOCK_TARGET_2 and p < entry * (1 + PROFIT_LOCK_LOCK_2):
+            exit_now = True
+        elif gain >= PROFIT_LOCK_TARGET_1 and p < entry * (1 + PROFIT_LOCK_LOCK_1):
+            exit_now = True
+        elif bars_since_high >= NO_NEW_HIGH_DAYS:
+            exit_now = True
+
+        if exit_now:
+            out.iloc[i]    = 0
+            overlay_exited = True
+
+    return out.astype(int)
 
 
 # -----------------------------------------------------------------------------
@@ -1550,11 +1674,84 @@ def trend_ensemble_score(df: pd.DataFrame) -> pd.Series:
     return ((s_short + s_medium + s_long) / 3.0).fillna(0.0)
 
 
+def ou_sscore(
+    returns: pd.Series,
+    factor_returns: pd.Series,
+    window: int = OU_WINDOW,
+) -> pd.Series:
+    """
+    Avellaneda-Lee residualised OU s-score.
+
+    For each date t with at least `window` history, fit a 1-factor model on
+    the trailing window and compute the OU s-score on cumulative residuals:
+
+        Step 1: Regress stock_r ~ α + β·factor_r over [t-window, t]
+        Step 2: ε_k     = r_k - α - β · f_k
+        Step 3: X_k     = Σ ε_j  (cumulative residual, k = 1..window)
+        Step 4: AR(1)   X_{k+1} = a + b · X_k + ξ
+        Step 5: m       = a / (1 - b)
+                σ_eq²   = var(ξ) / (1 - b²)
+                s_t     = (X_window - m) / σ_eq
+
+    Skips windows where AR(1) is non-stationary (b ≤ 0 or b ≥ 0.999) or
+    where the factor / residual variance collapses to zero.
+
+    Reference: Avellaneda & Lee, "Statistical Arbitrage in the U.S. Equities
+    Market" (2010), eqs. 4–10.  The 60-day window is their published default.
+    """
+    aligned = pd.concat([returns, factor_returns], axis=1, keys=["r", "f"]).dropna()
+    if len(aligned) < window + 2:
+        return pd.Series(np.nan, index=returns.index, dtype=float)
+
+    r = aligned["r"].values.astype(float)
+    f = aligned["f"].values.astype(float)
+    n = len(r)
+    s = np.full(n, np.nan, dtype=float)
+
+    for t in range(window, n):
+        rw = r[t - window:t]
+        fw = f[t - window:t]
+
+        f_mean = fw.mean()
+        var_f  = ((fw - f_mean) ** 2).mean()
+        if var_f < 1e-12:
+            continue
+        r_mean = rw.mean()
+        beta   = ((rw - r_mean) * (fw - f_mean)).mean() / var_f
+        alpha  = r_mean - beta * f_mean
+        eps    = rw - alpha - beta * fw
+
+        X  = np.cumsum(eps)
+        X0 = X[:-1]
+        X1 = X[1:]
+        x0_mean = X0.mean()
+        var_x0  = ((X0 - x0_mean) ** 2).mean()
+        if var_x0 < 1e-12:
+            continue
+        b_ar = ((X0 - x0_mean) * (X1 - X1.mean())).mean() / var_x0
+        if not (0.0 < b_ar < 0.999):
+            continue
+        a_ar  = X1.mean() - b_ar * x0_mean
+        xi    = X1 - a_ar - b_ar * X0
+        var_xi = (xi ** 2).mean()
+        sigma_eq_sq = var_xi / (1.0 - b_ar ** 2)
+        if sigma_eq_sq <= 0:
+            continue
+        sigma_eq = np.sqrt(sigma_eq_sq)
+        m = a_ar / (1.0 - b_ar)
+        s[t] = (X[-1] - m) / sigma_eq
+
+    out = pd.Series(np.nan, index=returns.index, dtype=float)
+    out.loc[aligned.index] = s
+    return out
+
+
 def pullback_reentry_signal(
     df: pd.DataFrame,
     raw_ma_regime: pd.Series,
     ensemble_score: pd.Series,
     macro: pd.DataFrame,
+    sscore: pd.Series | None = None,
 ) -> pd.Series:
     """
     Re-enter long on a moderate pullback within an established uptrend.
@@ -1592,6 +1789,17 @@ def pullback_reentry_signal(
     # Verified dip: Low pierced MA20 in the lookback window (price *touched* support)
     pierced_ma20 = (df["Low"] <= ma20).rolling(PULLBACK_LOOKBACK, min_periods=1).max()
 
+    # OU s-score gate (Improvement #2).  When sscore is supplied and IMPROVEMENT_2
+    # is on, block entries when the residual is already overstretched UP relative
+    # to SPY (s > OU_SSCORE_HIGH).  NaN sscore (insufficient history) passes
+    # through — never blocks an otherwise-valid entry.
+    if sscore is not None and IMPROVEMENT_2_OU_SSCORE:
+        sscore_aligned = sscore.reindex(df.index)
+        sscore_pass    = (sscore_aligned <= OU_SSCORE_HIGH) | sscore_aligned.isna()
+    else:
+        sscore_aligned = pd.Series(np.nan, index=df.index, dtype=float)
+        sscore_pass    = pd.Series(True, index=df.index)
+
     entry = (
         (raw_ma_regime == 1) &
         (ensemble_score >= 2.0 / 3.0) &
@@ -1600,11 +1808,29 @@ def pullback_reentry_signal(
         (df["rsi_14"] > PULLBACK_RSI_LOW) &
         (df["rsi_14"] <= PULLBACK_RSI_HIGH) &
         (df["adx"] > PULLBACK_ADX_MIN) &
-        (gate == 1)
+        (gate == 1) &
+        sscore_pass
     )
+
+    # Track entries blocked purely by the s-score gate (would have fired without it)
+    global _OU_SSCORE_BLOCKED_ENTRIES, _OU_SSCORE_OVERSHOOT_EXITS
+    if sscore is not None and IMPROVEMENT_2_OU_SSCORE:
+        would_fire = (
+            (raw_ma_regime == 1) &
+            (ensemble_score >= 2.0 / 3.0) &
+            (pierced_ma20 == 1) &
+            (df["Close"] > ma20) &
+            (df["rsi_14"] > PULLBACK_RSI_LOW) &
+            (df["rsi_14"] <= PULLBACK_RSI_HIGH) &
+            (df["adx"] > PULLBACK_ADX_MIN) &
+            (gate == 1)
+        )
+        _OU_SSCORE_BLOCKED_ENTRIES += int((would_fire & ~sscore_pass.fillna(False)).sum())
 
     result = pd.Series(0, index=df.index, dtype=int)
     in_pos = False
+    overshoot_active = sscore is not None and IMPROVEMENT_2_OU_SSCORE
+    sscore_vals = sscore_aligned.values
     for i in range(len(result)):
         if not in_pos:
             if entry.iloc[i]:
@@ -1616,6 +1842,10 @@ def pullback_reentry_signal(
             elif df["rsi_14"].iloc[i] > PULLBACK_RSI_EXIT:
                 in_pos = False                                  # bounce played out
                 result.iloc[i] = 0
+            elif overshoot_active and not np.isnan(sscore_vals[i]) and sscore_vals[i] >= OU_OVERSHOOT:
+                in_pos = False                                  # OU overshoot exit
+                result.iloc[i] = 0
+                _OU_SSCORE_OVERSHOOT_EXITS += 1
             else:
                 result.iloc[i] = 1                              # hold
 
@@ -1908,6 +2138,23 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     ensemble_score = trend_ensemble_score(df)
     out["trend_ensemble"] = ensemble_score
 
+    # ── OU s-score (Improvement #2): residualised mean-reversion vs SPY ───
+    # Avellaneda-Lee s-score on a 60-day window.  SPY is the single market
+    # factor — we don't have a fitted PCA model in V1, and a 1-factor SPY
+    # residualisation captures most of the cross-sectional dispersion for
+    # ETFs and large-cap stocks.  For SPY itself the s-score is identically
+    # zero (residual = 0), so we skip computation and pass NaN through.
+    if ticker == "SPY":
+        sscore = pd.Series(np.nan, index=df.index, dtype=float)
+    else:
+        spy_close = _load_spy_close()
+        if not spy_close.empty and "log_return" in df.columns:
+            spy_log_ret = np.log(spy_close / spy_close.shift(1)).reindex(df.index)
+            sscore = ou_sscore(df["log_return"], spy_log_ret, window=OU_WINDOW)
+        else:
+            sscore = pd.Series(np.nan, index=df.index, dtype=float)
+    out["ou_sscore"] = sscore
+
     if asset_class in {"equity_index", "sector_etf", "stock"}:
         # Use raw_ma_regime (not post-processed signal_r) as the regime gate.
         # This allows breakout/bounce/persistence to activate in windows where
@@ -1935,7 +2182,7 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
         #   Higher-frequency than breakout_entry_signal (no squeeze/volume requirement).
         # NOTE: gated by IMPROVEMENT_1_NEW_SIGNALS so the contribution can be A/B'd
         # without removing the code.  Set to True after backtest validation.
-        pullback_sig    = pullback_reentry_signal(df, raw_ma_regime, ensemble_score, macro)
+        pullback_sig    = pullback_reentry_signal(df, raw_ma_regime, ensemble_score, macro, sscore=sscore)
         donchian55_sig  = donchian55_breakout_signal(df, raw_ma_regime, ensemble_score)
         if IMPROVEMENT_1_NEW_SIGNALS:
             _multi_sources.extend([pullback_sig, donchian55_sig])
@@ -1954,6 +2201,9 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
 
         # max() → long if ANY source says so. Only adds entries, never exits.
         signal_multi = pd.concat(_multi_sources, axis=1).max(axis=1).astype(int)
+        # Profit-lock + 40-bar no-new-high overlay (validated Pareto bump on
+        # atr_lev_1.5x; can only fire earlier than upstream exits).
+        signal_multi = apply_profit_lock_timestop(signal_multi, df["Close"])
     else:
         signal_multi = signal_r   # bonds/commodities: no change
 
@@ -2017,7 +2267,12 @@ def generate(df: pd.DataFrame, ticker: str, macro: pd.DataFrame) -> pd.DataFrame
     else:
         out["signal_carry"] = 0.0
 
-    return out.dropna()
+    # Drop rows missing ANY column EXCEPT ou_sscore: the OU s-score requires a
+    # 60-day SPY history and is intentionally NaN for SPY itself, so including
+    # it in dropna() collapses the saved signal matrices to zero rows.  Keep
+    # ou_sscore as an informational column with its own NaNs preserved.
+    drop_cols = [c for c in out.columns if c != "ou_sscore"]
+    return out.dropna(subset=drop_cols)
 
 # -----------------------------------------------------------------------------
 # Pair-trade signal generation
@@ -2736,6 +2991,8 @@ def main():
     multi_fast   = pd.DataFrame({t: s["signal_multi_fast"]    for t, s in all_signals.items()}).dropna()
     half_size_mat = pd.DataFrame({t: s["half_size"]           for t, s in all_signals.items()}).dropna()
     trend_ens_mat = pd.DataFrame({t: s["trend_ensemble"]      for t, s in all_signals.items()}).dropna()
+    sscore_cols   = {t: s["ou_sscore"] for t, s in all_signals.items() if "ou_sscore" in s.columns}
+    sscore_mat    = pd.DataFrame(sscore_cols) if sscore_cols else pd.DataFrame()
 
     regime.to_parquet(SIGNAL_DIR         / "regime_signals.parquet")
     composite.to_parquet(SIGNAL_DIR      / "composite_signals.parquet")
@@ -2745,6 +3002,8 @@ def main():
     multi_fast.to_parquet(SIGNAL_DIR     / "multi_fast_signals.parquet")
     half_size_mat.to_parquet(SIGNAL_DIR  / "half_size.parquet")
     trend_ens_mat.to_parquet(SIGNAL_DIR  / "trend_ensemble_score.parquet")
+    if not sscore_mat.empty:
+        sscore_mat.to_parquet(SIGNAL_DIR / "ou_sscore.parquet")
     print(f"Signal matrices saved: {regime.shape}")
 
     # Save carry signal matrix if carry was loaded into any ticker
@@ -2811,6 +3070,24 @@ def main():
         print(f"  Trend ensemble — mean conviction across {len(eq_tickers)} equity tickers: "
               f"{np.mean(ens_means):.2f}")
         print(f"  Full conviction days (score=1.0): {full_conv}  |  Chop days (score=0.0): {chop_days}")
+
+    # ── IMPROVEMENT #2 VALIDATION: OU s-score (Avellaneda-Lee) ────────────────
+    print(f"\n{'='*70}")
+    print("  IMPROVEMENT #2 — OU s-score (Avellaneda-Lee residualised mean reversion)")
+    print(f"{'='*70}")
+    print(f"  Pullback entries blocked by overstretched s-score (s > {OU_SSCORE_HIGH}): "
+          f"{_OU_SSCORE_BLOCKED_ENTRIES}")
+    print(f"  Pullback overshoot exits triggered (s >= {OU_OVERSHOOT}): "
+          f"{_OU_SSCORE_OVERSHOOT_EXITS}")
+    if eq_tickers:
+        sscore_avail = [t for t in eq_tickers
+                        if "ou_sscore" in all_signals[t].columns
+                        and all_signals[t]["ou_sscore"].notna().any()]
+        if sscore_avail:
+            sscore_means = [all_signals[t]["ou_sscore"].mean() for t in sscore_avail]
+            sscore_stds  = [all_signals[t]["ou_sscore"].std()  for t in sscore_avail]
+            print(f"  OU s-score — mean across {len(sscore_avail)} equity tickers: "
+                  f"{np.nanmean(sscore_means):+.2f} (std {np.nanmean(sscore_stds):.2f})")
 
     # ── Pair-trade signal generation ──────────────────────────────────────
     print("\n  Generating pair-trade signals (spread MA50/200 filter)...")

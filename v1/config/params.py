@@ -12,6 +12,14 @@ CAPITAL = 100_000
 START_DATE = "2010-01-01"
 END_DATE = "2026-01-01"
 
+# ── V1 production method (single source of truth) ────────────────────────────
+# Pinned 2026-04-27: atr_lev_1.5x with the pl_5_10 + ts_40 profit-lock /
+# time-stop overlay (signal_generation.apply_profit_lock_timestop).  Pareto-
+# dominates atr_pure on AnnRet / Sharpe / MaxDD / Calmar; IS-OOS gap ~-0.22.
+# Change this single constant to swap the production method everywhere
+# (dashboard tiers, paper trader, portfolio.py pin, etc.).
+V1_PRODUCTION_METHOD = "atr_lev_1.5x"
+
 # ── V2 Configuration ──────────────────────────────────────────────────────────
 # Macro regime rotation: cross-asset ETF allocation driven by hybrid regime
 # classifier (realized macro + market-implied signals).

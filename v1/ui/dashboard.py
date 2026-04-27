@@ -78,7 +78,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from datetime import datetime
-from v1.config.params import MODEL_VERSION
+from v1.config.params import MODEL_VERSION, V1_PRODUCTION_METHOD
 from v1.scripts.live_signals import get_live_signals
 from v1.scripts.paper_trader import (
     load_state, load_trades, load_history, catchup,
@@ -226,18 +226,22 @@ def main():
         return
 
     # ── Top metrics ──────────────────────────────────────────────────────────
-    # Show the LIVE strategy's backtest metrics, not the "best" OOS method.
-    # The paper trader is running _hdr_strat_k — that's what you care about.
-    # Fallback to best OOS method only when no paper trading state exists.
+    # Production method is the single-source-of-truth from
+    # v1.config.params.V1_PRODUCTION_METHOD.  We still respect the live paper-
+    # trading strategy if it differs (so the metrics row matches the curve
+    # actually being traded), but the central constant drives every default
+    # the dashboard reaches for.
+    _prod_method = V1_PRODUCTION_METHOD
     if _hdr_strat_k and _hdr_strat_k in df_port.columns:
         _prod_method = _hdr_strat_k
-        _prod_label  = get_label(_prod_method)
-    else:
-        _prod_method, _prod_label = get_production_method()
-    # Guard: method must exist in portfolio curves
-    if _prod_method not in df_port.columns:
-        _prod_method = "equal_weight"
-        _prod_label  = get_label(_prod_method)
+    elif _prod_method not in df_port.columns:
+        # Production curve missing from the parquet — fall back gracefully so
+        # the page renders, but flag that data needs to be regenerated.
+        _fallback_key, _ = get_production_method()
+        _prod_method = _fallback_key if _fallback_key in df_port.columns else (
+            next((c for c in df_port.columns if c != "buy_hold"), "buy_hold")
+        )
+    _prod_label = get_label(_prod_method)
     # Derive raw oos_selection method name for active-Sharpe lookup
     _prod_oos_key = _prod_method
     if not oos_sel.empty and "method" in oos_sel.columns:
@@ -445,7 +449,12 @@ def main():
         if len(_monthly_ret) > 756:
             _monthly_ret = _monthly_ret.iloc[756:]
         if not _monthly_ret.empty:
-            st.plotly_chart(chart_monthly_heatmap(_monthly_ret), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
+            st.plotly_chart(
+                chart_monthly_heatmap(_monthly_ret,
+                                      title=f"{_prod_label} — Monthly Returns"),
+                theme=None, use_container_width=True,
+                config={"scrollZoom": True, "displayModeBar": True},
+            )
 
     # ── Validation / Alpha Decomposition ────────────────────────────────────────
     with v_alpha:
@@ -459,27 +468,34 @@ def main():
             st.info("Run `python -m v1.pipeline.correlation_diagnostic` to generate alpha decomposition data.")
         else:
             # ── Section A: 4-column metric row ──────────────────────────────
-            _best_oos_act_sharpe = None
-            _best_ols_beta       = None
+            # Headline metrics now reflect the PRODUCTION method (atr_lev_1.5x +
+            # overlay) rather than the cherry-picked best-OOS row, so the panel
+            # tells you about the strategy actually being run.
+            _prod_oos_act_sharpe = None
+            _prod_ols_beta       = None
             _alpha_total_ratio   = None
             _avg_dw_pct          = None
 
-            if not _oos_alpha.empty:
-                if "oos_act_sharpe" in _oos_alpha.columns:
-                    _best_oos_act_sharpe = float(_oos_alpha["oos_act_sharpe"].max())
-                if "oos_sharpe" in _oos_alpha.columns:
-                    _best_oos_idx  = _oos_alpha["oos_sharpe"].idxmax()
-                    _best_oos_meth = _oos_alpha.loc[_best_oos_idx, "method"] if "method" in _oos_alpha.columns else ""
-                    if "is_sharpe" in _oos_alpha.columns and "oos_sharpe" in _oos_alpha.columns:
-                        _is_v  = float(_oos_alpha.loc[_best_oos_idx, "is_sharpe"])
-                        _oos_v = float(_oos_alpha.loc[_best_oos_idx, "oos_sharpe"])
+            if not _oos_alpha.empty and "method" in _oos_alpha.columns:
+                _norm = _oos_alpha["method"].astype(str).str.replace(" ", "_").str.replace("-", "_")
+                _prod_row = _oos_alpha[_norm == _prod_method]
+                if _prod_row.empty:
+                    # fallback: best OOS Sharpe row (legacy behaviour)
+                    if "oos_sharpe" in _oos_alpha.columns:
+                        _prod_row = _oos_alpha.loc[[_oos_alpha["oos_sharpe"].idxmax()]]
+                if not _prod_row.empty:
+                    if "oos_act_sharpe" in _prod_row.columns:
+                        _prod_oos_act_sharpe = float(_prod_row["oos_act_sharpe"].iloc[0])
+                    if "is_sharpe" in _prod_row.columns and "oos_sharpe" in _prod_row.columns:
+                        _is_v  = float(_prod_row["is_sharpe"].iloc[0])
+                        _oos_v = float(_prod_row["oos_sharpe"].iloc[0])
                         if _is_v != 0:
                             _alpha_total_ratio = _oos_v / _is_v
 
             if not _corr_diag.empty:
                 _beta_col = next((c for c in _corr_diag.columns if "beta" in c.lower()), None)
                 if _beta_col:
-                    _best_ols_beta = float(_corr_diag[_beta_col].mean())
+                    _prod_ols_beta = float(_corr_diag[_beta_col].mean())
 
             if not _df_dw.empty:
                 _dw_col = "dead_weight_pct" if "dead_weight_pct" in _df_dw.columns else \
@@ -487,19 +503,27 @@ def main():
                 if _dw_col:
                     _avg_dw_pct = float(_df_dw[_dw_col].mean())
 
+            st.markdown(
+                f"<span style='color:#888;font-size:.82rem'>"
+                f"Headline metrics anchored to production method "
+                f"<b style='color:#fb7185'>{_prod_label}</b>."
+                f"</span>",
+                unsafe_allow_html=True,
+            )
+
             _ma1, _ma2, _ma3, _ma4 = st.columns(4)
             with _ma1:
-                st.metric("Best OOS Active Sharpe",
-                          f"{_best_oos_act_sharpe:.3f}" if _best_oos_act_sharpe is not None else "—",
-                          help="Highest OOS active Sharpe (alpha / active risk) across all methods.")
+                st.metric(f"OOS Active Sharpe — {_prod_label}",
+                          f"{_prod_oos_act_sharpe:.3f}" if _prod_oos_act_sharpe is not None else "—",
+                          help="OOS active Sharpe (alpha / active risk) for the production sizer.")
             with _ma2:
                 st.metric("Avg OLS Beta",
-                          f"{_best_ols_beta:.3f}" if _best_ols_beta is not None else "—",
+                          f"{_prod_ols_beta:.3f}" if _prod_ols_beta is not None else "—",
                           help="Average OLS beta to SPY across methods in the correlation diagnostic.")
             with _ma3:
                 st.metric("OOS / IS Sharpe Ratio",
                           f"{_alpha_total_ratio:.2f}" if _alpha_total_ratio is not None else "—",
-                          help="OOS Sharpe divided by IS Sharpe for the best OOS method. "
+                          help="OOS Sharpe divided by IS Sharpe for the production method. "
                                "1.0 = perfect transfer. <0.5 = likely overfitting.")
             with _ma4:
                 st.metric("Avg Dead Weight %",
@@ -508,14 +532,24 @@ def main():
                                "<50% = signal better than random on down days.")
 
             # ── Section B: Beta rolling + Active return charts ──────────────
+            # Anchor the chart trace set on the production method (always shown
+            # first) plus the next two highest-terminal-value methods, so the
+            # production curve is never accidentally dropped.
             _bcol, _acol = st.columns(2)
-            _top3_methods = None
+            _focus_methods = None
             if not df_port.empty:
                 _non_bh_cols = [c for c in df_port.columns
                                 if c != "buy_hold" and c not in _EXCLUDE_DEFAULT]
-                _top3_methods = sorted(_non_bh_cols,
-                                       key=lambda c: df_port[c].iloc[-1] if not df_port[c].empty else 0,
-                                       reverse=True)[:3]
+                _ranked = sorted(_non_bh_cols,
+                                 key=lambda c: df_port[c].iloc[-1] if not df_port[c].empty else 0,
+                                 reverse=True)
+                _focus_methods = []
+                if _prod_method in df_port.columns:
+                    _focus_methods.append(_prod_method)
+                for _c in _ranked:
+                    if _c not in _focus_methods and len(_focus_methods) < 3:
+                        _focus_methods.append(_c)
+            _top3_methods = _focus_methods
             with _bcol:
                 _fig_beta = chart_beta_rolling(df_port, methods=_top3_methods) if not df_port.empty else None
                 if _fig_beta:
@@ -654,7 +688,7 @@ def main():
                 color  = "#50fa7b" if mean_s > 0 else "#ff5555"
                 st.markdown(f"""
 <div style="background:#252525;border-radius:10px;padding:14px 16px;font-size:.82rem;color:#c0c0c0;line-height:1.8">
-  <b>Equal-weight signal OOS</b><br>
+  <b>Signal-only walk-forward (equal-weight, no sizing)</b><br>
   <b>Mean OOS Sharpe</b> <span style="color:{color};font-weight:600">{mean_s:.3f}</span><br>
   <b>Std  OOS Sharpe</b>  {wf['sharpe'].std():.3f}<br>
   <b>Worst period</b>  {wf.loc[wf['sharpe'].idxmin(),'period']}
@@ -663,13 +697,40 @@ def main():
     (<span style="color:{PALETTE['pos']}">{wf['sharpe'].max():.2f}</span>)
 </div>""", unsafe_allow_html=True)
 
-            if not wf_atr.empty:
+            # Dynamic production-method walk-forward callout — pulls from the
+            # OOS selection table (regenerated on every portfolio.py run) so the
+            # numbers always reflect the current production sizer + overlay.
+            if not oos_sel.empty and "method" in oos_sel.columns:
+                _prod_pm = oos_sel[
+                    oos_sel["method"].str.replace(" ", "_").str.replace("-", "_") == _prod_method
+                ]
+                if not _prod_pm.empty:
+                    _is_v   = float(_prod_pm["is_sharpe"].iloc[0])    if "is_sharpe"   in _prod_pm.columns else float("nan")
+                    _oos_v  = float(_prod_pm["oos_sharpe"].iloc[0])   if "oos_sharpe"  in _prod_pm.columns else float("nan")
+                    _act_v  = float(_prod_pm["oos_act_sharpe"].iloc[0]) if "oos_act_sharpe" in _prod_pm.columns else float("nan")
+                    _gap_v  = (_is_v - _oos_v) if (_is_v == _is_v and _oos_v == _oos_v) else float("nan")
+                    color_p = "#50fa7b" if _oos_v > 0 else "#ff5555"
+                    st.markdown("")
+                    st.markdown(f"""
+<div style="background:#252525;border-radius:10px;padding:14px 16px;font-size:.82rem;color:#c0c0c0;line-height:1.8">
+  <b>Production method — {_prod_label}</b><br>
+  <b>OOS Sharpe</b> <span style="color:{color_p};font-weight:600">{_oos_v:.3f}</span> ·
+  <b>IS Sharpe</b>  {_is_v:.3f} ·
+  <b>IS-OOS gap</b> {_gap_v:+.3f}<br>
+  <b>OOS Active Sharpe</b>  {_act_v:.3f}
+  <span style="color:#666"> &nbsp;(profit-lock + 40-bar time-stop overlay)</span>
+</div>""", unsafe_allow_html=True)
+
+            # Legacy ATR+PCA+Macro walk-forward — only show if the parquet
+            # exists AND the legacy method is still in the active TIER_SHOW set
+            # (otherwise it's stale data for a removed sizer).
+            if not wf_atr.empty and "atr_pca_macro" in TIER_SHOW:
                 st.markdown("")
                 mean_s_atr = wf_atr["sharpe"].mean()
                 color_atr  = "#50fa7b" if mean_s_atr > 0 else "#ff5555"
                 st.markdown(f"""
 <div style="background:#252525;border-radius:10px;padding:14px 16px;font-size:.82rem;color:#c0c0c0;line-height:1.8">
-  <b>ATR+PCA+Macro sizing OOS</b><br>
+  <b>ATR+PCA+Macro sizing OOS (legacy)</b><br>
   <b>Mean OOS Sharpe</b> <span style="color:{color_atr};font-weight:600">{mean_s_atr:.3f}</span><br>
   <b>Std  OOS Sharpe</b>  {wf_atr['sharpe'].std():.3f}
 </div>""", unsafe_allow_html=True)
@@ -785,7 +846,8 @@ def main():
                 "</span>",
                 unsafe_allow_html=True,
             )
-            st.plotly_chart(chart_macro_overlay(df_port, macro, fred=fred),
+            st.plotly_chart(chart_macro_overlay(df_port, macro, fred=fred,
+                                                primary_method=_prod_method),
                             theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
 
             # Regime statistics

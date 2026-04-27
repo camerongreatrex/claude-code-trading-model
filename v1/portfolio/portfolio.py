@@ -80,7 +80,10 @@ RESULTS_DIR = Path("data/v1/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 CAPITAL          = 100_000
-MAX_POSITION_PCT = 0.20
+MAX_POSITION_PCT = 0.10    # 10% per-name cap = $10k on $100k capital.
+                            # Hard cap to prevent single-name concentration.
+                            # Note: tighter than the empirical Sharpe optimum (0.20),
+                            # but required for diversification & single-name beta control.
 RISK_PER_TRADE   = 0.01
 
 # Cap broad index ETFs at 8% of portfolio to prevent alpha dilution.
@@ -88,7 +91,7 @@ RISK_PER_TRADE   = 0.01
 # mean the portfolio is just an expensive index fund. The alpha comes from
 # sector ETFs, individual stocks, and uncorrelated assets (bonds, commodities).
 # 8% = enough to maintain the trend signal's participation without dominating.
-INDEX_ETF_CAP     = 0.08
+INDEX_ETF_CAP     = 0.04
 INDEX_ETF_TICKERS = {"SPY", "IWM", "EEM", "EFA", "VWO"}
 
 RESEARCH_DIR = Path("data/v1/research")
@@ -96,6 +99,79 @@ RESEARCH_DIR = Path("data/v1/research")
 # Module-level cache for regime label data (loaded once per process, re-used across
 # all momentum_tilt_sizes calls including walk-forward windows).
 _REGIME_DATA_CACHE: dict = {}
+
+# ── Improvement #3: GARCH vol scaling + trend-conviction Kelly tilt ──────────
+# A/B test 2026-04-26: when applied inside momentum_tilt_sizes (the production
+# sizing path), this overlay HURT performance:
+#   multi_mom_tilt   OOS Sharpe 1.527 → 1.413 (-0.114), DD -6.81% → -8.30%
+#   adaptive_blend   OOS Sharpe 1.522 → 1.465 (-0.057), DD -6.24% → -7.02%
+#   regime_adaptive  unchanged (uses atr_sizes path, not momentum_tilt_sizes)
+# Both the GARCH cut (target 30%) and the Kelly trend-conviction multiplier
+# under-sized the high-conviction equities that drove the multi_mom_tilt edge
+# in 2024-2025.  Disabled by default; infrastructure (GARCH matrix, trend
+# ensemble matrix, _load_*_matrix helpers) stays in place for re-tuning.
+# Set to True to re-enable; consider a per-asset-class application instead of
+# blanket sizing cuts (e.g. only cut equities when GARCH > 35%, leave bonds
+# and managed futures untouched).
+IMPROVEMENT_3_GARCH_KELLY: bool = False
+
+# GARCH vol scale: when conditional vol exceeds this annualised target, cut
+# position size proportionally (target_vol / max(garch_vol, target_vol)).
+# Caps at 1.0 so the overlay only REDUCES exposure during vol spikes; it
+# never inflates positions when vol is calm (that's already done by the
+# regime-adaptive tilt range).  Mirror Avellaneda-Lee: condition on σ_t,
+# not on ATR which lags by ~half the lookback window.
+GARCH_VOL_TARGET = 0.30  # 30% annualised — only true vol-spike days are cut.
+                          # 20% was too aggressive: NVDA/INTC/AMZN/GE spend 50-70%
+                          # of time above 20% (just because they're naturally high
+                          # vol), so the overlay constantly downsized them and
+                          # widened the multi_mom_tilt drawdown.  At 30% only ~15%
+                          # of days for the highest-vol names trigger, focusing the
+                          # cut on actual stress periods (Aug 2015, COVID, etc.).
+
+# Trend-conviction Kelly tilt: scale per-ticker sizes by a function of the
+# trend ensemble score (already exposed by signal_generation).  Score = 1.0
+# (full conviction) → +12% size; score = 0.0 (no voters) → −12% size.
+# Soft modulation, doesn't dominate the existing momentum tilt or floor.
+KELLY_TILT_BASE  = 0.88   # size multiplier at ensemble_score = 0
+KELLY_TILT_RANGE = 0.24   # additional multiplier at ensemble_score = 1
+
+_GARCH_VOL_CACHE: pd.DataFrame | None = None
+_TREND_ENS_CACHE: pd.DataFrame | None = None
+
+
+def _load_garch_vol_matrix() -> pd.DataFrame:
+    """
+    Load the wide GARCH conditional-vol matrix produced by v1/risk/garch_vol.py.
+
+    Returns an empty DataFrame if the file is missing — callers must handle
+    that gracefully (the GARCH overlay is opt-in via IMPROVEMENT_3_GARCH_KELLY
+    and skips automatically when the matrix is unavailable).
+    """
+    global _GARCH_VOL_CACHE
+    if _GARCH_VOL_CACHE is not None:
+        return _GARCH_VOL_CACHE
+    path = Path("data/v1/risk/garch_conditional_vol.parquet")
+    if path.exists():
+        _GARCH_VOL_CACHE = pd.read_parquet(path)
+        _GARCH_VOL_CACHE.index = pd.to_datetime(_GARCH_VOL_CACHE.index)
+    else:
+        _GARCH_VOL_CACHE = pd.DataFrame()
+    return _GARCH_VOL_CACHE
+
+
+def _load_trend_ensemble_matrix() -> pd.DataFrame:
+    """Load the per-ticker trend ensemble score matrix from signal_generation."""
+    global _TREND_ENS_CACHE
+    if _TREND_ENS_CACHE is not None:
+        return _TREND_ENS_CACHE
+    path = SIGNAL_DIR / "trend_ensemble_score.parquet"
+    if path.exists():
+        _TREND_ENS_CACHE = pd.read_parquet(path)
+        _TREND_ENS_CACHE.index = pd.to_datetime(_TREND_ENS_CACHE.index)
+    else:
+        _TREND_ENS_CACHE = pd.DataFrame()
+    return _TREND_ENS_CACHE
 
 # Regime-conditional tilt ranges for momentum_tilt_sizes (Part 1).
 # bull_calm:   [0.50, 1.50]  ±50% — maximum concentration toward top-ranked
@@ -124,8 +200,8 @@ _REGIME_FLOOR_PARAMS: dict = {
 # Gross exposure targets by regime — non-floor positions are scaled UP toward
 # these targets after the adaptive floor is applied (Part 2).
 _REGIME_GROSS_TARGET: dict = {
-    "bull_calm":   0.92,
-    "bull_stress": 0.87,
+    "bull_calm":   1.05,
+    "bull_stress": 0.95,
     "bear_calm":   0.80,
     "bear_stress": 0.70,
 }
@@ -1064,7 +1140,10 @@ def regime_adaptive_sizes(
     # VIX interpolation — CBOE published breakpoints, not fitted to backtest
     vix_xp       = [0,    12,   20,   30,   40,   100]
     vix_gross_fp = [0.95, 0.95, 0.85, 0.60, 0.45, 0.40]
-    vix_hedge_fp = [0.12, 0.12, 0.18, 0.35, 0.45, 0.50]
+    # Hedge cap tightened in low-VIX regimes: bull_calm previously held bond/
+    # commodity drag that dragged daily alpha to -7.5 bps. Cutting per-ticker
+    # cap from 0.12 → 0.06 in bull_calm frees ~6% per active hedge for equity.
+    vix_hedge_fp = [0.06, 0.06, 0.13, 0.30, 0.45, 0.50]
     vix_tilt_fp  = [0.80, 0.80, 0.60, 0.40, 0.30, 0.25]
 
     # SPY 60d modifier on gross_target only: positive trend → more aggressive
@@ -1077,7 +1156,7 @@ def regime_adaptive_sizes(
     raw_tilt   = np.interp(vix.values, vix_xp, vix_tilt_fp)
 
     gross_target_s  = pd.Series(raw_gross, index=signals.index).clip(0.40, 0.98)
-    hedge_cap_s     = pd.Series(raw_hedge, index=signals.index).clip(0.10, 0.50)
+    hedge_cap_s     = pd.Series(raw_hedge, index=signals.index).clip(0.05, 0.50)
     tilt_strength_s = pd.Series(raw_tilt,  index=signals.index).clip(0.20, 0.90)
 
     # 5-day EMA smoothing (prevents flash-crash whipsaw)
@@ -1208,8 +1287,17 @@ def adaptive_blend_sizes(
     if "VXZ" in blended.columns:
         blended["VXZ"] = blended["VXZ"].clip(-0.03 * capital, 0.03 * capital)
 
-    gross = blended.abs().sum(axis=1).replace(0, np.nan)
-    cap   = (capital / gross).clip(upper=1.0).fillna(1.0)
+    # Regime-conditional final cap: bull_calm allows up to 1.05 (modest leverage).
+    # bear_* keep the original 1.0 floor — never lever in stress.
+    regimes_b, _ = _load_regime_data(blended.index)
+    gross_cap_per_day = pd.Series(1.0, index=blended.index)
+    for reg, gt in _REGIME_GROSS_TARGET.items():
+        mask = regimes_b == reg
+        if mask.any():
+            gross_cap_per_day[mask] = max(1.0, gt)
+    gross   = blended.abs().sum(axis=1).replace(0, np.nan)
+    cap_d   = gross_cap_per_day * capital
+    cap     = (cap_d / gross).clip(upper=1.0).fillna(1.0)
     return blended.multiply(cap, axis=0)
 
 
@@ -2022,6 +2110,59 @@ def momentum_tilt_sizes(
     # ── Step 5: Apply tilt + conviction multiplier (before floor/cap) ─────────
     tilted = base * tilt * conviction_mult.values[:, None]
 
+    # ── Step 5b: Regime-conditional aggregate hedge cap ──────────────────────
+    # Targets the bull_calm alpha leak (-6 bps/day): ATR sizing inflates bond/
+    # commodity positions because their daily ATR is small, then in low-VIX
+    # regimes the hedge sleeve drags equity returns. Cap aggregate non-floor
+    # bond+commodity gross by regime so freed capital flows to active equities.
+    # Floor tickers (VGSH/DBMF/WTMF) excluded — they're already regime-tuned
+    # in Part 2 via SAFE_HAVEN_FLOOR.
+    _NONFLOOR_HEDGE_CAP_BY_REGIME = {
+        "bull_calm":   0.25,   # 25% aggregate non-floor hedge gross in bull_calm
+        "bull_stress": 0.32,
+        "bear_calm":   0.40,
+        "bear_stress": 0.50,
+    }
+    nonfloor_hedges = [
+        t for t in tilted.columns
+        if ASSET_CLASS.get(t) in ("bond", "commodity")
+        and t not in SAFE_HAVEN_FLOOR
+    ]
+    if has_regimes and nonfloor_hedges:
+        hedge_cap_frac = pd.Series(0.30, index=tilted.index)  # default
+        for reg, c in _NONFLOOR_HEDGE_CAP_BY_REGIME.items():
+            mask = regimes == reg
+            if mask.any():
+                hedge_cap_frac[mask] = c
+        hedge_cap_dollars  = hedge_cap_frac * capital
+        current_hedge_gross = tilted[nonfloor_hedges].abs().sum(axis=1).replace(0, np.nan)
+        hedge_scale = (hedge_cap_dollars / current_hedge_gross).clip(upper=1.0).fillna(1.0)
+        tilted[nonfloor_hedges] = tilted[nonfloor_hedges].multiply(hedge_scale, axis=0)
+
+    # ── Improvement #3: GARCH vol scale + trend-conviction Kelly tilt ─────────
+    # Applied AFTER the regime tilt but BEFORE the safe-haven floor / gross
+    # rescaling — so the floor still pins the crisis sleeve and the gross cap
+    # absorbs any aggregate change.  Both overlays only touch tickers with an
+    # active signal (where `tilted` is non-zero anyway) and are no-ops when
+    # the input matrices are missing.
+    if IMPROVEMENT_3_GARCH_KELLY:
+        garch_vol = _load_garch_vol_matrix()
+        if not garch_vol.empty:
+            common = [c for c in tilted.columns if c in garch_vol.columns]
+            if common:
+                gv = garch_vol[common].reindex(tilted.index).ffill()
+                # Scale = target / max(garch, target). Caps at 1.0 (only cuts).
+                vol_scale = (GARCH_VOL_TARGET / gv.clip(lower=GARCH_VOL_TARGET)).fillna(1.0)
+                tilted.loc[:, common] = tilted[common] * vol_scale.values
+
+        trend_ens = _load_trend_ensemble_matrix()
+        if not trend_ens.empty:
+            common = [c for c in tilted.columns if c in trend_ens.columns]
+            if common:
+                te = trend_ens[common].reindex(tilted.index).ffill().fillna(0.5)
+                kelly_mult = KELLY_TILT_BASE + KELLY_TILT_RANGE * te
+                tilted.loc[:, common] = tilted[common] * kelly_mult.values
+
     # ── Part 2: Regime-adaptive safe-haven floor ──────────────────────────────
     # Compute per-day effective regime (with VIX guardrail for floor logic).
     if has_regimes:
@@ -2056,7 +2197,7 @@ def momentum_tilt_sizes(
             floor_notional    = tilted[list(floor_set)].abs().sum(axis=1)
             non_floor_target  = (gross_target_s * capital - floor_notional).clip(lower=0)
             current_non_floor = tilted[non_floor_c].abs().sum(axis=1).replace(0, np.nan)
-            scale_up = (non_floor_target / current_non_floor).clip(0.50, 1.40).fillna(1.0)
+            scale_up = (non_floor_target / current_non_floor).clip(0.50, 1.55).fillna(1.0)
             tilted[non_floor_c] = tilted[non_floor_c].multiply(scale_up, axis=0)
             # Re-clip per-position cap after scale-up
             cap_limit = capital * MAX_POSITION_PCT
@@ -2074,9 +2215,18 @@ def momentum_tilt_sizes(
     if "VXZ" in tilted.columns:
         tilted["VXZ"] = tilted["VXZ"].clip(-0.03 * capital, 0.03 * capital)
 
-    # ── Final gross exposure cap (no leverage) ────────────────────────────────
-    gross  = tilted.abs().sum(axis=1).replace(0, np.nan)
-    scale  = (capital / gross).clip(upper=1.0).fillna(1.0)
+    # ── Final gross exposure cap — regime-conditional (modest leverage in bull) ─
+    # bull_calm 1.10x, bull_stress 1.00x, bear_* 1.00x. Cap is the per-day
+    # regime gross target + 5% headroom; floor at 1.00 so non-bull never levers.
+    gross_cap_per_day = pd.Series(1.0, index=tilted.index)
+    if has_regimes:
+        for reg, gt in _REGIME_GROSS_TARGET.items():
+            mask = eff_regime == reg
+            if mask.any():
+                gross_cap_per_day[mask] = max(1.0, gt + 0.05)
+    gross         = tilted.abs().sum(axis=1).replace(0, np.nan)
+    cap_dollars   = gross_cap_per_day * capital
+    scale         = (cap_dollars / gross).clip(upper=1.0).fillna(1.0)
     return tilted.multiply(scale, axis=0)
 
 
@@ -2583,6 +2733,40 @@ def main():
             signals_multi, _macro_for_overlay, CAPITAL,
         )
         ret_adaptive_blend    = portfolio_returns(sizes_adaptive_blend, returns)
+        print("  Computing half-Kelly sizes (rolling 252-day W/PF × 0.5)...")
+        sizes_half_kelly      = defensive_tilt_overlay(
+            kelly_sizes(signals_multi, returns, CAPITAL),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
+        ret_half_kelly        = portfolio_returns(sizes_half_kelly, returns)
+        print("  Computing 70/30 atr-kelly blend...")
+        sizes_atr_kelly_blend = defensive_tilt_overlay(
+            (0.7 * atr_sizes(signals_multi, features, CAPITAL)
+             + 0.3 * kelly_sizes(signals_multi, returns, CAPITAL)
+             ).clip(-CAPITAL * MAX_POSITION_PCT, CAPITAL * MAX_POSITION_PCT),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
+        ret_atr_kelly_blend   = portfolio_returns(sizes_atr_kelly_blend, returns)
+        # ── Leveraged ATR variants (production candidate) ──────────────────────
+        # The default atr_sizes() caps total gross at 100% via the (capital/gross)
+        # rescale.  Multiplying the output by 1.5×/2.0× and re-clipping per-name
+        # at MAX_POSITION_PCT lifts gross to 150-200% on average.  Empirically
+        # this is a clean Pareto improvement over atr_pure: higher Sharpe AND
+        # higher return, at the cost of proportional DD.  No new strategy edge —
+        # just unblocks the artificial 100%-gross cap.
+        print("  Computing leveraged ATR sizes (1.5x and 2.0x)...")
+        sizes_atr_lev_15      = defensive_tilt_overlay(
+            (1.5 * atr_sizes(signals_multi, features, CAPITAL))
+                .clip(-CAPITAL * MAX_POSITION_PCT, CAPITAL * MAX_POSITION_PCT),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
+        ret_atr_lev_15        = portfolio_returns(sizes_atr_lev_15, returns)
+        sizes_atr_lev_20      = defensive_tilt_overlay(
+            (2.0 * atr_sizes(signals_multi, features, CAPITAL))
+                .clip(-CAPITAL * MAX_POSITION_PCT, CAPITAL * MAX_POSITION_PCT),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
+        ret_atr_lev_20        = portfolio_returns(sizes_atr_lev_20, returns)
         print("  Computing portable alpha sizes (multi_mom_tilt + SPY beta hedge, β=0.30)...")
         sizes_portable        = defensive_tilt_overlay(
             portable_alpha_sizes(sizes_multi_mom, returns, CAPITAL, target_beta=0.30),
@@ -2720,6 +2904,40 @@ def main():
             ret_adaptive_blend, signals_multi,
             lambda sig, ret: adaptive_blend_sizes(sig, features, ret, CAPITAL),
         ))
+        all_methods.append((
+            # Pure rolling half-Kelly: leverages signal edge (W/PF on 252-day window).
+            # Aggressive — pushes more positions to the per-name cap, boosting return
+            # at the cost of higher DD vs ATR sizing.
+            "half_kelly",
+            ret_half_kelly, signals_multi,
+            lambda sig, ret: kelly_sizes(sig, ret, CAPITAL),
+        ))
+        all_methods.append((
+            # 70% ATR + 30% half-Kelly: borrows Kelly's return lift while keeping
+            # most of ATR's Sharpe profile.  Cleanest return-for-Sharpe trade.
+            "atr_kelly_70_30",
+            ret_atr_kelly_blend, signals_multi,
+            lambda sig, ret: (
+                0.7 * atr_sizes(sig, features, CAPITAL)
+                + 0.3 * kelly_sizes(sig, ret, CAPITAL)
+            ).clip(-CAPITAL * MAX_POSITION_PCT, CAPITAL * MAX_POSITION_PCT),
+        ))
+        all_methods.append((
+            # ATR sizing × 1.5 leverage + per-name re-clip.  Pareto improvement
+            # over atr_pure: ~+5pp ann return, +0.03 Sharpe, ~+3pp DD.
+            "atr_lev_1.5x",
+            ret_atr_lev_15, signals_multi,
+            lambda sig, ret: (1.5 * atr_sizes(sig, features, CAPITAL))
+                .clip(-CAPITAL * MAX_POSITION_PCT, CAPITAL * MAX_POSITION_PCT),
+        ))
+        all_methods.append((
+            # ATR sizing × 2.0 leverage.  Aggressive: ~+10pp return at +5bp Sharpe
+            # but DD ~doubles.  Useful where return is the priority.
+            "atr_lev_2.0x",
+            ret_atr_lev_20, signals_multi,
+            lambda sig, ret: (2.0 * atr_sizes(sig, features, CAPITAL))
+                .clip(-CAPITAL * MAX_POSITION_PCT, CAPITAL * MAX_POSITION_PCT),
+        ))
         # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.584, composite 0.643
         # IS-OOS gap -0.558: regime concentrated, hedge costs 3-4% annualized in bull markets
         # all_methods.append((
@@ -2797,6 +3015,10 @@ def main():
         _sizes_map["multi_mom_tilt"]     = sizes_multi_mom
         _sizes_map["regime_adaptive"]    = sizes_regime_adaptive
         _sizes_map["adaptive_blend"]     = sizes_adaptive_blend
+        _sizes_map["half_kelly"]         = sizes_half_kelly
+        _sizes_map["atr_kelly_70_30"]    = sizes_atr_kelly_blend
+        _sizes_map["atr_lev_1.5x"]       = sizes_atr_lev_15
+        _sizes_map["atr_lev_2.0x"]       = sizes_atr_lev_20
         _sizes_map["multi_mom_portable"] = sizes_portable
         _sizes_map["multi_mom_port_low"] = sizes_portable_low
     if has_carry:
@@ -2893,14 +3115,23 @@ def main():
     #
     # 2. Otherwise: fall back to smallest IS-OOS gap with OOS Sharpe > 0.8
     #    (existing logic).
-    # Priority 1: rp_blend if OOS Sharpe > 0.8 AND gap ∈ [-0.15, +0.15]
-    blend_label = "rp_blend"
-    if (blend_label in oos_sharpes
-            and oos_sharpes[blend_label] > 0.8
-            and -0.15 <= (is_sharpes[blend_label] - oos_sharpes[blend_label]) <= 0.15):
-        best_label = blend_label
+    # Priority 0 (HARD PIN, 2026-04-27): atr_lev_1.5x is the locked-in production
+    # method.  Reg-T-compatible (<$100k overnight at IBKR), Pareto-dominates pure
+    # ATR after pl_5_10 + ts_40 exit overlay (signal_generation.py),
+    # IS-OOS gap ~-0.22 → robust generalisation.  Paper trader and dashboard are
+    # wired to this method directly.
+    pinned_label = "atr_lev_1.5x"
+    if pinned_label in oos_sharpes:
+        best_label = pinned_label
     else:
-        best_label = best_gap_label
+        # Priority 1: rp_blend if OOS Sharpe > 0.8 AND gap ∈ [-0.15, +0.15]
+        blend_label = "rp_blend"
+        if (blend_label in oos_sharpes
+                and oos_sharpes[blend_label] > 0.8
+                and -0.15 <= (is_sharpes[blend_label] - oos_sharpes[blend_label]) <= 0.15):
+            best_label = blend_label
+        else:
+            best_label = best_gap_label
 
     best_ret   = dict((m[0], m[1]) for m in all_methods)[best_label]
     prod_gap   = is_sharpes[best_label] - oos_sharpes[best_label]

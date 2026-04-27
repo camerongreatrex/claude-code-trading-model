@@ -83,5 +83,5 @@
   "initialized_date": "2026-03-20",
   "last_eod_date": "2026-04-24",
   "portfolio_value": 109055.3062404081,
-  "strategy": "multi_mom_tilt"
+  "strategy": "atr_lev_1.5x"
 }

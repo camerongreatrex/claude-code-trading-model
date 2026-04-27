@@ -3,6 +3,8 @@
 
 import plotly.graph_objects as go  # noqa: F401 — available for callers
 
+from v1.config.params import V1_PRODUCTION_METHOD
+
 # ── Fine-grained CSS tweaks (dark grey tone-on-tone) ──────────────────────────
 CSS = """
 <style>
@@ -125,6 +127,8 @@ PALETTE = {
     "portable_carry"        : "#facc15",   # yellow
     "dbmf"                  : "#06b6d4",   # cyan-500  — managed futures
     "wtmf"                  : "#0e7490",   # cyan-700  — managed futures (conservative)
+    "atr_lev_1.5x"          : "#fb7185",   # rose-400  — production primary
+    "atr_lev_2.0x"          : "#9f1239",   # rose-800  — aggressive variant
 }
 # LABELS maps the same keys to human-readable legend/table strings.
 LABELS = {
@@ -169,6 +173,8 @@ LABELS = {
     "multi_mom_port_low"    : "Portable Alpha (Low Beta)",
     "multi_mom_carry"       : "Momentum + Carry",
     "portable_carry"        : "Portable Carry",
+    "atr_lev_1.5x"          : "ATR Lev 1.5x ★",
+    "atr_lev_2.0x"          : "ATR Lev 2.0x",
 }
 
 # ── Dashboard display tiers ───────────────────────────────────────────────────
@@ -180,8 +186,12 @@ LABELS = {
 #                  for research purposes).
 
 TIER_SHOW = {
-    # Top 5 strategies from audit 2026-04-08 + benchmark
-    "multi_mom_tilt",       # rank 1 — OOS 1.399  composite 0.775  (recommended live)
+    # Production primary is sourced from v1.config.params.V1_PRODUCTION_METHOD
+    # (currently atr_lev_1.5x).  Pareto-dominates atr_pure on
+    # AnnRet/Sharpe/MaxDD/Calmar after pl_5_10 + ts_40 exit overlay.
+    V1_PRODUCTION_METHOD,   # PRODUCTION — OOS 1.570 / IS-OOS gap -0.217
+    "atr_lev_2.0x",         # Aggressive variant (Portfolio Margin only)
+    "multi_mom_tilt",       # rank 1 — OOS 1.399  composite 0.775
     "multi_equal_weight",   # rank 2 — OOS 1.348  composite 0.753
     "adaptive_blend",       # rank 3 — OOS 1.395  composite 0.745
     "multi_atr_pure",       # rank 4 — OOS 1.348  composite 0.738
