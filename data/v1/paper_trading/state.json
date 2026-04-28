@@ -1,73 +1,66 @@
 {
-  "cash": 4381.50675564919,
+  "cash": 8949.523382699044,
   "positions": {
     "EEM": {
       "shares": 80.1639657180141,
       "entry_price": 57.619998931884766,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 63.63999938964844
+      "last_close": 62.9900016784668
     },
     "VWO": {
       "shares": 85.52208410652838,
       "entry_price": 54.0099983215332,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 58.72999954223633
-    },
-    "GLD": {
-      "shares": 10.83240913528799,
-      "entry_price": 426.4100036621094,
-      "entry_date": "2026-03-20",
-      "cost_basis": 4619.047619047619,
-      "last_close": 429.8900146484375
+      "last_close": 58.31999969482422
     },
     "EFA": {
       "shares": 206.4131952110358,
       "entry_price": 95.83999633789062,
       "entry_date": "2026-03-24",
       "cost_basis": 19782.639873117972,
-      "last_close": 101.37999725341797
+      "last_close": 100.95999908447266
     },
     "NVDA": {
       "shares": 82.19441562742274,
       "entry_price": 167.52000427246094,
       "entry_date": "2026-03-27",
       "cost_basis": 13769.208857078287,
-      "last_close": 216.61000061035156
+      "last_close": 213.1699981689453
     },
     "UUP": {
       "shares": 613.3278350571328,
       "entry_price": 27.3700008392334,
       "entry_date": "2026-04-16",
       "cost_basis": 16786.78336023893,
-      "last_close": 27.450000762939453
+      "last_close": 27.530000686645508
     },
     "XLV": {
       "shares": 105.42102099597906,
       "entry_price": 148.8000030517578,
       "entry_date": "2026-04-17",
       "cost_basis": 15686.64824592111,
-      "last_close": 143.4600067138672
+      "last_close": 143.83999633789062
     },
     "SPY": {
       "shares": 12.220597613716574,
       "entry_price": 713.9400024414062,
       "entry_date": "2026-04-24",
       "cost_basis": 8724.773490172254,
-      "last_close": 715.1699829101562
+      "last_close": 711.6900024414062
     },
     "HYG": {
       "shares": 136.07381980477692,
       "entry_price": 80.51000213623047,
       "entry_date": "2026-04-27",
       "cost_basis": 10955.30352316763,
-      "last_close": 80.51000213623047
+      "last_close": 80.4000015258789
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
-  "last_eod_date": "2026-04-27",
-  "portfolio_value": 109547.5575799147,
+  "last_eod_date": "2026-04-28",
+  "portfolio_value": 109033.84652488487,
   "strategy": "atr_lev_1.5x"
 }

@@ -46,3 +46,4 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-04-27,NEE,SELL,49.984281,94.83,4740.01,2.37,118.59,signal_exit
 2026-04-27,GS,SELL,5.70605,937.81,5351.19,2.68,729.47,signal_exit
 2026-04-27,HYG,BUY,136.07382,80.51,10955.3,5.48,,signal_entry
+2026-04-28,GLD,SELL,10.832409,421.91,4570.3,2.29,-51.03,signal_exit
