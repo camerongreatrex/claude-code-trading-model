@@ -154,19 +154,21 @@ def get_production_method() -> tuple:
     """
     Single source of truth for production method selection.
 
-    PINNED 2026-04-27: returns ("atr_lev_1.5x") as the locked-in production
-    sizer.  Reg-T compatible (<$100k overnight at IBKR), Pareto-dominates
-    atr_pure on AnnRet / Sharpe / MaxDD / Calmar after the pl_5_10 + ts_40
-    exit overlay (see signal_generation.py).  The auto-selection from
-    oos_selection.parquet is retained as a fallback only when atr_lev_1.5x
-    is missing from the OOS table.
+    Reads v1.config.params.V1_PRODUCTION_METHOD (pinned 2026-04-27 to
+    atr_lev_1.5x) as the locked-in production sizer.  Reg-T compatible
+    (<$100k overnight at IBKR), Pareto-dominates atr_pure on AnnRet /
+    Sharpe / MaxDD / Calmar after the pl_5_10 + ts_40 exit overlay (see
+    signal_generation.py).  The auto-selection from oos_selection.parquet
+    is retained as a fallback only when the pinned method is missing from
+    the OOS table.
 
     Returns:
         (method_key, display_label) e.g. ("atr_lev_1.5x", "ATR Lev 1.5x ★")
     """
     from v1.ui.styles import get_label  # lazy import to avoid circular dependency
+    from v1.config.params import V1_PRODUCTION_METHOD
 
-    pinned_key = "atr_lev_1.5x"
+    pinned_key = V1_PRODUCTION_METHOD
     fallback_key = "equal_weight"
     try:
         oos = pd.read_parquet("data/v1/results/oos_selection.parquet")

@@ -721,16 +721,17 @@ def main():
   <span style="color:#666"> &nbsp;(profit-lock + 40-bar time-stop overlay)</span>
 </div>""", unsafe_allow_html=True)
 
-            # Legacy ATR+PCA+Macro walk-forward — only show if the parquet
-            # exists AND the legacy method is still in the active TIER_SHOW set
-            # (otherwise it's stale data for a removed sizer).
-            if not wf_atr.empty and "atr_pca_macro" in TIER_SHOW:
+            # Per-window walk-forward for the production method.  After the
+            # portfolio.py rebuild, walk_forward_atr_pca.parquet stores the
+            # production sizer's walk-forward windows (was ATR+PCA+Macro
+            # historically, retained the filename for backward compatibility).
+            if not wf_atr.empty:
                 st.markdown("")
                 mean_s_atr = wf_atr["sharpe"].mean()
                 color_atr  = "#50fa7b" if mean_s_atr > 0 else "#ff5555"
                 st.markdown(f"""
 <div style="background:#252525;border-radius:10px;padding:14px 16px;font-size:.82rem;color:#c0c0c0;line-height:1.8">
-  <b>ATR+PCA+Macro sizing OOS (legacy)</b><br>
+  <b>{_prod_label} — per-window walk-forward</b><br>
   <b>Mean OOS Sharpe</b> <span style="color:{color_atr};font-weight:600">{mean_s_atr:.3f}</span><br>
   <b>Std  OOS Sharpe</b>  {wf_atr['sharpe'].std():.3f}
 </div>""", unsafe_allow_html=True)

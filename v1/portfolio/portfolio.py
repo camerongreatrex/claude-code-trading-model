@@ -3115,12 +3115,14 @@ def main():
     #
     # 2. Otherwise: fall back to smallest IS-OOS gap with OOS Sharpe > 0.8
     #    (existing logic).
-    # Priority 0 (HARD PIN, 2026-04-27): atr_lev_1.5x is the locked-in production
-    # method.  Reg-T-compatible (<$100k overnight at IBKR), Pareto-dominates pure
-    # ATR after pl_5_10 + ts_40 exit overlay (signal_generation.py),
-    # IS-OOS gap ~-0.22 → robust generalisation.  Paper trader and dashboard are
-    # wired to this method directly.
-    pinned_label = "atr_lev_1.5x"
+    # Priority 0 (HARD PIN): the production method is set in v1.config.params
+    # as V1_PRODUCTION_METHOD (currently atr_lev_1.5x).  Reg-T-compatible
+    # (<$100k overnight at IBKR), Pareto-dominates pure ATR after the
+    # pl_5_10 + ts_40 exit overlay (signal_generation.py),
+    # IS-OOS gap ~-0.22 → robust generalisation.  Paper trader and dashboard
+    # both read the same constant, so swapping methods is a single edit.
+    from v1.config.params import V1_PRODUCTION_METHOD
+    pinned_label = V1_PRODUCTION_METHOD
     if pinned_label in oos_sharpes:
         best_label = pinned_label
     else:
@@ -3303,17 +3305,27 @@ def main():
         comparison_curves["adaptive_blend"]     = equity_curve(ret_adaptive_blend,  CAPITAL)
         comparison_curves["multi_mom_portable"] = equity_curve(ret_portable,        CAPITAL)
         comparison_curves["multi_mom_port_low"] = equity_curve(ret_portable_low,    CAPITAL)
+        # Pinned production sizer (atr_lev_1.5x) + aggressive variant.  Both
+        # are needed by the dashboard's TIER_SHOW so the production curve
+        # appears on every chart that consumes portfolio_comparison.parquet.
+        comparison_curves["atr_lev_1.5x"]       = equity_curve(ret_atr_lev_15,      CAPITAL)
+        comparison_curves["atr_lev_2.0x"]       = equity_curve(ret_atr_lev_20,      CAPITAL)
+        comparison_curves["half_kelly"]         = equity_curve(ret_half_kelly,      CAPITAL)
+        comparison_curves["atr_kelly_70_30"]    = equity_curve(ret_atr_kelly_blend, CAPITAL)
     if has_carry:
         comparison_curves["multi_mom_carry"] = equity_curve(ret_mom_carry,      CAPITAL)
         comparison_curves["portable_carry"]  = equity_curve(ret_portable_carry, CAPITAL)
 
     pd.DataFrame(comparison_curves).to_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
 
-    # Dashboard compatibility: keep the two named walk-forward parquets it expects
-    # (was "equal weight" pre-audit; now "multi equal weight" as simplest available)
+    # Dashboard compatibility: keep the two named walk-forward parquets it expects.
+    # walk_forward_regime.parquet  → "multi equal weight" (signal-only baseline)
+    # walk_forward_atr_pca.parquet → production method (atr_lev_1.5x), so the
+    #   dashboard's "ATR+PCA+Macro" legacy panel now reflects the live sizer.
     wf_store["multi equal weight"].to_parquet(
         RESULTS_DIR / "walk_forward_regime.parquet", index=False)
-    wf_store["multi_mom_tilt"].to_parquet(
+    _wf_prod_label = "atr_lev_1.5x" if "atr_lev_1.5x" in wf_store else "multi_mom_tilt"
+    wf_store[_wf_prod_label].to_parquet(
         RESULTS_DIR / "walk_forward_atr_pca.parquet", index=False)
 
     oos_df = pd.DataFrame([
