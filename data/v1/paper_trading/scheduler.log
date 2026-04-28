@@ -354,3 +354,24 @@ Traceback (most recent call last):
   File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1115, in wrapper
     raise WebSocketClosedError()
 tornado.websocket.WebSocketClosedError
+2026-04-28 01:11:33  ERROR    
+1 Failed download:
+2026-04-28 01:11:33  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-04-28 01:39:28  ERROR    
+1 Failed download:
+2026-04-28 01:39:28  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-04-28 07:20:38  ERROR    
+1 Failed download:
+2026-04-28 07:20:38  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-04-28 09:53:13  ERROR    
+1 Failed download:
+2026-04-28 09:53:13  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-04-28 13:34:10  ERROR    
+1 Failed download:
+2026-04-28 13:34:10  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-04-28 13:54:32  ERROR    
+1 Failed download:
+2026-04-28 13:54:32  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-04-28 16:31:13  ERROR    
+1 Failed download:
+2026-04-28 16:31:13  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")

@@ -127,8 +127,10 @@ PALETTE = {
     "portable_carry"        : "#facc15",   # yellow
     "dbmf"                  : "#06b6d4",   # cyan-500  — managed futures
     "wtmf"                  : "#0e7490",   # cyan-700  — managed futures (conservative)
-    "atr_lev_1.5x"          : "#fb7185",   # rose-400  — production primary
+    "atr_lev_1.5x"          : "#fb7185",   # rose-400  — prior production
     "atr_lev_2.0x"          : "#9f1239",   # rose-800  — aggressive variant
+    "top11_vt14sm25_x1.5_cap1": "#22c55e", # green-500 — prior production (V1 zero-lev)
+    "top11_adx22_momt_ac55_cap1": "#16a34a", # green-600 — production primary (V2 zero-lev)
 }
 # LABELS maps the same keys to human-readable legend/table strings.
 LABELS = {
@@ -173,8 +175,10 @@ LABELS = {
     "multi_mom_port_low"    : "Portable Alpha (Low Beta)",
     "multi_mom_carry"       : "Momentum + Carry",
     "portable_carry"        : "Portable Carry",
-    "atr_lev_1.5x"          : "ATR Lev 1.5x ★",
+    "atr_lev_1.5x"          : "ATR Lev 1.5x",
     "atr_lev_2.0x"          : "ATR Lev 2.0x",
+    "top11_vt14sm25_x1.5_cap1": "Top-11 VT (0-Lev V1)",
+    "top11_adx22_momt_ac55_cap1": "Top-11 ADX+Momt+AC (0-Lev V2) ★",
 }
 
 # ── Dashboard display tiers ───────────────────────────────────────────────────
@@ -187,16 +191,17 @@ LABELS = {
 
 TIER_SHOW = {
     # Production primary is sourced from v1.config.params.V1_PRODUCTION_METHOD
-    # (currently atr_lev_1.5x).  Pareto-dominates atr_pure on
-    # AnnRet/Sharpe/MaxDD/Calmar after pl_5_10 + ts_40 exit overlay.
-    V1_PRODUCTION_METHOD,   # PRODUCTION — OOS 1.570 / IS-OOS gap -0.217
-    "atr_lev_2.0x",         # Aggressive variant (Portfolio Margin only)
-    "multi_mom_tilt",       # rank 1 — OOS 1.399  composite 0.775
-    "multi_equal_weight",   # rank 2 — OOS 1.348  composite 0.753
-    "adaptive_blend",       # rank 3 — OOS 1.395  composite 0.745
-    "multi_atr_pure",       # rank 4 — OOS 1.348  composite 0.738
-    "regime_adaptive",      # rank 5 — OOS 1.384  composite 0.708
-    "buy_hold",             # Benchmark — always shown
+    # (pinned 2026-04-28 to top11_adx22_momt_ac55_cap1 — V2).  Zero-leverage
+    # top-N + ADX22 filter + 63d momentum tilt + 55% asset-class quota.
+    # OOS 21.00% / 2.324 Sh / -6.33 DD across 2022-2025.
+    V1_PRODUCTION_METHOD,             # PRODUCTION V2 — OOS 2.324
+    "top11_vt14sm25_x1.5_cap1",       # Prior V1 zero-lev — OOS 2.221
+    "atr_lev_1.5x",                   # Pre-zero-lev production
+    "atr_lev_2.0x",                   # Aggressive variant (PM only)
+    "multi_mom_tilt",                 # rank 1 — OOS 1.399
+    "multi_equal_weight",             # rank 2 — OOS 1.348
+    "adaptive_blend",                 # rank 3 — OOS 1.395
+    "buy_hold",                       # Benchmark — always shown
 }
 
 TIER_AVAILABLE = set()   # All non-top-5 hidden; add back via set if needed for research

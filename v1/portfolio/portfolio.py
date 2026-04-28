@@ -541,6 +541,178 @@ def vol_target_sizes(sizes: pd.DataFrame, returns: pd.DataFrame,
     return sizes.multiply(scale, axis=0)
 
 
+def top_n_vt_blend_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    top_n: int = 11,
+    target_vol: float = 0.14,
+    scale_max: float = 2.5,
+    vt_window: int = 63,
+    lev_x: float = 1.5,
+    max_gross: float = 1.0,
+) -> pd.DataFrame:
+    """
+    Zero-leverage top-N concentration sizer (V1 production, pinned 2026-04-28).
+
+    The lever at gross_cap=1.0 is reallocation, not amplification.  Each day:
+      1. atr_sizes — risk-normalised dollar size per ticker.
+      2. Vol-target scalar — boost / shrink portfolio so realised vol hits
+         target_vol; cap the boost at scale_max.
+      3. Conviction rank — adx_14 × |signal|; keep only the top-N tickers
+         each day, zero the rest.
+      4. lev_x amplification — pushes the boost into the cap.
+      5. Gross cap at max_gross × capital — binds on calm-vol days, leaving
+         strong trends fully sized while dropping borderline names.
+
+    Walk-forward OOS (2022-2025, 3 windows): 20.21% AnnRet / 2.221 Sharpe /
+    -6.95 worst DD vs atr_pure baseline 11.18% / 1.571 / -5.60.  Beats current
+    1.5x leverage production (16.95% / 1.570 / -8.32 OOS) on every dimension
+    at zero leverage.
+
+    Args:
+        signals:    Signal DataFrame (T x N), continuous or binary.
+        features:   Dict[ticker -> feature df] containing 'atr_14' and 'adx'.
+        returns:    Daily return DataFrame (T x N).
+        capital:    Total capital in dollars.
+        top_n:      Names to keep per day after conviction ranking (default 11).
+        target_vol: Vol-target annualised target (default 0.14).
+        scale_max:  Vol-target boost cap (default 2.5).
+        vt_window:  Realised-vol window in days (default 63).
+        lev_x:      Leverage multiplier before cap (default 1.5).
+        max_gross:  Hard cap on gross / capital (default 1.0).
+
+    Returns:
+        Dollar position size DataFrame.  Per-name clipped to MAX_POSITION_PCT,
+        portfolio gross clipped to max_gross x capital.
+    """
+    base = atr_sizes(signals, features, capital)
+
+    # Vol-target scalar from portfolio-level realised vol of the base sizer.
+    weights  = base.shift(1) / capital
+    port_ret = (weights * returns.reindex(columns=base.columns)).sum(axis=1)
+    realised = port_ret.rolling(vt_window, min_periods=10).std() * np.sqrt(252)
+    realised = realised.replace(0, np.nan).fillna(target_vol)
+    scaler   = (target_vol / realised).clip(0.3, scale_max).shift(1).fillna(1.0)
+    sz_vt    = (base.multiply(scaler, axis=0)
+                    .clip(-capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT))
+
+    # Conviction = adx_14 x |signal|; keep top-N each day.
+    adx_mat = pd.DataFrame(0.0, index=signals.index, columns=signals.columns)
+    for t in signals.columns:
+        if t in features and "adx" in features[t].columns:
+            adx_mat[t] = features[t]["adx"].reindex(signals.index).ffill().fillna(0.0)
+    conviction = adx_mat * signals.abs()
+    rank = conviction.rank(axis=1, ascending=False, method="first")
+    keep = (rank <= top_n).astype(float)
+    sz_top = (sz_vt * keep).clip(-capital * MAX_POSITION_PCT,
+                                  capital * MAX_POSITION_PCT)
+
+    # Leverage push — gets clipped by gross cap on calm-vol days.
+    sz_lev = (sz_top * lev_x).clip(-capital * MAX_POSITION_PCT,
+                                    capital * MAX_POSITION_PCT)
+
+    # Final gross cap (defensive_tilt_overlay only reallocates, gross stable).
+    gross = sz_lev.abs().sum(axis=1).replace(0, np.nan)
+    gscale = (max_gross * capital / gross).clip(upper=1.0).fillna(1.0)
+    return sz_lev.multiply(gscale, axis=0)
+
+
+def top_n_adx_momt_ac_sizes(
+    signals: pd.DataFrame,
+    features: dict,
+    returns: pd.DataFrame,
+    capital: float,
+    top_n: int = 11,
+    target_vol: float = 0.14,
+    scale_max: float = 2.5,
+    vt_window: int = 63,
+    lev_x: float = 1.5,
+    max_gross: float = 1.0,
+    adx_threshold: float = 22.0,
+    mom_window: int = 63,
+    mom_lo: float = 0.7,
+    mom_hi: float = 1.3,
+    ac_quota: float = 0.55,
+) -> pd.DataFrame:
+    """
+    V2 of zero-leverage top-N (pinned 2026-04-28).  Adds three overlays:
+      A. ADX threshold filter  — drop names with adx < 22 entirely (kills weak trends)
+      B. Momentum tilt overlay — within selected longs, scale 0.7-1.3 by 63d return rank
+      C. Asset-class quota cap — no class > 55% of gross (forces diversification)
+
+    Walk-forward OOS (2022-2025, 3 windows): 21.00% AnnRet / 2.324 Sharpe /
+    -6.33 worst DD vs prior top11 production 20.21% / 2.221 / -6.95.
+    +0.79pp AnnRet, +0.10 Sharpe, +0.62pp DD reduction.
+    """
+    # 1. ATR vol-target base (same as top_n_vt_blend_sizes step 1-2)
+    base = atr_sizes(signals, features, capital)
+    weights  = base.shift(1) / capital
+    port_ret = (weights * returns.reindex(columns=base.columns)).sum(axis=1)
+    realised = port_ret.rolling(vt_window, min_periods=10).std() * np.sqrt(252)
+    realised = realised.replace(0, np.nan).fillna(target_vol)
+    scaler   = (target_vol / realised).clip(0.3, scale_max).shift(1).fillna(1.0)
+    sz_vt    = (base.multiply(scaler, axis=0)
+                    .clip(-capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT))
+
+    # ADX matrix (used by both filter A and conviction rank)
+    adx_mat = pd.DataFrame(0.0, index=signals.index, columns=signals.columns)
+    for t in signals.columns:
+        if t in features and "adx" in features[t].columns:
+            adx_mat[t] = features[t]["adx"].reindex(signals.index).ffill().fillna(0.0)
+
+    # A. ADX threshold filter — zero out weak trends before top-N selection
+    if adx_threshold > 0:
+        adx_keep = (adx_mat >= adx_threshold).astype(float)
+        sz_vt   = (sz_vt * adx_keep).clip(-capital * MAX_POSITION_PCT,
+                                           capital * MAX_POSITION_PCT)
+
+    # 2. Conviction rank → top-N
+    conviction = adx_mat * signals.abs()
+    rank       = conviction.rank(axis=1, ascending=False, method="first")
+    keep       = (rank <= top_n).astype(float)
+    sz_top     = (sz_vt * keep).clip(-capital * MAX_POSITION_PCT,
+                                      capital * MAX_POSITION_PCT)
+
+    # B. Momentum tilt — scale 0.7-1.3 by 63d return rank within active longs
+    mom_mat = pd.DataFrame(0.0, index=signals.index, columns=signals.columns)
+    for t in signals.columns:
+        if t in features and "Close" in features[t].columns:
+            c = features[t]["Close"].reindex(signals.index).ffill()
+            mom_mat[t] = (c / c.shift(mom_window) - 1).fillna(0.0)
+    r_pct = mom_mat.where(sz_top > 0).rank(axis=1, pct=True).fillna(0.5)
+    sz_top = sz_top.multiply(mom_lo + (mom_hi - mom_lo) * r_pct)
+
+    # 3. Leverage push (gets clipped by cap on calm-vol days)
+    sz_lev = (sz_top * lev_x).clip(-capital * MAX_POSITION_PCT,
+                                    capital * MAX_POSITION_PCT)
+
+    # C. Asset-class quota — no single class > ac_quota × gross
+    if ac_quota and ac_quota > 0:
+        out = sz_lev.copy()
+        by_class = {}
+        for t in out.columns:
+            ac = ASSET_CLASS.get(t, "other")
+            by_class.setdefault(ac, []).append(t)
+        for cls, tickers in by_class.items():
+            cls_sz   = out[tickers].abs().sum(axis=1)
+            gross_t  = out.abs().sum(axis=1).replace(0, np.nan)
+            cls_pct  = cls_sz / gross_t
+            over     = cls_pct > ac_quota
+            if over.any():
+                cls_scale          = pd.Series(1.0, index=out.index)
+                cls_scale[over]    = (ac_quota * gross_t[over] / cls_sz[over]).fillna(1.0)
+                for t in tickers:
+                    out[t] = out[t] * cls_scale
+        sz_lev = out.clip(-capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT)
+
+    # 4. Final gross cap
+    gross = sz_lev.abs().sum(axis=1).replace(0, np.nan)
+    gscale = (max_gross * capital / gross).clip(upper=1.0).fillna(1.0)
+    return sz_lev.multiply(gscale, axis=0)
+
+
 def simple_vol_scale(
     sizes: pd.DataFrame,
     returns: pd.DataFrame,
@@ -2767,6 +2939,34 @@ def main():
             signals_multi, _macro_for_overlay, CAPITAL,
         )
         ret_atr_lev_20        = portfolio_returns(sizes_atr_lev_20, returns)
+        # Zero-leverage top-N concentration (production pin 2026-04-28).
+        # OOS 20.21% / 2.221 Sh / -6.95 DD across 2022-2025; beats 1.5x prod
+        # on every dimension at gross_cap=1.0.
+        print("  Computing top-N vol-target blend (zero-leverage production)...")
+        sizes_topn_vt_zero    = defensive_tilt_overlay(
+            top_n_vt_blend_sizes(
+                signals_multi, features, returns, CAPITAL,
+                top_n=11, target_vol=0.14, scale_max=2.5,
+                vt_window=63, lev_x=1.5, max_gross=1.0,
+            ),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
+        ret_topn_vt_zero      = portfolio_returns(sizes_topn_vt_zero, returns)
+        # V2 production (pinned 2026-04-28): adds ADX≥22 filter + 63d momentum
+        # tilt + 55% asset-class quota.  OOS 21.00% / 2.324 Sh / -6.33 DD —
+        # +0.79pp AnnRet, +0.10 Sharpe, +0.62pp DD reduction vs prior top11.
+        print("  Computing top-N + ADX22 + momt + AC55 (V2 zero-leverage prod)...")
+        sizes_topn_v2         = defensive_tilt_overlay(
+            top_n_adx_momt_ac_sizes(
+                signals_multi, features, returns, CAPITAL,
+                top_n=11, target_vol=0.14, scale_max=2.5, vt_window=63,
+                lev_x=1.5, max_gross=1.0,
+                adx_threshold=22.0, mom_window=63, mom_lo=0.7, mom_hi=1.3,
+                ac_quota=0.55,
+            ),
+            signals_multi, _macro_for_overlay, CAPITAL,
+        )
+        ret_topn_v2           = portfolio_returns(sizes_topn_v2, returns)
         print("  Computing portable alpha sizes (multi_mom_tilt + SPY beta hedge, β=0.30)...")
         sizes_portable        = defensive_tilt_overlay(
             portable_alpha_sizes(sizes_multi_mom, returns, CAPITAL, target_beta=0.30),
@@ -2938,6 +3138,34 @@ def main():
             lambda sig, ret: (2.0 * atr_sizes(sig, features, CAPITAL))
                 .clip(-CAPITAL * MAX_POSITION_PCT, CAPITAL * MAX_POSITION_PCT),
         ))
+        all_methods.append((
+            # Zero-leverage top-N + vol-target blend (production pin 2026-04-28).
+            # Concentrates capital onto top-11 conviction-ranked names each day,
+            # with vol-target rescaling pre-cap and gross_cap=1.0.  OOS Sharpe
+            # 2.221, +9pp AnnRet vs atr_pure baseline.
+            "top11_vt14sm25_x1.5_cap1",
+            ret_topn_vt_zero, signals_multi,
+            lambda sig, ret: top_n_vt_blend_sizes(
+                sig, features, ret, CAPITAL,
+                top_n=11, target_vol=0.14, scale_max=2.5,
+                vt_window=63, lev_x=1.5, max_gross=1.0,
+            ),
+        ))
+        all_methods.append((
+            # V2 production (pinned 2026-04-28).  Stacks ADX≥22 filter +
+            # 63d momentum tilt (0.7-1.3) + 55% asset-class quota on top of
+            # the top11 + vt zero-lev base.  OOS 21.00% / 2.324 Sh / -6.33 DD —
+            # +0.79pp AnnRet, +0.10 Sharpe, +0.62pp DD reduction vs prior top11.
+            "top11_adx22_momt_ac55_cap1",
+            ret_topn_v2, signals_multi,
+            lambda sig, ret: top_n_adx_momt_ac_sizes(
+                sig, features, ret, CAPITAL,
+                top_n=11, target_vol=0.14, scale_max=2.5, vt_window=63,
+                lev_x=1.5, max_gross=1.0,
+                adx_threshold=22.0, mom_window=63, mom_lo=0.7, mom_hi=1.3,
+                ac_quota=0.55,
+            ),
+        ))
         # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.584, composite 0.643
         # IS-OOS gap -0.558: regime concentrated, hedge costs 3-4% annualized in bull markets
         # all_methods.append((
@@ -3019,6 +3247,8 @@ def main():
         _sizes_map["atr_kelly_70_30"]    = sizes_atr_kelly_blend
         _sizes_map["atr_lev_1.5x"]       = sizes_atr_lev_15
         _sizes_map["atr_lev_2.0x"]       = sizes_atr_lev_20
+        _sizes_map["top11_vt14sm25_x1.5_cap1"] = sizes_topn_vt_zero
+        _sizes_map["top11_adx22_momt_ac55_cap1"] = sizes_topn_v2
         _sizes_map["multi_mom_portable"] = sizes_portable
         _sizes_map["multi_mom_port_low"] = sizes_portable_low
     if has_carry:
@@ -3116,11 +3346,12 @@ def main():
     # 2. Otherwise: fall back to smallest IS-OOS gap with OOS Sharpe > 0.8
     #    (existing logic).
     # Priority 0 (HARD PIN): the production method is set in v1.config.params
-    # as V1_PRODUCTION_METHOD (currently atr_lev_1.5x).  Reg-T-compatible
-    # (<$100k overnight at IBKR), Pareto-dominates pure ATR after the
-    # pl_5_10 + ts_40 exit overlay (signal_generation.py),
-    # IS-OOS gap ~-0.22 → robust generalisation.  Paper trader and dashboard
-    # both read the same constant, so swapping methods is a single edit.
+    # as V1_PRODUCTION_METHOD (pinned 2026-04-28 to top11_vt14sm25_x1.5_cap1).
+    # Zero-leverage (gross_cap=1.0); concentrates on top-11 conviction-ranked
+    # names with vol-target reallocation.  OOS Sharpe 2.221, +9pp AnnRet vs
+    # atr_pure baseline; beats prior 1.5x leverage production on every
+    # dimension at zero leverage.  Paper trader and dashboard both read the
+    # same constant, so swapping methods is a single edit.
     from v1.config.params import V1_PRODUCTION_METHOD
     pinned_label = V1_PRODUCTION_METHOD
     if pinned_label in oos_sharpes:
@@ -3310,6 +3541,8 @@ def main():
         # appears on every chart that consumes portfolio_comparison.parquet.
         comparison_curves["atr_lev_1.5x"]       = equity_curve(ret_atr_lev_15,      CAPITAL)
         comparison_curves["atr_lev_2.0x"]       = equity_curve(ret_atr_lev_20,      CAPITAL)
+        comparison_curves["top11_vt14sm25_x1.5_cap1"] = equity_curve(ret_topn_vt_zero, CAPITAL)
+        comparison_curves["top11_adx22_momt_ac55_cap1"] = equity_curve(ret_topn_v2, CAPITAL)
         comparison_curves["half_kelly"]         = equity_curve(ret_half_kelly,      CAPITAL)
         comparison_curves["atr_kelly_70_30"]    = equity_curve(ret_atr_kelly_blend, CAPITAL)
     if has_carry:
@@ -3324,7 +3557,12 @@ def main():
     #   dashboard's "ATR+PCA+Macro" legacy panel now reflects the live sizer.
     wf_store["multi equal weight"].to_parquet(
         RESULTS_DIR / "walk_forward_regime.parquet", index=False)
-    _wf_prod_label = "atr_lev_1.5x" if "atr_lev_1.5x" in wf_store else "multi_mom_tilt"
+    _wf_prod_label = (
+        "top11_adx22_momt_ac55_cap1" if "top11_adx22_momt_ac55_cap1" in wf_store
+        else "top11_vt14sm25_x1.5_cap1" if "top11_vt14sm25_x1.5_cap1" in wf_store
+        else "atr_lev_1.5x" if "atr_lev_1.5x" in wf_store
+        else "multi_mom_tilt"
+    )
     wf_store[_wf_prod_label].to_parquet(
         RESULTS_DIR / "walk_forward_atr_pca.parquet", index=False)
 

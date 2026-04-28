@@ -80,11 +80,19 @@ STRATEGIES = {
     "adaptive_blend":       {"signal_col": "signal_multi",  "sizing": "adaptive_blend",  "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},    # rank 3 composite 0.745
     "multi_atr_pure":       {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},   # rank 4 composite 0.738
     "regime_adaptive":      {"signal_col": "signal_multi",  "sizing": "adaptive",        "mom_tilt": True,  "pca_scale": False, "dd_control": False, "macro": True},    # rank 5 composite 0.708
-    # ── Production primary (pinned 2026-04-27) ───────────────────────────────
-    # atr_lev_1.5x = signal_multi × atr sizing × 1.5 leverage (applied by
-    # PRODUCTION_LEVERAGE inside _atr_size).  Pareto-dominates atr_pure on
-    # AnnRet / Sharpe / MaxDD / Calmar after pl_5_10 + ts_40 exit overlay.
+    # ── Prior production (atr_lev_1.5x) — kept for backtest comparison ───────
     "atr_lev_1.5x":         {"signal_col": "signal_multi",  "sizing": "atr",             "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    # ── Production primary (pinned 2026-04-28) ───────────────────────────────
+    # top11_vt14sm25_x1.5_cap1 = signal_multi × top-N concentration + vol-target
+    # at gross_cap=1.0.  Zero-leverage; OOS Sharpe 2.221, +9pp AnnRet vs atr_pure.
+    # Beats prior 1.5x leverage production on every dimension at zero leverage.
+    # See feedback_zero_lev_topn.md.
+    "top11_vt14sm25_x1.5_cap1": {"signal_col": "signal_multi", "sizing": "topn_vt",       "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
+    # ── Production primary V2 (pinned 2026-04-28) ────────────────────────────
+    # top11_adx22_momt_ac55_cap1 = top11 + vt + ADX≥22 filter + 63d momentum
+    # tilt + 55% asset-class quota.  OOS 21.00% / 2.324 Sh / -6.33 DD —
+    # +0.79pp AnnRet, +0.10 Sharpe, +0.62pp DD reduction vs prior top11 V1.
+    "top11_adx22_momt_ac55_cap1": {"signal_col": "signal_multi", "sizing": "topn_v2",     "mom_tilt": False, "pca_scale": False, "dd_control": False, "macro": False},
     # ── Removed by strategy audit 2026-04-08 ─────────────────────────────────
     # "equal_weight":       {"signal_col": "signal_regime", "sizing": "equal",           ...}  # OOS 1.307 composite 0.662
     # "multi_atr_macro":    {"signal_col": "signal_multi",  "sizing": "atr",             ...}  # not in walk-forward (subsumed by multi_atr_pure)
@@ -456,6 +464,7 @@ def compute_live_signals() -> dict:
             latest_atr    = float(feat["atr_14"].iloc[-1])
             latest_close  = float(feat["Close"].iloc[-1])
             latest_rsi    = float(feat["rsi_14"].iloc[-1])
+            latest_adx    = float(feat["adx_14"].iloc[-1]) if "adx_14" in feat.columns else 0.0
 
             # Active signal from the chosen strategy
             latest_active = int(sig[sig_col].iloc[-1]) if sig_col in sig.columns else latest_regime
@@ -499,6 +508,7 @@ def compute_live_signals() -> dict:
                 "close"         : latest_close,
                 "atr"           : latest_atr,
                 "rsi"           : latest_rsi,
+                "adx"           : latest_adx,
                 "ret_63d"       : latest_ret63,
                 "breakout"      : latest_breakout,
                 "squeeze"       : latest_squeeze,
@@ -807,10 +817,213 @@ def _get_current_safe_haven_floor() -> dict:
         return SAFE_HAVEN_FLOOR
 
 
+def _compute_topn_vt_targets(
+    pv: float, signals: dict,
+    top_n: int = 11, target_vol: float = 0.14, scale_max: float = 2.5,
+    vt_window: int = 63, lev_x: float = 1.5, max_gross: float = 1.0,
+) -> dict:
+    """
+    Compute portfolio-level top-N + vol-target dollar targets for active longs.
+
+    Mirrors v1.portfolio.portfolio.top_n_vt_blend_sizes() in spirit but works
+    on the per-ticker `signals` dict produced by compute_live_signals().  Used
+    by the topn_vt sizing mode (V1_PRODUCTION_METHOD = top11_vt14sm25_x1.5_cap1).
+
+    Steps each EOD:
+      1. atr_size per long candidate (RISK_PER_TRADE × pv / atr × close).
+      2. Vol-target scalar from history.csv portfolio realised vol over
+         vt_window days; clipped to [0.3, scale_max].
+      3. Conviction = adx × |signal|; keep only top-N tickers.
+      4. Multiply by lev_x.
+      5. Cap portfolio gross at max_gross × pv.
+
+    Args:
+        pv:        Current portfolio value in dollars.
+        signals:   Dict[ticker -> sig dict] from compute_live_signals().
+        top_n:     Names to keep by conviction rank.
+        target_vol: Annualised vol target.
+        scale_max: Max vol-target boost.
+        vt_window: Days of history for realised vol.
+        lev_x:     Leverage multiplier before cap.
+        max_gross: Hard cap on gross / pv.
+
+    Returns:
+        Dict[ticker -> dollar_size] for the top-N long names; absent/zero
+        for everything else.  Per-name capped at MAX_POSITION_PCT × pv and
+        INDEX_ETF_CAP × pv for index ETFs.
+    """
+    longs = {t: s for t, s in signals.items() if s.get("signal") == 1}
+    if not longs:
+        return {}
+
+    # Step 1: ATR base sizes (no leverage applied yet)
+    base = {}
+    for t, s in longs.items():
+        atr   = float(s.get("atr", 0) or 0)
+        close = float(s.get("close", 1) or 1)
+        if atr <= 0:
+            base[t] = pv / max(len(longs), 1)
+        else:
+            base[t] = (pv * RISK_PER_TRADE / atr) * close
+
+    # Step 2: vol-target scalar from history.csv (lagged realised port vol)
+    scaler = 1.0
+    try:
+        hist = load_history()
+        if not hist.empty and "portfolio_value" in hist.columns and len(hist) >= 20:
+            pv_series = pd.Series(hist["portfolio_value"].astype(float).values,
+                                  index=pd.to_datetime(hist["date"]))
+            port_ret  = pv_series.pct_change().dropna().tail(vt_window)
+            if len(port_ret) >= 10:
+                realised = float(port_ret.std() * np.sqrt(252))
+                if realised > 0:
+                    scaler = float(np.clip(target_vol / realised, 0.3, scale_max))
+    except Exception:
+        pass
+
+    # Step 3: conviction = adx × |signal| → top-N
+    conviction = {}
+    for t, s in longs.items():
+        adx_val   = float(s.get("adx", s.get("adx_14", 0)) or 0)
+        sig_abs   = abs(float(s.get("signal", 0)))
+        conviction[t] = adx_val * sig_abs
+    keep = set(t for t, _ in sorted(conviction.items(), key=lambda x: -x[1])[:top_n])
+
+    # Steps 4-5: leverage, gross cap, per-name caps
+    raw = {t: (base[t] * scaler * lev_x if t in keep else 0.0) for t in longs}
+    gross = sum(abs(v) for v in raw.values())
+    if gross > max_gross * pv and gross > 0:
+        gscale = (max_gross * pv) / gross
+        raw = {t: v * gscale for t, v in raw.items()}
+
+    out = {}
+    for t, v in raw.items():
+        if v <= 0:
+            continue
+        capped = min(v, pv * MAX_POSITION_PCT)
+        if t in INDEX_ETF_TICKERS:
+            capped = min(capped, pv * INDEX_ETF_CAP)
+        out[t] = capped
+    return out
+
+
+def _compute_topn_v2_targets(
+    pv: float, signals: dict,
+    top_n: int = 11, target_vol: float = 0.14, scale_max: float = 2.5,
+    vt_window: int = 63, lev_x: float = 1.5, max_gross: float = 1.0,
+    adx_threshold: float = 22.0, mom_lo: float = 0.7, mom_hi: float = 1.3,
+    ac_quota: float = 0.55,
+) -> dict:
+    """
+    V2 zero-leverage top-N sizer for paper trading.  Mirrors
+    portfolio.top_n_adx_momt_ac_sizes() but works on the per-ticker live
+    signals dict.  Stacks ADX≥22 filter + 63d momentum tilt + 55% AC quota
+    onto the top11_vt zero-lev base.
+
+    Used by V1_PRODUCTION_METHOD = top11_adx22_momt_ac55_cap1 (pinned 2026-04-28).
+    """
+    longs = {t: s for t, s in signals.items() if s.get("signal") == 1}
+    if not longs:
+        return {}
+
+    # Step A: ADX threshold filter — drop weak trends entirely
+    if adx_threshold > 0:
+        longs = {t: s for t, s in longs.items()
+                 if float(s.get("adx", s.get("adx_14", 0)) or 0) >= adx_threshold}
+        if not longs:
+            return {}
+
+    # Step 1: ATR base sizes
+    base = {}
+    for t, s in longs.items():
+        atr   = float(s.get("atr", 0) or 0)
+        close = float(s.get("close", 1) or 1)
+        if atr <= 0:
+            base[t] = pv / max(len(longs), 1)
+        else:
+            base[t] = (pv * RISK_PER_TRADE / atr) * close
+
+    # Step 2: vol-target scalar from history.csv
+    scaler = 1.0
+    try:
+        hist = load_history()
+        if not hist.empty and "portfolio_value" in hist.columns and len(hist) >= 20:
+            pv_series = pd.Series(hist["portfolio_value"].astype(float).values,
+                                  index=pd.to_datetime(hist["date"]))
+            port_ret  = pv_series.pct_change().dropna().tail(vt_window)
+            if len(port_ret) >= 10:
+                realised = float(port_ret.std() * np.sqrt(252))
+                if realised > 0:
+                    scaler = float(np.clip(target_vol / realised, 0.3, scale_max))
+    except Exception:
+        pass
+
+    # Step 3: conviction = adx × |signal| → top-N
+    conviction = {}
+    for t, s in longs.items():
+        adx_val   = float(s.get("adx", s.get("adx_14", 0)) or 0)
+        sig_abs   = abs(float(s.get("signal", 0)))
+        conviction[t] = adx_val * sig_abs
+    keep = set(t for t, _ in sorted(conviction.items(), key=lambda x: -x[1])[:top_n])
+
+    # Step B: momentum tilt within selected longs (rank by 63d return)
+    in_set = [t for t in longs if t in keep]
+    mom_vals = [(t, float(longs[t].get("ret_63d", 0) or 0)) for t in in_set]
+    if mom_vals:
+        sorted_mom = sorted(mom_vals, key=lambda x: x[1])
+        n = len(sorted_mom)
+        # Percentile rank → tilt factor in [mom_lo, mom_hi]
+        tilt = {t: mom_lo + (mom_hi - mom_lo) * (i / max(n - 1, 1))
+                for i, (t, _) in enumerate(sorted_mom)}
+    else:
+        tilt = {}
+
+    # Steps 4-5: leverage, gross cap
+    raw = {}
+    for t in longs:
+        if t in keep:
+            raw[t] = base[t] * scaler * lev_x * tilt.get(t, 1.0)
+        else:
+            raw[t] = 0.0
+
+    # Step C: asset-class quota — no class > ac_quota × gross
+    if ac_quota and ac_quota > 0:
+        gross_t = sum(abs(v) for v in raw.values())
+        if gross_t > 0:
+            by_cls = {}
+            for t, v in raw.items():
+                ac = ASSET_CLASS.get(t, "other")
+                by_cls.setdefault(ac, []).append((t, v))
+            for cls, items in by_cls.items():
+                cls_g = sum(abs(v) for _, v in items)
+                if cls_g > ac_quota * gross_t and cls_g > 0:
+                    cls_scale = (ac_quota * gross_t) / cls_g
+                    for t, _ in items:
+                        raw[t] *= cls_scale
+
+    # Final gross cap
+    gross = sum(abs(v) for v in raw.values())
+    if gross > max_gross * pv and gross > 0:
+        gscale = (max_gross * pv) / gross
+        raw = {t: v * gscale for t, v in raw.items()}
+
+    out = {}
+    for t, v in raw.items():
+        if v <= 0:
+            continue
+        capped = min(v, pv * MAX_POSITION_PCT)
+        if t in INDEX_ETF_TICKERS:
+            capped = min(capped, pv * INDEX_ETF_CAP)
+        out[t] = capped
+    return out
+
+
 def _compute_position_size(
     pv: float, ticker: str, sig: dict, strat_cfg: dict,
     rp_weights: dict, mom_rank: dict,
     pca_scale: float, dd_scale: float, macro_mult: float,
+    topn_vt_targets: dict | None = None,
+    topn_v2_targets: dict | None = None,
 ) -> float:
     """
     Unified position sizing: combines ATR/equal/RP base with overlays.
@@ -831,6 +1044,14 @@ def _compute_position_size(
 
     # Base sizing
     sizing = strat_cfg.get("sizing", "atr")
+    if sizing == "topn_vt":
+        # Portfolio-level top-N + vol-target sizing.  Targets dict is computed
+        # once before the entry loop and passed in.  Tickers absent from the
+        # dict (not in top-N or signal!=1) get zero size.
+        return float(topn_vt_targets.get(ticker, 0.0)) if topn_vt_targets else 0.0
+    if sizing == "topn_v2":
+        # V2 portfolio-level sizing: top-N + vt + ADX≥22 + momt + AC55 quota.
+        return float(topn_v2_targets.get(ticker, 0.0)) if topn_v2_targets else 0.0
     if sizing == "rp" and ticker in rp_weights:
         base = pv * rp_weights[ticker]
     elif sizing == "atr":
@@ -1079,19 +1300,39 @@ def init_positions():
     pca_s  = _pca_scale(state, signals) if strat_cfg.get("pca_scale") else 1.0
     dd_s   = 1.0   # no drawdown on init (starting fresh)
     macro_m = _macro_live_multiplier() if strat_cfg.get("macro") else 1.0
+    topn_vt_targets = (
+        _compute_topn_vt_targets(INITIAL_CAPITAL, signals)
+        if strat_cfg.get("sizing") == "topn_vt" else None
+    )
+    topn_v2_targets = (
+        _compute_topn_v2_targets(INITIAL_CAPITAL, signals)
+        if strat_cfg.get("sizing") == "topn_v2" else None
+    )
 
     if pca_s < 1.0:
         print(f"  PCA scale: {pca_s:.2f}  (correlation elevated)")
     if macro_m != 1.0:
         print(f"  Macro multiplier: {macro_m:.2f}")
+    if topn_vt_targets is not None:
+        print(f"  Top-N+VT: {len(topn_vt_targets)} names selected, "
+              f"target gross ${sum(topn_vt_targets.values()):,.0f}")
+    if topn_v2_targets is not None:
+        print(f"  Top-N V2 (ADX22+momt+AC55): {len(topn_v2_targets)} names selected, "
+              f"target gross ${sum(topn_v2_targets.values()):,.0f}")
 
     for ticker in longs:
         sig  = signals[ticker]
         size = _compute_position_size(
             INITIAL_CAPITAL, ticker, sig, strat_cfg,
             rp_weights, mom_rank, pca_s, dd_s, macro_m,
+            topn_vt_targets=topn_vt_targets,
+            topn_v2_targets=topn_v2_targets,
         )
-        size = min(size, per_position_cap)
+        # Per-position cap doesn't apply to topn_vt/topn_v2 — gross cap enforced by sizer.
+        if strat_cfg.get("sizing") not in ("topn_vt", "topn_v2"):
+            size = min(size, per_position_cap)
+        if size <= 0:
+            continue
         state = _buy(state, ticker, sig["close"], size,
                      reason=f"init_{strat_key}", trade_date=today_str)
 
@@ -1361,6 +1602,14 @@ def end_of_day_update():
     pca_s   = _pca_scale(state, signals)  if strat_cfg.get("pca_scale") else 1.0
     dd_s    = _drawdown_scale(state)       if strat_cfg.get("dd_control") else 1.0
     macro_m = _macro_live_multiplier()     if strat_cfg.get("macro")      else 1.0
+    topn_vt_targets = (
+        _compute_topn_vt_targets(pv, signals)
+        if strat_cfg.get("sizing") == "topn_vt" else None
+    )
+    topn_v2_targets = (
+        _compute_topn_v2_targets(pv, signals)
+        if strat_cfg.get("sizing") == "topn_v2" else None
+    )
 
     if pca_s < 1.0:
         print(f"  PCA scale: {pca_s:.2f}")
@@ -1368,13 +1617,23 @@ def end_of_day_update():
         print(f"  Drawdown control: {dd_s:.1f}x (DD > {_DD_THRESHOLD*100:.0f}%)")
     if macro_m != 1.0:
         print(f"  Macro multiplier: {macro_m:.2f}")
+    if topn_vt_targets is not None:
+        print(f"  Top-N+VT: {len(topn_vt_targets)} names selected, "
+              f"target gross ${sum(topn_vt_targets.values()):,.0f}")
+    if topn_v2_targets is not None:
+        print(f"  Top-N V2 (ADX22+momt+AC55): {len(topn_v2_targets)} names selected, "
+              f"target gross ${sum(topn_v2_targets.values()):,.0f}")
 
     for ticker in entry_candidates:
         sig = signals[ticker]
         size = _compute_position_size(
             pv, ticker, sig, strat_cfg,
             rp_weights, mom_rank, pca_s, dd_s, macro_m,
+            topn_vt_targets=topn_vt_targets,
+            topn_v2_targets=topn_v2_targets,
         )
+        if size <= 0:
+            continue
         if state["cash"] >= size * 1.01:
             state = _buy(state, ticker, sig["close"], size,
                          reason="signal_entry", trade_date=today_str)
@@ -1554,6 +1813,7 @@ def _compute_signals_as_of(as_of: date) -> dict:
                 "close"         : float(_closes.iloc[-1]),
                 "atr"           : float(feat["atr_14"].iloc[-1]),
                 "rsi"           : float(feat["rsi_14"].iloc[-1]),
+                "adx"           : float(feat["adx_14"].iloc[-1]) if "adx_14" in feat.columns else 0.0,
                 "ret_63d"       : _ret63,
                 "date"          : str(as_of),
             }
