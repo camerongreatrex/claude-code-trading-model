@@ -6,47 +6,47 @@
       "entry_price": 57.619998931884766,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 62.689998626708984
+      "last_close": 63.9900016784668
     },
     "VWO": {
       "shares": 85.52208410652838,
       "entry_price": 54.0099983215332,
       "entry_date": "2026-03-20",
       "cost_basis": 4619.047619047619,
-      "last_close": 58.08000183105469
+      "last_close": 58.93000030517578
     },
     "EFA": {
       "shares": 206.4131952110358,
       "entry_price": 95.83999633789062,
       "entry_date": "2026-03-24",
       "cost_basis": 19782.639873117972,
-      "last_close": 99.93000030517578
+      "last_close": 102.31999969482422
     },
     "NVDA": {
       "shares": 82.19441562742274,
       "entry_price": 167.52000427246094,
       "entry_date": "2026-03-27",
       "cost_basis": 13769.208857078287,
-      "last_close": 209.25
+      "last_close": 199.57000732421875
     },
     "UUP": {
       "shares": 613.3278350571328,
       "entry_price": 27.3700008392334,
       "entry_date": "2026-04-16",
       "cost_basis": 16786.78336023893,
-      "last_close": 27.610000610351562
+      "last_close": 27.360000610351562
     },
     "VGSH": {
       "shares": 37.0909618957464,
       "entry_price": 58.41999816894531,
       "entry_date": "2026-04-29",
       "cost_basis": 2166.8539260339253,
-      "last_close": 58.41999816894531
+      "last_close": 58.470001220703125
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
-  "last_eod_date": "2026-04-29",
-  "portfolio_value": 108341.61287473326,
+  "last_eod_date": "2026-04-30",
+  "portfolio_value": 108064.72868763121,
   "strategy": "top11_adx22_momt_ac55_cap1"
 }
