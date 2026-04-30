@@ -151,19 +151,13 @@ def chart_equity(df: pd.DataFrame, height: int = 420,
         label = get_label(col)
         if col == "buy_hold":
             hovertemplate = (
-                "<b>Buy & Hold (100% invested)</b><br>"
-                "$%{y:,.0f}<br>"
-                "<i>Fully invested every day — higher return but 2× the volatility<br>"
-                "and 3× the drawdown of the active strategies.</i>"
-                "<extra></extra>"
+                "<b>Buy & Hold benchmark</b><br>"
+                "$%{y:,.0f}<extra></extra>"
             )
         else:
             hovertemplate = (
                 f"<b>{label}</b><br>"
-                "$%{y:,.0f}<br>"
-                "<i>Total portfolio value on this date (started at $100k).<br>"
-                "A rising line means the strategy is making money.</i>"
-                "<extra></extra>"
+                "$%{y:,.0f}<extra></extra>"
             )
         fig.add_trace(go.Scatter(
             x=df.index, y=df[col], name=label,
@@ -196,7 +190,7 @@ def chart_equity(df: pd.DataFrame, height: int = 420,
         dragmode="pan",
         uirevision="backtest_equity",
         title=dict(
-            text="Portfolio Growth — $100k start  ·  Strategies hold ~60% invested, B&H holds 100%",
+            text="Portfolio Growth — $100k start  ·  Zero leverage (gross ≤ 1.0×)",
             font=dict(size=13),
         ),
         yaxis=dict(title="Value ($)", fixedrange=False),

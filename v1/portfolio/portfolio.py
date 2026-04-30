@@ -635,16 +635,18 @@ def top_n_adx_momt_ac_sizes(
     mom_lo: float = 0.7,
     mom_hi: float = 1.3,
     ac_quota: float = 0.55,
+    gross_floor: float = 0.95,
 ) -> pd.DataFrame:
     """
-    V2 of zero-leverage top-N (pinned 2026-04-28).  Adds three overlays:
-      A. ADX threshold filter  — drop names with adx < 22 entirely (kills weak trends)
-      B. Momentum tilt overlay — within selected longs, scale 0.7-1.3 by 63d return rank
-      C. Asset-class quota cap — no class > 55% of gross (forces diversification)
+    V2 zero-leverage top-N (production, pinned 2026-04-28). Three overlays:
+      A. ADX≥22 filter      — drop weak trends before top-N selection.
+      B. 63d momentum tilt  — scale active longs 0.7-1.3 by 63d return rank.
+      C. 55% asset-class cap — diversification across {eq,bond,fx,cmdty,re}.
 
-    Walk-forward OOS (2022-2025, 3 windows): 21.00% AnnRet / 2.324 Sharpe /
-    -6.33 worst DD vs prior top11 production 20.21% / 2.221 / -6.95.
-    +0.79pp AnnRet, +0.10 Sharpe, +0.62pp DD reduction.
+    Plus a `gross_floor` (default 0.95) — scale UP on calm days so capital
+    is fully deployed.  Strictly capped at `max_gross` so leverage is zero.
+
+    Walk-forward OOS (2022-2025, pre-floor): 21.00% / 2.324 Sh / -6.33 DD.
     """
     # 1. ATR vol-target base (same as top_n_vt_blend_sizes step 1-2)
     base = atr_sizes(signals, features, capital)
@@ -707,10 +709,24 @@ def top_n_adx_momt_ac_sizes(
                     out[t] = out[t] * cls_scale
         sz_lev = out.clip(-capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT)
 
-    # 4. Final gross cap
+    # 4. Gross targeting — cap at max_gross (no leverage); on calm days when
+    # gross would otherwise sit far below capacity, lift up to gross_floor.
+    # Per-name MAX_POSITION_PCT clip then re-applies and a final cap enforces
+    # the zero-leverage invariant.
     gross = sz_lev.abs().sum(axis=1).replace(0, np.nan)
-    gscale = (max_gross * capital / gross).clip(upper=1.0).fillna(1.0)
-    return sz_lev.multiply(gscale, axis=0)
+    floor_cap = max(min(gross_floor or 0.0, max_gross), 0.0)
+    gscale = pd.Series(1.0, index=gross.index)
+    low  = gross < floor_cap * capital
+    high = gross > max_gross  * capital
+    gscale[low]  = (floor_cap  * capital / gross[low])
+    gscale[high] = (max_gross  * capital / gross[high])
+    gscale = gscale.fillna(1.0)
+    out = sz_lev.multiply(gscale, axis=0)
+    out = out.clip(-capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT)
+    # Final hard zero-leverage check after per-name clip
+    gross2 = out.abs().sum(axis=1).replace(0, np.nan)
+    final_cap = (max_gross * capital / gross2).clip(upper=1.0).fillna(1.0)
+    return out.multiply(final_cap, axis=0)
 
 
 def simple_vol_scale(

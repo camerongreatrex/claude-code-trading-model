@@ -375,3 +375,6 @@ tornado.websocket.WebSocketClosedError
 2026-04-28 16:31:13  ERROR    
 1 Failed download:
 2026-04-28 16:31:13  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-04-30 01:42:43  ERROR    
+1 Failed download:
+2026-04-30 01:42:43  ERROR    ['AMZN']: TypeError("'NoneType' object is not subscriptable")

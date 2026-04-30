@@ -1022,7 +1022,7 @@ def apply_profit_lock_timestop(signal: pd.Series, close: pd.Series) -> pd.Series
     Applied AFTER apply_trailing_stop_signal and apply_time_decay_exit, so
     it can only fire EARLIER than the existing exits.  Empirically a clean
     Pareto improvement on AnnRet, Sharpe, MaxDD, and Calmar versus baseline
-    on atr_lev_1.5x sizing (see test_exits.py validation 2026-04-27).
+    on top-N zero-leverage sizing (validated 2026-04-27).
 
     Args:
         signal: Binary 0/1 Series (post all current exits).

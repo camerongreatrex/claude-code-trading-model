@@ -912,7 +912,7 @@ def _compute_topn_v2_targets(
     top_n: int = 11, target_vol: float = 0.14, scale_max: float = 2.5,
     vt_window: int = 63, lev_x: float = 1.5, max_gross: float = 1.0,
     adx_threshold: float = 22.0, mom_lo: float = 0.7, mom_hi: float = 1.3,
-    ac_quota: float = 0.55,
+    ac_quota: float = 0.55, gross_floor: float = 0.95,
 ) -> dict:
     """
     V2 zero-leverage top-N sizer for paper trading.  Mirrors
@@ -1001,12 +1001,17 @@ def _compute_topn_v2_targets(
                     for t, _ in items:
                         raw[t] *= cls_scale
 
-    # Final gross cap
+    # Final gross targeting — cap at max_gross (no leverage) and lift up to
+    # gross_floor on calm days so capital stays deployed rather than half-cash.
     gross = sum(abs(v) for v in raw.values())
-    if gross > max_gross * pv and gross > 0:
-        gscale = (max_gross * pv) / gross
-        raw = {t: v * gscale for t, v in raw.items()}
+    if gross > 0:
+        upper = (max_gross * pv) / gross
+        lift  = (gross_floor * pv) / gross if gross_floor and gross_floor > 0 else upper
+        gscale = min(lift, upper)
+        if gscale != 1.0:
+            raw = {t: v * gscale for t, v in raw.items()}
 
+    # Per-name clip then re-cap to enforce zero-leverage invariant
     out = {}
     for t, v in raw.items():
         if v <= 0:
@@ -1015,6 +1020,10 @@ def _compute_topn_v2_targets(
         if t in INDEX_ETF_TICKERS:
             capped = min(capped, pv * INDEX_ETF_CAP)
         out[t] = capped
+    gross2 = sum(out.values())
+    if gross2 > max_gross * pv and gross2 > 0:
+        s = (max_gross * pv) / gross2
+        out = {t: v * s for t, v in out.items()}
     return out
 
 

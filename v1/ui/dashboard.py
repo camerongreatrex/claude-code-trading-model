@@ -1,70 +1,9 @@
 """
-dashboard.py
-------------
-Streamlit web dashboard for the algorithmic trading system.
+Streamlit dashboard for V1.  Run with:  streamlit run v1/ui/dashboard.py
 
-To run:
-  streamlit run v1/ui/dashboard.py
-
-Architecture overview
-─────────────────────
-The dashboard is organised into tabs, each backed by cached data-loading
-functions.  Expensive operations (reading parquets, fetching yfinance data)
-are wrapped in @st.cache_data with a TTL to avoid re-running on every
-user interaction.
-
-Sub-package structure (ui/)
-────────────────────────────
-  ui/styles.py       — CSS constant, _layout() helper, PALETTE, LABELS
-  ui/data_loaders.py — @st.cache_data loaders + run_monte_carlo()
-  ui/charts.py       — metrics(), metrics_table(), all chart_*() builders
-
-Tabs
-────
-  Overview       — Backtest equity curves, portfolio comparison table,
-                   walk-forward OOS results, IS vs OOS Sharpe comparison
-  Portfolio      — ATR+PCA+macro equity curve with B&H benchmark, drawdown,
-                   rolling Sharpe, monthly returns heatmap, trade analysis
-  Live Signals   — Current MA-crossover signal state for all 21 tickers,
-                   refreshed every few minutes from yfinance
-  Paper Trading  — Live intraday candlestick chart of the paper portfolio,
-                   open positions table, daily/trade P&L breakdown,
-                   "Run EOD Update" button for manual end-of-day runs
-  vs S&P 500     — Today's intraday portfolio vs SPY benchmark (normalised),
-                   historical daily performance comparison
-
-Paper Trading chart details
-────────────────────────────
-  Historical daily closes → go.Scatter (blue line)
-  Today's 5-min bars     → go.Candlestick (green/red candles)
-  After close extension  → go.Scatter (blue dotted flat line to now)
-  ^GSPC benchmark        → go.Scatter (purple dotted, normalised to close-to-close baseline)
-  Now vertical line      → add_shape with orange dotted line
-  uirevision="paper_portfolio" — Plotly preserves user zoom/pan across
-                                 5-second fragment refreshes.
-
-Key design decisions
-─────────────────────
-  - Chart x-range right edge = max(now, 16:05) so the chart always shows
-    at least through market close, and extends to current time after hours.
-  - The flat line after the last candle is a separate Scatter trace (not
-    an extra OHLC bar) so it looks clean rather than showing a doji candle.
-  - spy_pct_from_prev uses period="5d" daily data filtered to dates before
-    today to get the confirmed previous close without the incomplete
-    in-progress today row corrupting the calculation.
-  - Delta string for portfolio value uses "+" prefix before the number so
-    Streamlit can detect the sign for green/red colouring.
-
-Data files consumed (from data/results/ and data/paper_trading/)
-────────────────────────────────────────────────────────────────
-  portfolio_comparison.parquet   — equity curves for all sizing methods
-  walk_forward_regime.parquet    — OOS walk-forward results
-  walk_forward_atr_pca.parquet   — OOS results for ATR+PCA+macro
-  oos_selection.parquet          — IS vs OOS Sharpe selection table
-  portfolio_equity_curve.parquet — best OOS method equity curve
-  data/paper_trading/state.json  — current portfolio state
-  data/paper_trading/trades.csv  — trade log
-  data/paper_trading/history.csv — daily portfolio value snapshots
+Tabs: Portfolio · Signals · vs S&P · Backtest · Validation · Risk.
+Helpers split into ui/styles.py, ui/data_loaders.py, ui/charts.py.
+Data sources: data/v1/results/*.parquet + data/paper_trading/*.
 """
 
 import sys
@@ -105,24 +44,11 @@ from v1.ui.data_loaders import (
     load_correlation_diagnostic, load_regime_correlation, load_dead_weight,
 )
 
-# ── OOS method-selection thresholds ───────────────────────────────────────────
-# These three constants govern which backtest method is shown in the header
-# and used for monthly returns / portfolio-level metrics.
-#
-# OOS_MIN_SHARPE   — minimum out-of-sample Sharpe a method must achieve to be
-#                    eligible.  Below this we consider the strategy unreliable.
-# OOS_MAX_NEG_GAP  — how much higher OOS Sharpe can be vs IS Sharpe before we
-#                    become suspicious (lucky OOS period, not generalizable edge).
-#                    Negative means OOS > IS.  -0.05 = allow at most 5% inflation.
-# OOS_MAX_POS_GAP  — how much lower OOS Sharpe can be vs IS Sharpe (ordinary
-#                    overfitting decay) before we reject the method.
+# OOS thresholds for method-eligibility filtering in the header/caption.
 OOS_MIN_SHARPE  = 0.9
-OOS_MAX_NEG_GAP = -0.05   # OOS Sharpe ≤ IS Sharpe + 0.05  (OOS can't be much better than IS)
-OOS_MAX_POS_GAP =  0.50   # OOS Sharpe ≥ IS Sharpe − 0.50  (allow up to 50% IS-to-OOS decay)
+OOS_MAX_NEG_GAP = -0.05   # OOS Sharpe ≤ IS Sharpe + 0.05  (no excess inflation)
+OOS_MAX_POS_GAP =  0.50   # OOS Sharpe ≥ IS Sharpe − 0.50  (cap IS-to-OOS decay)
 
-# ── Signal-column → human description ─────────────────────────────────────────
-# Used by the dashboard header and strategy caption to describe the active
-# signal type without hardcoding strings.
 _SIGNAL_DESCRIPTIONS = {
     "signal_regime"  : "MA crossover",
     "signal_multi"   : "MA crossover + momentum breakout + dip-buy",
@@ -156,27 +82,9 @@ def _startup_correct_history():
     correct_history_baseline()
 
 
-# ── Main layout ───────────────────────────────────────────────────────────────
 def main():
-    """
-    Top-level Streamlit entry point — builds the full dashboard layout.
-
-    Called once per page load (or full rerun).  Loads all cached data,
-    renders the header and top-level metrics, then delegates each tab's
-    content to dedicated chart/fragment functions.
-
-    Tab structure:
-      Tab 1 — Equity Curves, drawdown, monthly heatmap, summary table
-      Tab 2 — Monte Carlo bootstrap fan chart + histogram
-      Tab 3 — Walk-forward OOS validation + per-asset Sharpe comparison
-      Tab 4 — Macro overlay (VIX + yield curve) with portfolio curves
-      Tab 5 — Paper Trading & Live Signals (auto-refreshing fragment)
-      Tab 6 — vs S&P 500 (auto-refreshing fragment)
-    """
-    # Catch up missed trading days before rendering any tabs.
-    # st.cache_resource(ttl=3600) ensures this runs at most once per hour,
-    # not on every Streamlit rerun.  The idempotency guard in
-    # _end_of_day_update_for_date prevents conflicts with the scheduler.
+    """Streamlit entry point. Loads cached data, renders header + tabs."""
+    # Replay missed trading days once per hour (idempotency-guarded).
     with st.spinner("Catching up missed trading days..."):
         n_caught_up = _startup_catchup()
     if n_caught_up and "_catchup_done" not in st.session_state:
@@ -263,12 +171,19 @@ def main():
     st.markdown(f'<div class="section-head">{_prod_label} — out-of-sample validated performance</div>',
                 unsafe_allow_html=True)
 
-    eq_ret  = df_port[_prod_method].pct_change().dropna() if _prod_method in df_port.columns else pd.Series(dtype=float)
-    bnh_ret = df_port["buy_hold"].pct_change().dropna()   if "buy_hold"   in df_port.columns else pd.Series(dtype=float)
-    m_eq    = metrics(eq_ret)
-    m_bnh   = metrics(bnh_ret)
+    # All headline metrics use the OOS slice (after 3yr / 756d warm-up) so
+    # AnnRet / Vol / Max DD line up with the OOS Sharpe shown.  Full-period
+    # values were misleading because they mixed training-window noise with
+    # validated forward performance.
+    _OOS_WARMUP = 756
+    _full_eq    = df_port[_prod_method].pct_change().dropna() if _prod_method in df_port.columns else pd.Series(dtype=float)
+    _full_bnh   = df_port["buy_hold"].pct_change().dropna()   if "buy_hold"   in df_port.columns else pd.Series(dtype=float)
+    eq_ret      = _full_eq.iloc[_OOS_WARMUP:]  if len(_full_eq)  > _OOS_WARMUP else _full_eq
+    bnh_ret     = _full_bnh.iloc[_OOS_WARMUP:] if len(_full_bnh) > _OOS_WARMUP else _full_bnh
+    m_eq        = metrics(eq_ret)
+    m_bnh       = metrics(bnh_ret)
 
-    # Profit factor from daily returns (gross winners / gross losers)
+    # Profit factor from OOS daily returns
     _top_pf = _calc_profit_factor(eq_ret) if not eq_ret.empty else float("inf")
 
     # Active Sharpe: pull OOS active Sharpe for the production method from oos_selection
@@ -280,83 +195,41 @@ def main():
 
     c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(9)
     def delta_str(val, ref, pct=True):
-        """
-        Format the strategy-vs-benchmark delta for a Streamlit st.metric delta arg.
-
-        Args:
-            val:  Strategy metric value.
-            ref:  Benchmark (Buy & Hold) metric value.
-            pct:  If True, format as percentage string with sign; otherwise as
-                  a plain signed float with two decimal places.
-
-        Returns:
-            String with explicit sign (e.g. "+2.3%" or "-0.15") for Streamlit
-            to detect positive/negative and apply green/red colouring.
-        """
+        """Signed delta string ("+2.3%" / "-0.15") for st.metric colouring."""
         d = val - ref
-        s = f"{d*100:+.1f}%" if pct else f"{d:+.2f}"
-        return s
+        return f"{d*100:+.1f}%" if pct else f"{d:+.2f}"
 
-    # Ann. Return: higher is better → delta_color="normal" (default): green = strategy > B&H
     with c1: st.metric("Ann. Return",  f"{m_eq['ann_r']*100:.1f}%",
                         delta=delta_str(m_eq['ann_r'], m_bnh['ann_r']),
-                        help="Compound Annual Growth Rate (CAGR) — the yearly return if capital "
-                             "was invested for the full backtest period. Arrow shows vs buy & hold: "
-                             "green ↑ = strategy beats B&H, red ↓ = B&H won.")
-    # Sharpe: show OOS Sharpe from walk-forward if available, else IS Sharpe
+                        help="OOS CAGR (post 3yr warm-up). Arrow vs B&H OOS.")
+    # Prefer walk-forward Sharpe; fall back to OOS-slice Sharpe.
     _disp_sharpe = float(_oos_row["oos_sharpe"]) if _oos_row is not None and "oos_sharpe" in _oos_row.index else m_eq['sharpe']
     with c2: st.metric("Sharpe Ratio", f"{_disp_sharpe:.2f}",
                         delta=delta_str(_disp_sharpe, m_bnh['sharpe'], pct=False),
-                        help="Out-of-sample Sharpe from walk-forward validation (3yr train / 1yr test). "
-                             "This is the risk-adjusted return on data the strategy never saw during development. "
-                             ">1.0 is good, >2.0 is exceptional. "
-                             "Arrow shows vs buy & hold IS Sharpe.")
-    # Volatility: lower is better → delta_color="inverse": green = strategy vol < B&H vol
+                        help="Walk-forward OOS Sharpe (3yr/1yr). >2.0 exceptional.")
     with c3: st.metric("Volatility",   f"{m_eq['vol']*100:.1f}%",
                         delta=delta_str(m_eq['vol'], m_bnh['vol']), delta_color="inverse",
-                        help="Annualised standard deviation of daily returns — how wildly returns "
-                             "bounce day-to-day. 15% means a typical daily swing of ~1%. "
-                             "Arrow shows vs buy & hold: green ↓ = LESS volatile than B&H (good), "
-                             "red ↑ = MORE volatile (worse risk profile).")
-    # Max Drawdown: both values are negative fractions; a less-negative delta means
-    # the strategy had a shallower drawdown → delta_color="normal": green = strategy DD > B&H DD
-    # (e.g., strategy -10% vs B&H -20%: delta = +10% → green, which correctly means less loss)
+                        help="Annualised σ of daily returns. Lower = smoother.")
     with c4: st.metric("Max Drawdown", f"{m_eq['max_dd']*100:.1f}%",
                         delta=delta_str(m_eq['max_dd'], m_bnh['max_dd']), delta_color="normal",
-                        help="Largest peak-to-trough loss in portfolio history — e.g. −20% means "
-                             "the portfolio fell 20% from its highest point before recovering. "
-                             "Arrow shows vs buy & hold: green ↑ = SHALLOWER drawdown than B&H (good), "
-                             "red ↓ = deeper loss (worse downside protection).")
+                        help="Largest peak-to-trough loss in OOS period.")
     with c5: st.metric("Calmar Ratio", f"{m_eq['calmar']:.2f}",
-                        help="Annualised return divided by the absolute maximum drawdown. "
-                             "Measures how much return you earned relative to the worst loss. "
-                             ">1.0 is considered good; institutional target is often >0.5.")
+                        help="Ann. return ÷ |max DD|. Strategy is zero-leverage, "
+                             "so a high Calmar = shallow drawdowns, not amplified returns.")
     with c6: st.metric("Win Rate",     f"{m_eq['win_rate']*100:.0f}%",
-                        help="Percentage of active trading days where the strategy had a "
-                             "positive return. Even a 50% win rate can be very profitable "
-                             "if winning days are larger than losing days (see Profit Factor).")
+                        help="% of active days with positive return.")
     with c7: st.metric("Profit Factor", f"{_top_pf:.2f}" if _top_pf < 100 else "∞",
-                        help="Gross profit ÷ gross loss on daily returns. "
-                             ">1.5 is good, >2.0 is exceptional. "
-                             "Independent of win rate — measures the quality of winners vs losers.")
+                        help="Gross profit ÷ gross loss. >2.0 strong.")
     with c8: st.metric("Active Sharpe",
                         f"{_top_act_sharpe:.2f}" if _top_act_sharpe is not None else "—",
-                        help="OOS Sharpe of excess returns vs buy & hold — measures genuine skill "
-                             "above passive indexing on unseen data. "
-                             "Computed on walk-forward test windows (genuinely out-of-sample). "
-                             "Higher is better; >0.5 = meaningful alpha.")
-    # VaR: lower is better (smaller daily loss exposure) → delta_color="inverse": green = strategy VaR < B&H VaR
+                        help="OOS Sharpe of excess returns vs B&H. Pure-alpha measure.")
     with c9: st.metric("VaR 95% (1d)", f"{m_eq.get('var_95', 0)*100:.2f}%",
                         delta=delta_str(m_eq.get('var_95', 0), m_bnh.get('var_95', 0)), delta_color="inverse",
-                        help="Historical 1-day 95% Value at Risk — the daily loss threshold exceeded "
-                             "only 5% of trading days. E.g. 1.50% means on 95% of days the strategy "
-                             "lost less than 1.50%. Lower is better. "
-                             "Arrow shows vs buy & hold: green ↓ = strategy has smaller daily tail risk than B&H.")
+                        help="1-day 95% VaR. Daily loss exceeded only 5% of days.")
 
     st.caption(
-        "Sharpe and Active Sharpe use out-of-sample walk-forward results (tested on unseen data). "
-        "Ann. Return and Vol use the full 10-year backtest. The strategy holds ~60% invested on average — "
-        "lower absolute return than 100%-invested Buy & Hold, but half the volatility and a third of the drawdown."
+        "All metrics are out-of-sample (post 3yr training warm-up).  Strategy "
+        "is zero-leverage: gross exposure capped at 1.0× capital, no borrowing."
     )
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
@@ -390,12 +263,11 @@ def main():
 
         _eq_view = st.radio(
             "Comparison mode",
-            ["Actual dollars (unlevered)", "Risk-adjusted (equal volatility)"],
+            ["Actual dollars (zero-leverage)", "Risk-adjusted (equal volatility)"],
             index=0, horizontal=True,
-            help="'Actual dollars' shows real unlevered returns — Buy & Hold is higher because "
-                 "it holds 100% invested while strategies hold ~60% for crash protection. "
-                 "'Risk-adjusted' scales all strategies to the same volatility so you can see "
-                 "which ones generate more return per unit of risk taken."
+            help="'Actual dollars' is the unlevered $-curve. 'Risk-adjusted' "
+                 "scales each strategy to the same vol so the higher-Sharpe "
+                 "method visibly outperforms."
         )
         _selected_cols = st.multiselect(
             "Methods to display",
@@ -420,9 +292,8 @@ def main():
             )
 
         st.caption(
-            "Active strategies hold ~60% invested on average — the other ~40% sits in cash "
-            "as crash protection. This is why Buy & Hold shows higher absolute returns in bull "
-            "markets. Switch to 'Risk-adjusted' to see the fair comparison at equal volatility."
+            "Strategies are zero-leverage (gross capped at 1.0× capital). "
+            "Switch to 'Risk-adjusted' for the fair comparison at equal volatility."
         )
 
         st.plotly_chart(chart_drawdown(df_port, columns=_selected_cols), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
@@ -468,9 +339,8 @@ def main():
             st.info("Run `python -m v1.pipeline.correlation_diagnostic` to generate alpha decomposition data.")
         else:
             # ── Section A: 4-column metric row ──────────────────────────────
-            # Headline metrics now reflect the PRODUCTION method (atr_lev_1.5x +
-            # overlay) rather than the cherry-picked best-OOS row, so the panel
-            # tells you about the strategy actually being run.
+            # Headline metrics reflect V1_PRODUCTION_METHOD (the live strategy)
+            # rather than the cherry-picked best-OOS row.
             _prod_oos_act_sharpe = None
             _prod_ols_beta       = None
             _alpha_total_ratio   = None
