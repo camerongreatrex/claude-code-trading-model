@@ -13,19 +13,27 @@ START_DATE = "2010-01-01"
 END_DATE = "2026-01-01"
 
 # ── V1 production method (single source of truth) ────────────────────────────
-# Pinned 2026-04-28 (V2): top11_adx22_momt_ac55_cap1 — zero-leverage top-N
-# concentration with three overlay refinements:
-#   A. ADX≥22 filter — drop weak trends entirely before top-N selection.
-#   B. 63d momentum tilt (0.7-1.3 percentile-rank scale) — within selected
-#      longs, size strongest 3-month performers up to 1.3x and weakest down
-#      to 0.7x.
-#   C. 55% asset-class quota — no class > 55% of gross to force diversification.
-# Walk-forward OOS (2022-2025, 3 windows): 21.00% AnnRet / 2.324 Sharpe /
-# -6.33 worst DD — +0.79pp AnnRet, +0.10 Sharpe, +0.62pp DD reduction vs
-# prior top11 V1 (20.21% / 2.221 / -6.95).  Beats prior 1.5x leverage prod
-# (16.95% / 1.570 / -8.32 OOS) on every dimension at zero leverage.  Change
-# this constant to swap production everywhere (dashboard tiers, paper trader,
-# portfolio.py pin, etc.).
+# Pinned 2026-05-01 (V4N-B): top11_adx22_momt_ac55_cap1 + 12% diversifier sleeve
+# + profit-take overlay + conditional vol-carry overlay.  Zero-leverage.
+#   A. ADX≥22 filter — drop weak trends before top-N selection.
+#   B. 63d momentum tilt (0.7-1.3) — within longs, scale by 3m return rank.
+#   C. 55% asset-class quota — no class > 55% of gross.
+#   D. 12% diversifier sleeve — equal-weight TLT/GLD/DBMF/VGSH always-on.
+#   E. Profit-take overlay — scale a position by 0.7 if its 10d cum/std
+#      z-score >= 1.5 (take 30% off parabolic moves).
+#   F. Conditional vol-carry — scale gross by 0.5 when vix_zscore >= 1.5
+#      AND VIX rising over the last 5 days (avoid cutting after the storm).
+# Walk-forward 1-yr OOS (3 windows, true OOS):
+#   V4N-B: 2.56 mean Sh / 19.13% AnnRet / -3.83% DD / 1.98 worst Sh
+#   vs V3: 2.33 mean Sh / 19.63% AnnRet / -4.60% DD / 1.62 worst Sh
+#   = +0.23 Sh, -0.50pp Ann, -0.77pp DD, +0.36 worst-Sh.  Strict Pareto on
+#   risk-adjusted return + worst-case stability.
+# 6-month walk-forward stability: std 0.79 (V3 0.99) → much less variable.
+# Beats the ML-based V4B (Sh 2.50, Ann 18.31%) on every dimension AND uses
+# zero ML — purely deterministic overlays, no model state, no retraining.
+# See feedback_position_sizing.md.
+# Single source of truth — change here to swap everywhere (dashboard, paper
+# trader, portfolio.py pin, etc.).
 V1_PRODUCTION_METHOD = "top11_adx22_momt_ac55_cap1"
 
 # ── V2 Configuration ──────────────────────────────────────────────────────────

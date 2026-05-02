@@ -1020,11 +1020,93 @@ def _compute_topn_v2_targets(
         if t in INDEX_ETF_TICKERS:
             capped = min(capped, pv * INDEX_ETF_CAP)
         out[t] = capped
+
+    # 12% 4-asset diversifier sleeve (TLT/GLD/DBMF/VGSH) — wired 2026-04-30.
+    # Mirrors portfolio.diversifier_sleeve_overlay so live = backtest.
+    sleeve_tickers = ("TLT", "GLD", "DBMF", "VGSH")
+    sleeve_pct     = 0.12
+    available_sleeve = [t for t in sleeve_tickers if t in signals]
+    if available_sleeve and sleeve_pct > 0:
+        out = {t: v * (1.0 - sleeve_pct) for t, v in out.items()}
+        each = (sleeve_pct * pv) / len(available_sleeve)
+        for t in available_sleeve:
+            out[t] = min(out.get(t, 0.0) + each, pv * MAX_POSITION_PCT)
+
+    # V4N-B overlays (wired 2026-05-01) — mirrors portfolio.profit_take_overlay
+    # + cond_vol_carry_overlay so live = backtest.
+    out = _apply_profit_take_live(out, lookback=10, sigma_thresh=1.5, scale=0.7)
+    vc_mult = _get_cond_vol_carry_multiplier(fear_z=1.5, roc_days=5, fear_mult=0.5)
+    if vc_mult < 1.0:
+        out = {t: v * vc_mult for t, v in out.items()}
+
     gross2 = sum(out.values())
     if gross2 > max_gross * pv and gross2 > 0:
         s = (max_gross * pv) / gross2
         out = {t: v * s for t, v in out.items()}
     return out
+
+
+def _apply_profit_take_live(positions: dict, lookback: int = 10,
+                              sigma_thresh: float = 1.5,
+                              scale: float = 0.7) -> dict:
+    """
+    V4N-B profit-take overlay (live).  For each long position, reads the last
+    `lookback`+1 days of log-returns from the on-disk feature parquet, computes
+    z = cum / (std × sqrt(lookback)).  If z >= sigma_thresh, scale by `scale`.
+
+    Mirrors portfolio.profit_take_overlay for live = backtest invariance.
+    """
+    if not positions:
+        return positions
+    feat_dir = Path("data/v1/features")
+    if not feat_dir.exists():
+        return positions
+    out = dict(positions)
+    for t in list(out.keys()):
+        if out[t] <= 0:
+            continue
+        fp = feat_dir / f"{t}.parquet"
+        if not fp.exists():
+            continue
+        try:
+            r = pd.read_parquet(fp)["log_return"].dropna().tail(lookback)
+            if len(r) < lookback:
+                continue
+            cum = float(r.sum())
+            std = float(r.std() * np.sqrt(lookback))
+            if std <= 0:
+                continue
+            z = cum / std
+            if z >= sigma_thresh:
+                out[t] = out[t] * scale
+        except Exception:
+            continue
+    return out
+
+
+def _get_cond_vol_carry_multiplier(fear_z: float = 1.5, roc_days: int = 5,
+                                     fear_mult: float = 0.5) -> float:
+    """
+    V4N-B conditional vol-carry overlay (live).  Returns scaling multiplier:
+      - 1.0 in calm regime
+      - fear_mult when vix_zscore >= fear_z AND VIX rising over roc_days
+
+    Mirrors portfolio.cond_vol_carry_overlay for live = backtest invariance.
+    """
+    macro_path = Path("data/shared/macro/macro_features.parquet")
+    if not macro_path.exists():
+        return 1.0
+    try:
+        m = pd.read_parquet(macro_path)
+        if "vix_zscore" not in m.columns or "vix" not in m.columns:
+            return 1.0
+        z   = float(m["vix_zscore"].iloc[-1])
+        roc = float(m["vix"].iloc[-1] - m["vix"].iloc[-1 - roc_days])
+        if z >= fear_z and roc > 0:
+            return float(fear_mult)
+        return 1.0
+    except Exception:
+        return 1.0
 
 
 def _compute_position_size(

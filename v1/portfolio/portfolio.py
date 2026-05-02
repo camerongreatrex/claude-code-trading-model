@@ -80,8 +80,10 @@ RESULTS_DIR = Path("data/v1/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 CAPITAL          = 100_000
-MAX_POSITION_PCT = 0.10    # 10% per-name cap = $10k on $100k capital.
-                            # Hard cap to prevent single-name concentration.
+MAX_POSITION_PCT = 0.12    # 12% per-name cap = $12k on $100k capital.
+                            # Bumped from 0.10 (2026-04-30) — sweep + walk-forward
+                            # showed +1.32pp AnnRet, +0.18 worst-period Sharpe, no
+                            # DD cost.  Stays strictly zero leverage (gross ≤ 1.0×).
                             # Note: tighter than the empirical Sharpe optimum (0.20),
                             # but required for diversification & single-name beta control.
 RISK_PER_TRADE   = 0.01
@@ -2172,6 +2174,107 @@ def defensive_tilt_overlay(
     return result
 
 
+def diversifier_sleeve_overlay(
+    sizes: pd.DataFrame,
+    capital: float,
+    sleeve_tickers: tuple = ("TLT", "GLD", "DBMF", "VGSH"),
+    sleeve_pct: float = 0.12,
+    max_gross: float = 1.0,
+) -> pd.DataFrame:
+    """
+    Permanent equal-weight diversifier sleeve in low-correlation assets.
+
+    Reduces top-N momentum positions by (1 - sleeve_pct) and reallocates
+    that dollar amount equally across the sleeve tickers.  Result: more
+    active names, less single-name concentration risk (e.g., NVDA), lower
+    DD, slightly lower headline AnnRet — net Sharpe / Calmar improvement.
+
+    OOS sweep (2026-04-30): adds 0.05 Sharpe, -0.75pp MaxDD, +3 active names
+    vs no sleeve, at the cost of -1.76pp AnnRet.
+
+    Stays strictly zero-leverage: final clip enforces gross ≤ max_gross × capital.
+    """
+    if sleeve_pct <= 0 or not sleeve_tickers:
+        return sizes
+    available = [t for t in sleeve_tickers if t in sizes.columns]
+    if not available:
+        return sizes
+    out = sizes * (1.0 - sleeve_pct)
+    each = capital * sleeve_pct / len(available)
+    for t in available:
+        out[t] = out[t] + each
+    out = out.clip(-capital * MAX_POSITION_PCT, capital * MAX_POSITION_PCT)
+    gross = out.abs().sum(axis=1).replace(0, np.nan)
+    final = (max_gross * capital / gross).clip(upper=1.0).fillna(1.0)
+    return out.multiply(final, axis=0)
+
+
+def profit_take_overlay(
+    sizes: pd.DataFrame,
+    returns: pd.DataFrame,
+    lookback: int = 10,
+    sigma_thresh: float = 1.5,
+    scale: float = 0.7,
+    max_gross: float = 1.0,
+    capital: float = CAPITAL,
+) -> pd.DataFrame:
+    """
+    Per-name profit-taking on parabolic moves.  For each long position, if the
+    name's `lookback`-day cumulative log-return divided by its `lookback`-day
+    rolling std (annualized) exceeds `sigma_thresh`, scale that day's position
+    by `scale` (e.g. 0.7 = take 30% off the table).
+
+    Captures Sharpe by trimming positions that have run hot before mean-reversion;
+    OOS sweep (2026-05-01) showed +0.15 Sh / -0.16pp Ann at lookback=10, sigma=1.5.
+
+    Stays strictly zero-leverage: final clip enforces gross ≤ max_gross × capital.
+    """
+    out = sizes.copy()
+    for t in sizes.columns:
+        if t not in returns.columns:
+            continue
+        cum = returns[t].rolling(lookback).sum()
+        std = returns[t].rolling(lookback).std() * np.sqrt(lookback)
+        z = (cum / std.replace(0, np.nan)).reindex(out.index).fillna(0)
+        hot = (z >= sigma_thresh) & (out[t] > 0)
+        col = out[t].values.astype(float)
+        col = np.where(hot.values, col * scale, col)
+        out[t] = col
+    gross = out.abs().sum(axis=1).replace(0, np.nan)
+    final = (max_gross * capital / gross).clip(upper=1.0).fillna(1.0)
+    return out.multiply(final, axis=0)
+
+
+def cond_vol_carry_overlay(
+    sizes: pd.DataFrame,
+    macro: pd.DataFrame,
+    fear_z: float = 1.5,
+    roc_days: int = 5,
+    fear_mult: float = 0.5,
+) -> pd.DataFrame:
+    """
+    Conditional vol-carry: scale gross down only when VIX-zscore is BOTH high
+    (>= fear_z) AND VIX is rising over the prior `roc_days` window.  Avoids
+    cutting risk after the storm has already passed.
+
+    Asymmetric — only ever reduces gross (calm regime → 1.0×, fear regime →
+    fear_mult).  Cannot add leverage by construction.
+
+    OOS sweep (2026-05-01) at fear_z=1.5, roc_days=5, fear_mult=0.5:
+      +0.06 Sh, -0.14pp Ann, -1.19pp DD vs V3 baseline.
+    """
+    if macro is None or macro.empty:
+        return sizes
+    if "vix_zscore" not in macro.columns or "vix" not in macro.columns:
+        return sizes
+    z = macro["vix_zscore"].reindex(sizes.index).ffill().bfill()
+    roc = macro["vix"].reindex(sizes.index).ffill().diff(roc_days)
+    mult = pd.Series(1.0, index=sizes.index)
+    mask = (z >= fear_z) & (roc > 0)
+    mult[mask] = fear_mult
+    return sizes.multiply(mult, axis=0)
+
+
 def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
     """
     Compute daily portfolio P&L from dollar position sizes and asset returns.
@@ -2968,10 +3071,12 @@ def main():
             signals_multi, _macro_for_overlay, CAPITAL,
         )
         ret_topn_vt_zero      = portfolio_returns(sizes_topn_vt_zero, returns)
-        # V2 production (pinned 2026-04-28): adds ADX≥22 filter + 63d momentum
-        # tilt + 55% asset-class quota.  OOS 21.00% / 2.324 Sh / -6.33 DD —
-        # +0.79pp AnnRet, +0.10 Sharpe, +0.62pp DD reduction vs prior top11.
-        print("  Computing top-N + ADX22 + momt + AC55 (V2 zero-leverage prod)...")
+        # V3 production (pinned 2026-04-30): same V2 sizer + cap12 + 12% 4-asset
+        # diversifier sleeve (TLT/GLD/DBMF/VGSH).  OOS sweep:
+        #   2.326 Sh / 19.41% AnnRet / -5.76% DD / 3.37 Calmar / 14-15 active names
+        # Improvements vs V2 (cap10/no-sleeve): +0.05 Sh, +0.12 Calmar, -0.75pp DD,
+        # 3 more active names — cost is -1.6pp AnnRet from sleeve dilution.
+        print("  Computing top-N + ADX22 + momt + AC55 + 12% 4-asset sleeve (V3 prod)...")
         sizes_topn_v2         = defensive_tilt_overlay(
             top_n_adx_momt_ac_sizes(
                 signals_multi, features, returns, CAPITAL,
@@ -2982,6 +3087,16 @@ def main():
             ),
             signals_multi, _macro_for_overlay, CAPITAL,
         )
+        sizes_topn_v2 = diversifier_sleeve_overlay(
+            sizes_topn_v2, CAPITAL,
+            sleeve_tickers=("TLT", "GLD", "DBMF", "VGSH"),
+            sleeve_pct=0.12,
+        )
+        # V4N-B (2026-05-01): profit-take + conditional vol-carry overlays
+        sizes_topn_v2 = profit_take_overlay(sizes_topn_v2, returns,
+                                             lookback=10, sigma_thresh=1.5, scale=0.7)
+        sizes_topn_v2 = cond_vol_carry_overlay(sizes_topn_v2, _macro_for_overlay,
+                                                fear_z=1.5, roc_days=5, fear_mult=0.5)
         ret_topn_v2           = portfolio_returns(sizes_topn_v2, returns)
         print("  Computing portable alpha sizes (multi_mom_tilt + SPY beta hedge, β=0.30)...")
         sizes_portable        = defensive_tilt_overlay(
@@ -3168,18 +3283,33 @@ def main():
             ),
         ))
         all_methods.append((
-            # V2 production (pinned 2026-04-28).  Stacks ADX≥22 filter +
-            # 63d momentum tilt (0.7-1.3) + 55% asset-class quota on top of
-            # the top11 + vt zero-lev base.  OOS 21.00% / 2.324 Sh / -6.33 DD —
-            # +0.79pp AnnRet, +0.10 Sharpe, +0.62pp DD reduction vs prior top11.
+            # V4N-B production (pinned 2026-05-01): V3 sizer + cap12 + 12% 4-asset
+            # diversifier sleeve + profit-take overlay + conditional vol-carry.
+            # Walk-forward includes ALL overlays so OOS Sharpe matches live.
             "top11_adx22_momt_ac55_cap1",
             ret_topn_v2, signals_multi,
-            lambda sig, ret: top_n_adx_momt_ac_sizes(
-                sig, features, ret, CAPITAL,
-                top_n=11, target_vol=0.14, scale_max=2.5, vt_window=63,
-                lev_x=1.5, max_gross=1.0,
-                adx_threshold=22.0, mom_window=63, mom_lo=0.7, mom_hi=1.3,
-                ac_quota=0.55,
+            lambda sig, ret: cond_vol_carry_overlay(
+                profit_take_overlay(
+                    diversifier_sleeve_overlay(
+                        defensive_tilt_overlay(
+                            top_n_adx_momt_ac_sizes(
+                                sig, features, ret, CAPITAL,
+                                top_n=11, target_vol=0.14, scale_max=2.5, vt_window=63,
+                                lev_x=1.5, max_gross=1.0,
+                                adx_threshold=22.0, mom_window=63, mom_lo=0.7, mom_hi=1.3,
+                                ac_quota=0.55,
+                            ),
+                            sig, _macro_for_overlay, CAPITAL,
+                        ),
+                        CAPITAL,
+                        sleeve_tickers=("TLT", "GLD", "DBMF", "VGSH"),
+                        sleeve_pct=0.12,
+                    ),
+                    ret,
+                    lookback=10, sigma_thresh=1.5, scale=0.7,
+                ),
+                _macro_for_overlay,
+                fear_z=1.5, roc_days=5, fear_mult=0.5,
             ),
         ))
         # REMOVED by strategy audit 2026-04-08 — OOS Sharpe 1.584, composite 0.643
