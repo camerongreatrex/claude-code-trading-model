@@ -1,16 +1,7 @@
 """
-ML as a second-opinion FILTER on V3 picks (not parallel alpha).
-
-Idea: V3 already finds high-momentum names; the question is which of those
-trades work and which fail.  Train a classifier on per-position outcomes
-(did this V3 long earn positive 5d return?) using features available at
-entry.  At test time, downweight or skip V3 picks the model flags as low
-confidence.
-
-This is a different problem than "predict return sign across the whole
-universe" — we're conditioning on V3's filter (high-mom, ADX > 22, etc.)
-which strips out the easy momentum signal and leaves residual variation
-the model can potentially learn.
+ML as a second-opinion FILTER on V3 picks (not parallel alpha): classify which
+V3 longs earn positive 5d return; downweight/skip low-confidence picks at test.
+Conditioned on V3's filter (high-mom, ADX>22) so model learns residual variation.
 """
 
 from __future__ import annotations
@@ -103,11 +94,7 @@ def make_v3_sizes(sig, feats, rets, macro):
 def build_position_panel(sizes_v3: pd.DataFrame, feats: dict,
                           macro: pd.DataFrame, rets: pd.DataFrame,
                           fwd: int = 5) -> pd.DataFrame:
-    """
-    Long-format panel of (date, ticker) rows ONLY where V3 holds a long
-    position.  Features = lagged per-ticker + macro.  Target = next-fwd-day
-    cum log-return positive.
-    """
+    """Panel of (date, ticker) rows only where V3 holds long; target = fwd cum log-ret >0."""
     macro_aligned = macro.reindex(rets.index).ffill()
     macro_view = macro_aligned[[c for c in MACRO_FEATS if c in macro_aligned.columns]]
     parts = []
@@ -123,7 +110,6 @@ def build_position_panel(sizes_v3: pd.DataFrame, feats: dict,
             x["atr_pct"] = (df["atr_14"] / df["Close"]).replace([np.inf, -np.inf], np.nan)
         x = x.shift(1)
         x = x.join(macro_view, how="left")
-        # Mask: only V3-held longs (positive size)
         held = sizes_v3[t].reindex(x.index) > 0
         x = x[held]
         if len(x) == 0:
@@ -182,13 +168,7 @@ def walkforward_predict(panel: pd.DataFrame, train_days: int = 504,
 def apply_filter(sizes_v3: pd.DataFrame, panel: pd.DataFrame, preds: pd.Series,
                   threshold: float = 0.5, mode: str = "skip",
                   scale_low: float = 0.5) -> pd.DataFrame:
-    """
-    For each (date, ticker) where V3 is long and ML pred < threshold:
-      - mode='skip' : zero the position
-      - mode='scale': multiply by scale_low (e.g. 0.5)
-    Then renormalize gross to max(original gross, 1.0) — but cap at 1.0
-    (don't add leverage).  Skipped positions just reduce gross.
-    """
+    """Where pred<threshold: mode='skip' zero, mode='scale' x scale_low. No re-leverage."""
     out = sizes_v3.copy()
     panel = panel.copy()
     panel["pred"] = preds.values

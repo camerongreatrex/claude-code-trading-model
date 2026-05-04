@@ -1,46 +1,7 @@
 """
-regime_analysis.py
-------------------
-Decomposes equal-weight strategy performance by market regime.
-
-The key question: does the strategy add value in ALL four regimes, or only
-in bull_calm?  A strategy that outperforms only when VIX < 20 and markets
-are rising is not an alpha strategy — it is leveraged beta with extra steps.
-A real edge should show up in bear and stress regimes, or at minimum should
-protect capital when the simple buy-and-hold bleeds.
-
-Regime labels (applied to each trading day)
-───────────────────────────────────────────
-  bull_calm   : VIX < 20  AND  SPY 60d return > 0   (rising market, low fear)
-  bull_stress : VIX >= 20 AND  SPY 60d return > 0   (rising market, elevated fear)
-  bear_calm   : VIX < 20  AND  SPY 60d return <= 0  (falling/flat market, low fear)
-  bear_stress : VIX >= 20 AND  SPY 60d return <= 0  (falling/flat, high fear)
-
-Metrics per regime
-──────────────────
-  strategy_sharpe   — annualised Sharpe of equal-weight strategy returns
-  strategy_ann_ret  — annualised return of equal-weight strategy
-  bnh_sharpe        — buy-and-hold (equal-weight, fully invested) Sharpe
-  bnh_ann_ret       — buy-and-hold annualised return
-  alpha_sharpe      — strategy_sharpe - bnh_sharpe (how much Sharpe is added)
-  n_days            — number of trading days in this regime
-  pct_days          — % of total sample in this regime
-  avg_turnover      — mean fraction of portfolio positions changing per day
-                      (signal flips / N tickers; 0 = no rebalance, 1 = full turnover)
-
-Data sources
-────────────
-  Reads: data/shared/macro/macro_features.parquet   (VIX)
-         data/features/SPY.parquet            (Close for 60d return)
-         data/signals/regime_signals.parquet  (signal matrix, T x N)
-         data/features/{TICKER}.parquet       (log_return columns)
-
-  Writes: data/research/regime_decomposition.parquet
-
-Usage
-─────
-  python -m v1.pipeline.regime_analysis
-  python pipeline/regime_analysis.py
+regime_analysis.py — decomposes equal-weight strategy performance by market regime
+(bull_calm, bull_stress, bear_calm, bear_stress) using VIX>=20 and SPY 60d return.
+Reports per-regime Sharpe, AnnRet, B&H deltas, turnover; writes regime_decomposition.parquet.
 """
 
 import sys
@@ -66,10 +27,9 @@ RESEARCH_DIR = Path("data/v1/research")
 RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Regime thresholds ──────────────────────────────────────────────────────────
-VIX_STRESS_THRESH  = 20    # VIX >= 20 = stressed environment
-SPY_LOOKBACK       = 60    # trading days for SPY trend classification
+VIX_STRESS_THRESH  = 20    # stressed if VIX >= 20
+SPY_LOOKBACK       = 60    # SPY trend lookback (days)
 
-# Ordered for display
 REGIME_ORDER = ["bull_calm", "bull_stress", "bear_calm", "bear_stress"]
 
 REGIME_LABELS = {
@@ -123,26 +83,14 @@ def label_regimes(
     spy_close: pd.Series,
     index: pd.DatetimeIndex,
 ) -> pd.Series:
-    """
-    Label each date in index as one of four market regimes.
-
-    VIX is aligned from macro features.  SPY 60d return is computed from
-    adjusted close prices — no look-ahead (pct_change(60) uses past 60 days).
-
-    Returns:
-        Series of strings ('bull_calm', 'bull_stress', 'bear_calm',
-        'bear_stress') aligned to index.  NaN on warm-up dates before
-        SPY has 60 days of history.
-    """
-    # SPY 60-day return: price[t] / price[t-60] - 1 (purely historical)
+    """Label each date as one of four regimes using VIX and SPY 60d return (no look-ahead)."""
     spy_60d = spy_close.pct_change(SPY_LOOKBACK)
 
-    # Align VIX and SPY return to the working index
     vix_aligned    = vix.reindex(index).ffill()
     spy_60d_aligned = spy_60d.reindex(index).ffill()
 
-    stressed   = vix_aligned >= VIX_STRESS_THRESH   # True = VIX >= 20
-    bull_trend = spy_60d_aligned > 0                 # True = SPY up over 60d
+    stressed   = vix_aligned >= VIX_STRESS_THRESH
+    bull_trend = spy_60d_aligned > 0
 
     conditions = [
         (~stressed) &  bull_trend,   # bull_calm
@@ -150,10 +98,7 @@ def label_regimes(
         (~stressed) & ~bull_trend,   # bear_calm
          stressed   & ~bull_trend,   # bear_stress
     ]
-    # np.select requires a consistent dtype across choices and default.
-    # Use a string sentinel; days that don't match any condition (warm-up
-    # before SPY has 60 days of history) remain "unlabelled" and are
-    # excluded from regime analysis by value-match in decompose().
+    # Warm-up dates (pre 60d SPY history) fall to "unlabelled" sentinel
     labels = pd.Series(
         np.select(conditions, REGIME_ORDER, default="unlabelled"),
         index=index,
@@ -179,23 +124,13 @@ def _ann_return(returns: pd.Series) -> float:
 
 
 def _turnover(signals: pd.DataFrame, mask: pd.Series) -> float:
-    """
-    Mean fraction of positions changing per day within the regime.
-
-    For each day t in the regime, count how many tickers have
-    signal[t] != signal[t-1].  Divide by N tickers.
-    Average across regime days.
-
-    Returns 0 if no days or no signal columns available.
-    """
+    """Mean fraction of positions changing per day within the regime."""
     if signals.empty or mask.sum() == 0:
         return 0.0
-    # Signal changes: 1 where signal flipped vs previous day, 0 otherwise
     flipped    = (signals.diff().abs() > 0).astype(float)
     regime_days = flipped.loc[mask]
     if regime_days.empty:
         return 0.0
-    # Mean fraction of tickers turning over per day
     return float(regime_days.mean(axis=1).mean())
 
 
@@ -207,18 +142,7 @@ def decompose(
     signals    : pd.DataFrame,
     regimes    : pd.Series,
 ) -> pd.DataFrame:
-    """
-    Compute per-regime performance metrics.
-
-    Args:
-        strat_ret : daily equal-weight strategy log returns
-        bnh_ret   : daily equal-weight buy-and-hold log returns
-        signals   : (T x N) integer signal DataFrame (for turnover)
-        regimes   : Series of regime labels aligned to strat_ret.index
-
-    Returns:
-        DataFrame with one row per regime and metric columns.
-    """
+    """Compute per-regime performance metrics — one row per regime."""
     total_days = len(strat_ret)
     rows = []
 
@@ -232,7 +156,6 @@ def decompose(
         n    = int(mask.sum())
         pct  = n / total_days * 100 if total_days > 0 else 0.0
 
-        # Turnover: align signals to strat_ret index before masking
         sig_aligned = signals.reindex(strat_ret.index)
         turn = _turnover(sig_aligned, mask)
 
@@ -276,7 +199,7 @@ def _print_table(df: pd.DataFrame) -> None:
         regime  = row["regime"]
         label   = REGIME_LABELS.get(regime, regime)
 
-        # Flag regimes where strategy meaningfully underperforms or B&H
+        # Flag underperformance vs B&H or negative Sharpe
         alpha_flag = ""
         if row["alpha_sharpe"] < -0.1:
             alpha_flag = " <-- underperforms B&H"
@@ -364,13 +287,11 @@ def main() -> None:
     print(f"  SPY close series : {spy_close.shape[0]} rows")
     print(f"  Macro features   : {macro.shape}")
 
-    # ── Compute strategy and B&H returns ──────────────────────────────────────
-    # Strategy: position on day t-1 earns log_return on day t
-    # Equal weight across all tickers in the signal matrix
+    # ── Strategy and B&H returns ───────────────────────────────────────────────
+    # Strategy: t-1 position earns t log_return; equal-weight across signal matrix
     strat_matrix = returns[tickers].multiply(signals[tickers].shift(1).fillna(0))
     strat_ret    = strat_matrix.mean(axis=1).dropna()
 
-    # Buy-and-hold: equal-weight, fully invested every day
     bnh_ret = returns[tickers].mean(axis=1)
 
     # ── Label regimes ──────────────────────────────────────────────────────────

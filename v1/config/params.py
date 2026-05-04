@@ -1,13 +1,7 @@
 """
-config.py
----------
-Global configuration toggle between v1 (trend-following) and v2 (macro regime rotation).
+config.py — global params for v1 (trend-following).
 """
 
-# Active model version: "v1" or "v2"
-MODEL_VERSION = "v2"
-
-# Shared constants
 CAPITAL = 100_000
 START_DATE = "2010-01-01"
 END_DATE = "2026-01-01"

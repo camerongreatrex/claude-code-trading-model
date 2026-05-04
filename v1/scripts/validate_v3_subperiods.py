@@ -1,16 +1,8 @@
 """
-Validate the V3 production strategy (CAND-A + 12% 4-asset sleeve) by
-checking metric stability across overlapping sub-periods.  We can't add
-more historical data (universe starts 2019-08), but we can:
-
-  1. Walk-forward 1-year rolling windows  (3 windows)
-  2. Walk-forward 6-month rolling windows (~6 windows)
-  3. Year-by-year breakdown of the OOS slice
-  4. Compare to baseline V2 (no sleeve, cap10) on the same windows so we
-     can see whether the sleeve actually helps OOS, not just IS.
-
-Strategy is overfit if metrics collapse on out-of-sample windows or
-diverge wildly between sub-periods.
+Validate V3 production (CAND-A + 12% 4-asset sleeve) for sub-period stability.
+Universe starts 2019-08. Checks: (1) 1y rolling walk-forward (3 windows),
+(2) 6mo rolling (~6 windows), (3) year-by-year OOS slice, (4) vs baseline V2
+(no sleeve, cap10) on same windows. Overfit signal: OOS collapse / divergence.
 """
 
 from __future__ import annotations
@@ -134,7 +126,7 @@ def main():
     print(f"Loaded {len(rets)} days, {len(rets.columns)} tickers in "
           f"{time.time()-t0:.1f}s\n")
 
-    # Generate full-period series for both strategies, slice for sub-period analysis
+    # Full-period series for both, sliced for sub-period analysis
     sizer_v3   = make_sizer(use_sleeve=True,  cap_pct=0.12)
     sizer_v2   = make_sizer(use_sleeve=False, cap_pct=0.10)
 
@@ -143,7 +135,7 @@ def main():
     pr_v3 = portfolio_returns(sizes_v3, rets).dropna()
     pr_v2 = portfolio_returns(sizes_v2, rets).dropna()
 
-    # ── Calendar-year breakdown (all available years) ─────────────────────────
+    # ── Calendar-year breakdown ──
     print("=" * 96)
     print("Calendar-year metrics (full series, no walk-forward refit)")
     print("=" * 96)
@@ -163,7 +155,7 @@ def main():
               f"{m3['sharpe']:>6.2f} {m3['ann']*100:>6.2f}% {m3['mdd']*100:>6.2f}% "
               f"{m3['calmar']:>5.2f} {m3['sortino']:>6.2f}")
 
-    # ── Walk-forward 1-year rolling (3 windows: 22-23, 23-24, 24-25) ──────────
+    # ── Walk-forward 1y rolling (3 windows; 22-23, 23-24, 24-25) ──
     print("\n" + "=" * 96)
     print("Walk-forward 1-year rolling (3-yr train / 1-yr test, true OOS refit)")
     print("=" * 96)
@@ -183,7 +175,7 @@ def main():
           f"{wf_v3['sharpe'].mean():>6.2f} {wf_v3['ann'].mean()*100:>6.2f}% "
           f"{wf_v3['mdd'].mean()*100:>6.2f}% {wf_v3['calmar'].mean():>5.2f}")
 
-    # ── Walk-forward 6-month rolling (~6 windows for finer-grained stability) ─
+    # ── Walk-forward 6mo rolling (~6 windows; finer stability check) ──
     print("\n" + "=" * 96)
     print("Walk-forward 6-month rolling (3-yr train / 6-mo test) — finer stability check")
     print("=" * 96)

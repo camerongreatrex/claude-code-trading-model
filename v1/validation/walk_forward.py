@@ -1,15 +1,6 @@
 """
-validate_production.py
-----------------------
-Comprehensive production validation report for the multi-asset cross-asset strategy.
-
-Loads pre-computed portfolio results from data/results/, runs walk-forward,
-regime, drawdown, cost sensitivity, and vol-targeting analyses, prints all
-tables from the QUANTT paper format, and saves a machine-readable JSON for
-paper generation.
-
-Usage:
-    python validate_production.py
+validate_production.py — production validation report for multi-asset strategy.
+Runs walk-forward, regime, drawdown, cost, and vol-targeting analyses; saves JSON.
 """
 
 import sys
@@ -44,9 +35,7 @@ FEATURE_DIR = Path("data/v1/features")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper utilities
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Helpers ──
 
 def _ann_return(r: pd.Series) -> float:
     r = r.dropna()
@@ -77,9 +66,7 @@ def _stats(r: pd.Series) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Part 1b: Pipeline Health Check
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Part 1b: Pipeline Health Check ──
 
 def print_health_check(pc: pd.DataFrame, elapsed: float) -> None:
     print("\n=== CORE PIPELINE HEALTH CHECK ===")
@@ -114,9 +101,7 @@ def print_health_check(pc: pd.DataFrame, elapsed: float) -> None:
               f"({eq.index[0].date()} to {eq.index[-1].date()})")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Part 2: Vol Targeting Comparison
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Part 2: Vol Targeting Comparison ──
 
 def run_vol_targeting(
     best_ret:  pd.Series,
@@ -125,12 +110,8 @@ def run_vol_targeting(
     features: dict,
     returns: pd.DataFrame,
 ) -> dict:
-    """
-    Apply Moreira & Muir (2017) vol targeting to multi_mom_tilt and portable_carry.
-    Compare no-vt / cap=1.0 / cap=1.5 across OOS windows.
-    """
-    # ── Compute OOS returns (concatenation of walk-forward test slices) ────────
-    # Use 3yr train / 1yr test windows, same as portfolio.py
+    """Moreira & Muir (2017) vol targeting on mom_tilt/carry; no-vt vs cap=1.0/1.5 OOS."""
+    # OOS = concat of walk-forward test slices; 3yr train / 1yr test (same as portfolio.py)
     signals_multi = multi_signals.reindex(returns.index).fillna(0)
     train_days, test_days = 756, 252
 
@@ -139,7 +120,7 @@ def run_vol_targeting(
     wf_details_mom   = []
     wf_details_carry = []
 
-    all_methods_wf = {}  # method → list of OOS dicts (with IS Sharpe too)
+    all_methods_wf = {}  # method → list of OOS dicts (incl IS Sharpe)
 
     start = train_days
     while start + test_days <= len(signals_multi):
@@ -148,7 +129,7 @@ def run_vol_targeting(
         all_ret    = returns.iloc[ctx_start : start + test_days]
         macro      = _get_macro()
 
-        # IS slice (training only within ctx window)
+        # IS slice (training within ctx)
         is_sig = signals_multi.iloc[ctx_start : start]
         is_ret = returns.iloc[ctx_start : start]
         is_sizes_mom = momentum_tilt_sizes(is_sig, features, CAPITAL)
@@ -196,13 +177,13 @@ def run_vol_targeting(
     oos_mom   = pd.concat(oos_pieces_mom).dropna()
     oos_carry = pd.concat(oos_pieces_carry).dropna()
 
-    # ── Apply vol targeting ────────────────────────────────────────────────────
+    # ── Apply vol targeting ──
     vt10_mom,  diag10_mom  = apply_vol_targeting(oos_mom,   scale_cap=1.0)
     vt15_mom,  diag15_mom  = apply_vol_targeting(oos_mom,   scale_cap=1.5)
     vt10_carry, diag10_carry = apply_vol_targeting(oos_carry, scale_cap=1.0)
     vt15_carry, diag15_carry = apply_vol_targeting(oos_carry, scale_cap=1.5)
 
-    # ── Print comparison table ─────────────────────────────────────────────────
+    # ── Comparison table ──
     print("\n=== VOL TARGETING COMPARISON (OOS concatenated returns) ===")
 
     hdr = f"{'':35} | {'No VolTgt':>13} | {'VolTgt cap=1.0':>14} | {'VolTgt cap=1.5':>14}"
@@ -224,7 +205,7 @@ def run_vol_targeting(
     for label, no_vt, vt10, vt15 in rows:
         print(f"  {label:<35} | {no_vt:>13.3f} | {vt10:>14.3f} | {vt15:>14.3f}")
 
-    # Decision rules
+    # Decision
     sharpe_base = _sharpe(oos_mom)
     sharpe_vt10 = _sharpe(vt10_mom)
     dd_base     = _maxdd(oos_mom)
@@ -249,7 +230,7 @@ def run_vol_targeting(
     else:
         print("  → cap=1.5 not significantly better than cap=1.0 or exceeds -7% DD limit")
 
-    # Regime alpha for best method (no vt vs best vt variant)
+    # Regime alpha: best method (no-vt vs best vt variant)
     best_vt_series = vt10_mom if _sharpe(vt10_mom) >= _sharpe(oos_mom) else oos_mom
     regimes, _ = _load_regime_data(oos_mom.index)
     for reg in ["bull_calm", "bear_stress"]:
@@ -275,16 +256,14 @@ def run_vol_targeting(
     return result
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Part 3a: Walk-Forward Results (full detail)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Part 3a: Walk-Forward (full detail) ──
 
 def run_walk_forward(
     multi_signals: pd.DataFrame,
     features: dict,
     returns: pd.DataFrame,
 ) -> dict:
-    """Detailed walk-forward results with IS and OOS metrics per window."""
+    """Walk-forward IS/OOS metrics per window."""
     signals_multi = multi_signals.reindex(returns.index).fillna(0)
     train_days, test_days = 756, 252
     macro = _get_macro()
@@ -317,7 +296,7 @@ def run_walk_forward(
             is_pr   = portfolio_returns(is_sz, is_ret).dropna()
             is_s    = round(_sharpe(is_pr), 3)
 
-            # OOS eval (with context for warm-up)
+            # OOS eval (ctx for warm-up)
             all_sig = signals_multi.iloc[ctx_start : start + test_days]
             all_ret = returns.iloc[ctx_start : start + test_days]
             all_sz  = sizing_fn(all_sig, all_ret)
@@ -380,7 +359,7 @@ def run_walk_forward(
             "best_oos":    best_w,
         }
 
-    # Add portable_carry from saved comparison file
+    # portable_carry from saved comparison
     eq_curve = pd.read_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
     carry_r  = eq_curve["portable_carry"].pct_change().dropna()
     mom_r    = eq_curve["multi_mom_tilt"].pct_change().dropna()
@@ -395,9 +374,7 @@ def run_walk_forward(
     return all_results
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Part 3b: Regime-Decomposed Analysis
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Part 3b: Regime Analysis ──
 
 def run_regime_analysis(
     best_ret: pd.Series,
@@ -405,13 +382,12 @@ def run_regime_analysis(
     signals_multi: pd.DataFrame,
     spy_raw: pd.Series,
 ) -> dict:
-    """Regime-decomposed performance + SPY comparison metrics."""
+    """Regime decomposition + SPY comparison."""
     print("\n=== REGIME ANALYSIS: multi_mom_tilt ===\n")
 
     regimes, _ = _load_regime_data(best_ret.index)
     spy_aligned = spy_raw.reindex(best_ret.index).fillna(0)
 
-    # Regime decomposition
     total = len(best_ret)
     print(f"{'Regime':<14} {'%Days':>7} {'Alpha(bps/day)':>15} {'Sharpe':>8} {'Contribution':>14}")
     print("-" * 65)
@@ -433,8 +409,8 @@ def run_regime_analysis(
         pr    = best_ret[mask]
         sr    = spy_aligned[mask]
         alpha = (float(pr.mean()) - float(sr.mean())) * 10000  # bps/day
-        sharpe_r = _sharpe(pr * np.sqrt(252 / n) if n >= 5 else pr)  # annualize properly
-        # Recalculate: Sharpe over regime period annualized
+        sharpe_r = _sharpe(pr * np.sqrt(252 / n) if n >= 5 else pr)
+        # Sharpe over regime period annualized
         sharpe_r = float(pr.mean() / pr.std() * np.sqrt(252)) if pr.std() > 0 else 0.0
         contribution = float(pr.sum()) * 100  # pct of total
 
@@ -446,7 +422,7 @@ def run_regime_analysis(
         }
         print(f"{reg:<14} {pct:>7.1f} {alpha:>15.2f} {sharpe_r:>8.3f} {contribution:>13.2f}%")
 
-    # SPY comparison
+    # SPY comp
     spy_full = spy_aligned.reindex(best_ret.index).dropna()
     port_full = best_ret.reindex(spy_full.index).dropna()
 
@@ -462,7 +438,7 @@ def run_regime_analysis(
     dn_cap  = (port_full[spy_dn].mean() / spy_full[spy_dn].mean()
                if spy_dn.sum() > 0 and spy_full[spy_dn].mean() != 0 else float("nan"))
 
-    # Information ratio and tracking error
+    # IR + tracking error
     active_ret   = port_full - spy_full
     tracking_err = float(active_ret.std() * np.sqrt(252) * 100)
     info_ratio   = (float(active_ret.mean()) * 252 / (float(active_ret.std()) * np.sqrt(252))
@@ -485,12 +461,10 @@ def run_regime_analysis(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Part 3c: Universe & Signal Statistics
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Part 3c: Universe & Signal Stats ──
 
 def run_signal_stats(signals_multi: pd.DataFrame) -> dict:
-    """Universe composition and signal statistics."""
+    """Universe composition + signal stats."""
     print("\n=== UNIVERSE & SIGNAL SUMMARY ===\n")
 
     ASSET_CLASS_MAP = {
@@ -520,15 +494,14 @@ def run_signal_stats(signals_multi: pd.DataFrame) -> dict:
     print(f"  Regime: VIX-based 4-regime classification (bull/bear × calm/stress)")
     print(f"  Carry:  Roll yield + term structure tilt blended 75/25 with trend signal")
 
-    # Position statistics from the OOS period (last 252 trading days)
-    # Use binary threshold: signal > 0.5 → in position
+    # OOS position stats (last 252 days); binary: |signal| >= 0.5
     oos_sig    = signals_multi.iloc[-252:]
-    in_pos     = (oos_sig.abs() >= 0.5)  # binary position indicator
+    in_pos     = (oos_sig.abs() >= 0.5)
     avg_positions    = float(in_pos.sum(axis=1).mean())
     avg_pos_size_pct = float(100.0 / avg_positions) if avg_positions > 0 else 0.0
-    avg_gross_exp    = avg_positions * avg_pos_size_pct  # ≈ 100% if fully invested
+    avg_gross_exp    = avg_positions * avg_pos_size_pct
 
-    # Turnover: count signal transitions (0→1 or 1→0) per year per ticker
+    # Turnover: signal transitions (0↔1) per ticker per year
     transitions        = in_pos.diff().abs().fillna(0)
     annual_transitions = float(transitions.sum().mean() * (252 / len(oos_sig)))
 
@@ -547,35 +520,26 @@ def run_signal_stats(signals_multi: pd.DataFrame) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Part 3d: Transaction Cost Sensitivity
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Part 3d: Transaction Cost Sensitivity ──
 
 def run_cost_sensitivity(best_ret: pd.Series, signals_multi: pd.DataFrame) -> dict:
-    """
-    Show sensitivity of net returns to different round-trip cost assumptions.
-
-    The baseline portfolio returns may not fully account for trading costs.
-    We estimate daily turnover from signal changes and apply incremental costs
-    relative to a 5 bps round-trip baseline.
-    """
+    """Net-return sensitivity to round-trip costs; incremental vs 5 bps baseline."""
     print("\n=== TRANSACTION COST SENSITIVITY ===\n")
 
-    # Estimate daily turnover (fraction of portfolio traded per day).
-    # Use binary positions and equal-weight assumption: each position = 1/n_active of portfolio.
+    # Daily turnover (fraction traded/day); binary positions, equal-weight = 1/n_active
     sig_aligned   = signals_multi.reindex(best_ret.index).fillna(0)
     n_tickers     = len(sig_aligned.columns)
     in_pos        = (sig_aligned.abs() >= 0.5)
     active        = in_pos.sum(axis=1).replace(0, n_tickers)
-    # Count transitions (entry/exit); each transition = 1/(avg_active) of portfolio traded
+    # Each transition (entry/exit) = 1/avg_active of portfolio
     transitions   = in_pos.diff().abs().fillna(0).sum(axis=1)
-    daily_turnover = transitions / active   # fraction of portfolio traded that day (one-way)
+    daily_turnover = transitions / active   # one-way
 
-    # Baseline cost already embedded in returns: ~5 bps round-trip
+    # Baseline cost embedded in returns: ~5 bps r/t
     BASELINE_COST_BPS = 5
     cost_levels = [0, 2, 5, 10, 20]
 
-    # SPY stats for comparison
+    # SPY for comparison
     spy_feat   = pd.read_parquet(FEATURE_DIR / "SPY.parquet")
     spy_r      = spy_feat["log_return"].reindex(best_ret.index).fillna(0)
     spy_sharpe = _sharpe(spy_r)
@@ -585,7 +549,7 @@ def run_cost_sensitivity(best_ret: pd.Series, signals_multi: pd.DataFrame) -> di
 
     results = []
     for cost_bps in cost_levels:
-        # Incremental cost vs baseline
+        # Incremental vs baseline
         delta_cost = (cost_bps - BASELINE_COST_BPS) / 10000
         adj_ret    = best_ret - daily_turnover.reindex(best_ret.index).fillna(0) * delta_cost
         ann_r      = round(_ann_return(adj_ret), 2)
@@ -597,7 +561,7 @@ def run_cost_sensitivity(best_ret: pd.Series, signals_multi: pd.DataFrame) -> di
             "sharpe": sharpe_r, "vs_spy_sharpe_delta": vs_spy,
         })
 
-    # Breakeven cost
+    # Breakeven
     be_cost = BASELINE_COST_BPS
     for extra in range(0, 200, 1):
         delta = extra / 10000
@@ -612,19 +576,17 @@ def run_cost_sensitivity(best_ret: pd.Series, signals_multi: pd.DataFrame) -> di
     return {"breakeven_bps": be_cost, "cost_table": results, "spy_sharpe": round(spy_sharpe, 3)}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Part 3e: Drawdown Analysis
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Part 3e: Drawdown Analysis ──
 
 def run_drawdown_analysis(best_ret: pd.Series, spy_raw: pd.Series) -> dict:
-    """Top 5 drawdowns with dates and SPY comparison."""
+    """Top 5 drawdowns + SPY comparison."""
     print("\n=== TOP 5 DRAWDOWNS ===\n")
 
     cum = (1 + best_ret).cumprod()
     rolling_max = cum.cummax()
     dd_series   = (cum / rolling_max - 1)
 
-    # Find drawdown periods
+    # Find DD periods
     drawdowns = []
     in_dd = False
     start_date = None
@@ -642,7 +604,6 @@ def run_drawdown_analysis(best_ret: pd.Series, spy_raw: pd.Series) -> dict:
                 trough_val  = val
                 trough_date = date
             if val >= -0.001:
-                # Recovery
                 rec_date = date
                 drawdowns.append({
                     "start":    start_date,
@@ -655,7 +616,7 @@ def run_drawdown_analysis(best_ret: pd.Series, spy_raw: pd.Series) -> dict:
                 in_dd = False
                 start_date = None
 
-    # If still in drawdown at end of series
+    # Still in DD at series end
     if in_dd and start_date is not None:
         drawdowns.append({
             "start":    start_date,
@@ -666,7 +627,6 @@ def run_drawdown_analysis(best_ret: pd.Series, spy_raw: pd.Series) -> dict:
             "recovery_days": None,
         })
 
-    # Sort by depth
     drawdowns.sort(key=lambda x: x["depth_pct"])
     top5 = drawdowns[:5]
 
@@ -687,7 +647,7 @@ def run_drawdown_analysis(best_ret: pd.Series, spy_raw: pd.Series) -> dict:
               f"{dd['trough'].strftime('%Y-%m-%d'):<12} {rec_str:<12} "
               f"{dd['depth_pct']:>7.2f} {dur_str:>10} {rec_days:>10}")
 
-        # SPY depth during same period
+        # SPY depth same period
         end_dt = dd["recovery"] if dd["recovery"] else best_ret.index[-1]
         period = spy_dd.loc[dd["start"]:end_dt]
         spy_depth = round(float(period.min() * 100), 2) if len(period) > 0 else float("nan")
@@ -713,12 +673,10 @@ def run_drawdown_analysis(best_ret: pd.Series, spy_raw: pd.Series) -> dict:
     ], "spy_comparison": spy_comparison}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Part 3f: Monthly Returns Heatmap
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Part 3f: Monthly Returns Heatmap ──
 
 def run_monthly_returns(best_ret: pd.Series) -> dict:
-    """Monthly returns table (YYYY × Month)."""
+    """Monthly returns table (year × month)."""
     print("\n=== MONTHLY RETURNS (%) ===\n")
 
     monthly = (1 + best_ret).resample("ME").prod() - 1
@@ -756,9 +714,7 @@ def run_monthly_returns(best_ret: pd.Series) -> dict:
     return data_out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Main ──
 
 def main():
     t0 = time.time()
@@ -769,10 +725,10 @@ def main():
     print(f"  Strategy:  Multi-asset cross-asset momentum (multi_mom_tilt)")
     print("=" * 70)
 
-    # ── Load portfolio comparison (dollar equity curves) ──────────────────────
+    # ── Load equity curves ──
     pc = pd.read_parquet(RESULTS_DIR / "portfolio_comparison.parquet")
 
-    # ── Load signals and features ─────────────────────────────────────────────
+    # ── Load signals + features ──
     multi_signals  = pd.read_parquet(SIGNAL_DIR / "multi_signals.parquet")
     features       = {}
     returns        = pd.DataFrame()
@@ -788,42 +744,42 @@ def main():
     returns       = returns.dropna()
     signals_multi = multi_signals.reindex(returns.index).fillna(0)
 
-    # ── Load SPY raw returns ──────────────────────────────────────────────────
+    # ── SPY raw returns ──
     spy_feat = features.get("SPY", pd.read_parquet(FEATURE_DIR / "SPY.parquet"))
     spy_raw  = spy_feat["log_return"].dropna()
 
-    # Convert equity curves → fractional returns
+    # Equity → fractional returns
     best_ret  = pc["multi_mom_tilt"].pct_change().dropna()
     carry_ret = pc["portable_carry"].pct_change().dropna()
     spy_aligned = spy_raw.reindex(best_ret.index).fillna(0)
 
     elapsed = time.time() - t0
 
-    # ── Part 1b: Health Check ─────────────────────────────────────────────────
+    # ── Part 1b: Health Check ──
     print_health_check(pc, elapsed)
 
-    # ── Part 2: Vol Targeting ─────────────────────────────────────────────────
+    # ── Part 2: Vol Targeting ──
     vt_results = run_vol_targeting(best_ret, carry_ret, multi_signals, features, returns)
 
-    # ── Part 3a: Walk-Forward ─────────────────────────────────────────────────
+    # ── Part 3a: Walk-Forward ──
     wf_results = run_walk_forward(multi_signals, features, returns)
 
-    # ── Part 3b: Regime Analysis ──────────────────────────────────────────────
+    # ── Part 3b: Regime ──
     regime_results = run_regime_analysis(best_ret, returns, signals_multi, spy_raw)
 
-    # ── Part 3c: Universe & Signal Stats ──────────────────────────────────────
+    # ── Part 3c: Universe/Signals ──
     signal_stats = run_signal_stats(signals_multi)
 
-    # ── Part 3d: Transaction Cost Sensitivity ──────────────────────────────────
+    # ── Part 3d: Cost Sensitivity ──
     cost_results = run_cost_sensitivity(best_ret, signals_multi)
 
-    # ── Part 3e: Drawdown Analysis ─────────────────────────────────────────────
+    # ── Part 3e: Drawdowns ──
     dd_results = run_drawdown_analysis(best_ret, spy_raw)
 
-    # ── Part 3f: Monthly Returns ───────────────────────────────────────────────
+    # ── Part 3f: Monthly Returns ──
     monthly_results = run_monthly_returns(best_ret)
 
-    # ── Save JSON ──────────────────────────────────────────────────────────────
+    # ── Save JSON ──
     report = {
         "generated_at":    datetime.now().isoformat(),
         "method":          "multi_mom_tilt",

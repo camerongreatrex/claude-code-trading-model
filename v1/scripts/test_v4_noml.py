@@ -1,23 +1,10 @@
 """
-V4-noML candidates — combine the three non-ML winners into stacked candidates,
-then walk-forward validate.
-
-Single-overlay winners on V3 (full-period OOS):
-  - Profit-taking (lb=10 sig=1.5 scl=0.7)         : Sh 2.48 (+0.15), Ann 19.25%, DD -5.69%
-  - Backwardation overlay (mul=0.5)                : Sh 2.42, Ann 18.07%, DD -4.08%, Cal 4.42
-  - Conditional vol-carry (fz=1.5 mul=0.5 roc=5d)  : Sh 2.39, Ann 19.27%, DD -4.57%, Cal 4.22
-
-Stacked candidates:
-  V4N-A  =  V3 + PT                             (Sharpe-max, minimal DD change)
-  V4N-B  =  V3 + PT + Cond-VC                   (Sharpe + balanced DD)
-  V4N-C  =  V3 + PT + Backwardation             (Sharpe + max DD relief)
-  V4N-D  =  V3 + PT + Cond-VC + Backwardation   (full stack)
-
-Validation:
-  - Full-period OOS metrics
-  - Calendar-year breakdown
-  - 1-yr walk-forward (3 windows, true OOS)
-  - 6-month walk-forward stability (~6 windows)
+V4-noML candidates — stack non-ML winners on V3 and walk-forward validate.
+Single-overlay wins (full-period OOS):
+  PT (lb=10 sig=1.5 scl=0.7): Sh 2.48 / Ann 19.25% / DD -5.69%
+  Backwardation (mul=0.5):    Sh 2.42 / Ann 18.07% / DD -4.08% / Cal 4.42
+  Cond-VC (fz=1.5 mul=0.5 roc=5d): Sh 2.39 / Ann 19.27% / DD -4.57% / Cal 4.22
+Stacks: V4N-A=V3+PT, V4N-B=+cVC, V4N-C=+BW, V4N-D=full.
 """
 
 from __future__ import annotations

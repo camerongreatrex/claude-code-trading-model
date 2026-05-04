@@ -1,80 +1,9 @@
 """
-data_pipeline.py
-----------------
-Downloads, cleans, and persists raw OHLCV price data for the full universe.
+data_pipeline.py — Downloads, cleans, and persists raw OHLCV for the full universe.
 
-Outputs (written to data/raw/)
-──────────────────────────────
-  {TICKER}.parquet          — daily OHLCV for each ticker
-  closes_matrix.parquet     — aligned close prices for all tickers (T × N matrix)
-
-Consumed by
-───────────
-  feature_engineering.py    — reads individual ticker parquets
-  live_signals.py           — uses TICKER_LIST and ASSET_CLASS constants
-  signal_generation.py      — uses ASSET_CLASS to route signal logic
-  paper_trader.py           — uses TICKER_LIST for the trading universe
-
-Universe design principle
-─────────────────────────
-Every ticker in the universe should have a DIFFERENT primary economic driver.
-If two assets respond to the same macroeconomic shock, one is redundant.
-The current mix covers:
-  - Broad equity    : SPY, IWM, EEM, EFA, VWO
-  - Rates/safe-haven: TLT, GLD
-  - Credit/inflation: HYG (credit cycle), TIP (real rates)
-  - Intl bonds      : BWX (ex-US govt, ECB/BOJ divergence from Fed)
-  - Commodity basket: DBC (broad commodities), UUP (USD/FX)
-  - Agriculture     : DBA (weather/crop supply — ~0 correlation to equities)
-  - FX              : FXE (EUR/USD), FXY (JPY/USD safe-haven carry unwind)
-  - Sector rotation : XLE, XLU, XLF, VNQ
-  - Company drivers : JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA
-  - Survivorship anchors: GE, INTC, VZ
-
-Phase 4 additions (EFA, VWO, HYG, TIP, DBC, UUP, VNQ):
-  - EFA/VWO: international diversification reduces US-equity-block concentration
-  - HYG: credit cycle signal independent of TLT rate direction
-  - TIP: real rate proxy (opposite to TLT nominal duration in inflation regimes)
-  - DBC: broad commodity basket with oil/agriculture/metals diversification vs GLD
-  - UUP: USD dollar index — inverse to EM/commodities, distinct FX driver
-  - VNQ: REITs — rental income driver distinct from XLU utility regulated revenue
-
-Phase 8 addition (VXZ) — conditional vol hedge:
-  - iPath Series B S&P 500 VIX Mid-Term Futures ETN; ONLY held during vol backwardation
-    (VIX9D > VIX, i.e., acute near-term stress); zero allocation otherwise
-  - Mid-term futures have ~60% less roll decay than VIXY; conditional holding is viable
-  - Classified "commodity" to reuse the two-sided signal infrastructure; VXZ signal
-    overrides to backwardation-only in signal_generation.py
-
-Phase 6 additions (DBMF, WTMF) — managed futures (structurally different return driver):
-  - CTA trend-following across commodities, rates, FX, equities — zero overlap with MA equity signals
-  - DBMF: bear_stress corr +0.102; $3.3B AUM; replicates top 20 CTA funds via Dynamic Beta Engine
-  - WTMF: bear_stress corr +0.138; more conservative; lower max DD (-13.2%); history from 2011
-  - Both classified "commodity" to get two-sided MA50/200 + commodity regime routing (correct for trend-followers)
-  - CTA (inception 2022) skipped until 2027 — insufficient walk-forward OOS windows
-
-Phase 5 additions (BWX, DBA, FXE, FXY) — verified stress diversifiers:
-  - Selected after testing 8 candidates; 4 removed because bear_stress corr > 0.60
-    (EWJ 0.854, EWZ 0.708, FXI 0.633, EMB 0.638 — false friends that co-move in crises)
-  - BWX: bear_stress corr 0.048 — ECB/BOJ rate paths diverge from Fed during US stress
-  - DBA: bear_stress corr 0.338 — agriculture supply/weather driver, below universe avg
-  - FXE: bear_stress corr 0.048 — EUR safe-haven flows during USD stress episodes
-  - FXY: bear_stress corr −0.318 — yen carry unwind is structurally INVERSE to US sell-offs
-
-Survivorship bias
-─────────────────
-GE, INTC, and VZ are included as "survivorship-bias anchors".  A 2015
-investor would have held these large-cap names.  Excluding them because
-they underperformed would inflate backtest returns by ~2–4% p.a. — a
-well-documented data-mining trap that overstates strategy performance.
-
-Date range
-──────────
-START = 2015-01-01.  Chosen because:
-  - Covers two full market cycles (2015 correction, 2018 sell-off, COVID, 2022 bear).
-  - Enough data (≈2,500 days) for the MA200 and 252-day rolling windows to warm up.
-  - Avoids the 2008–2009 crisis which would require modelling a regime not
-    relevant to the current market structure.
+Outputs (data/raw/): {TICKER}.parquet, closes_matrix.parquet (T × N).
+Universe design: each ticker has a distinct economic driver to keep avg pairwise corr < 0.35.
+Includes survivorship-bias anchors (GE, INTC, VZ); START = 2015-01-01 covers multiple cycles.
 """
 
 import json
@@ -83,18 +12,8 @@ import pandas as pd
 import yfinance as yf
 from pathlib import Path
 
-# -------------------------------------------------------------------------
-# Universe design principle:
-#   Every entry should have a DIFFERENT primary economic driver.
-#   If two assets respond to the same thing, one is redundant.
-#
-# Asset classes:
-#   equity_index  — broad market exposure, benchmark
-#   bond          — rate direction driven, often inverse equities
-#   commodity     — supply/demand and fear driven
-#   sector_etf    — sector rotation exposure
-#   stock         — idiosyncratic alpha, individual company drivers
-# -------------------------------------------------------------------------
+# Universe: distinct economic drivers per ticker.
+# Asset classes: equity_index, bond, commodity, sector_etf, stock.
 
 TICKERS = {
     # --- Broad equity indices ---
@@ -151,70 +70,33 @@ TICKERS = {
     "INTC": "stock",          # Semiconductor — lost process leadership to TSMC/AMD, share loss
     "VZ"  : "stock",          # Telecom — 5G capex drag, subscriber pressure, near-zero real return
 
-    # --- Phase 5: Stress-uncorrelated assets (bear_stress hedge) ---
-    # Pairwise correlation spikes from 0.197 (bull_calm) to 0.446 (bear_stress).
-    # These assets have structurally different drivers that stay low-corr in stress.
+    # --- Phase 5: Stress-uncorrelated diversifiers ---
+    "BWX" : "bond",            # Intl Treasury ex-US; bear_stress corr 0.048
+    "DBA" : "commodity",       # Agriculture ETF; ~0.05 corr to S&P
+    "FXE" : "commodity",       # EUR/USD; bear_stress corr 0.048
+    "FXY" : "commodity",       # JPY/USD; bear_stress corr -0.318 (negative hedge)
 
-    # International bonds — divergent rate regimes (bear_stress corr: BWX 0.048)
-    "BWX" : "bond",            # International Treasury ex-US — ECB/BOJ rates diverge from Fed path;
-                               # near-zero bear_stress correlation (0.048 vs universe avg 0.446)
+    # --- Phase 6: Managed futures (CTA trend-following) ---
+    "DBMF": "commodity",       # DBi MF; bear_stress corr +0.102; inception May 2019
+    "WTMF": "commodity",       # WisdomTree MF; bear_stress corr +0.138; from 2011
 
-    # Agriculture — genuinely zero financial-system correlation (bear_stress corr: DBA 0.338)
-    "DBA" : "commodity",       # Broad agriculture ETF — weather, crop yields, supply disruption;
-                               # published ~0.05 correlation to S&P 500 in ALL regimes including stress
-
-    # Currency carry — structural hedges vs US equity sell-offs
-    "FXE" : "commodity",       # Euro/USD — EUR strengthens on hawkish ECB divergence from Fed;
-                               # bear_stress corr 0.048 (near zero)
-    "FXY" : "commodity",       # Yen/USD — safe-haven carry unwind; NEGATIVE corr to SPY in stress
-                               # (-0.318 bear_stress) — genuine portfolio hedge
-
-    # --- Phase 6: Managed futures (structurally different return driver) ---
-    # CTA trend-following across commodities, rates, currencies, equities.
-    # Zero overlap with the existing MA-crossover equity signal — this is
-    # a fundamentally different strategy embedded as an asset allocation.
-    "DBMF": "commodity",       # iMGP DBi Managed Futures — replicates top 20 CTA hedge funds;
-                               # bear_stress corr +0.102; inception May 2019 (~7 years)
-    "WTMF": "commodity",       # WisdomTree Managed Futures — conservative CTA replication;
-                               # bear_stress corr +0.138; lower DD (-13.2%) than DBMF; full history from 2011
-
-    # --- Phase 7: Screened additions (universe_screen.py verified) ---
-    # Selected via pipeline/universe_screen.py quantitative screening:
-    #   avg pairwise correlation < 0.35, bear_stress correlation < 0.40,
-    #   max pairwise correlation < 0.70 (no redundancy), $50M+ daily volume
-
-    "VGSH": "bond",           # Vanguard Short-Term Treasury ETF — cash substitute with positive carry;
-                               # avg corr 0.010 (near zero to everything), bear_stress corr -0.155
-                               # (NEGATIVE — actually rises in crashes); replaces dead cash with a
-                               # position that earns short-term yield and appreciates in flight-to-safety
-
-    "MUB" : "bond",           # iShares Municipal Bond ETF — tax-exempt state/local government credit;
-                               # avg corr 0.244 (moderate), bear_stress corr 0.361 (below 0.40 threshold);
-                               # distinct credit driver from TLT (rate direction), HYG (corporate credit),
-                               # TIP (real rates), BWX (international govt) — adds a 5th bond factor
+    # --- Phase 7: Screened additions ---
+    "VGSH": "bond",            # Short-Term Treasury; avg corr 0.010, bear_stress -0.155
+    "MUB" : "bond",            # Municipal Bonds; avg corr 0.244, bear_stress 0.361
 
     # --- Phase 8: Conditional vol hedge ---
-    # VXZ held ONLY during vol term-structure backwardation (VIX9D > VIX),
-    # which signals acute near-term stress.  Mid-term VIX futures have ~60%
-    # less roll decay than short-term VIXY, making conditional holding viable.
-    # Zero allocation in contango (normal markets) avoids the ~8-12% annual
-    # roll decay that makes unconditional VIX products portfolio poison.
-    "VXZ" : "commodity",      # iPath Series B S&P 500 VIX Mid-Term Futures ETN —
-                               # conditional hedge; only held during vol backwardation
-                               # (VIX9D > VIX); provides positive return on SPY crash days
+    # VXZ held only during vol backwardation (VIX9D > VIX); mid-term futures have
+    # ~60% less roll decay than VIXY. Override applied in signal_generation.py.
+    "VXZ" : "commodity",       # iPath VIX Mid-Term Futures ETN
 }
 
-# Equity-like assets that can use momentum + mean reversion regime switching
+# Equity-like assets — used for momentum + mean reversion regime switching
 EQUITY_LIKE = {"equity_index", "sector_etf", "stock"}
 
-# Asset class lookup consumed by signal_generation and portfolio
 ASSET_CLASS = TICKERS
 TICKER_LIST = list(TICKERS.keys())
 
-# GICS sector-ETF mapping for beta-hedged pair trades.
-# Each stock is paired with its sector ETF. Long stock + short sector ETF
-# isolates idiosyncratic return (stock outperformance within its sector)
-# from the sector/market beta. Factual GICS classification — not fitted.
+# GICS sector-ETF mapping for beta-hedged pair trades (long stock, short sector ETF).
 HEDGE_MAP: dict[str, str] = {
     "MSFT" : "XLK",   # Technology (GICS 45)
     "NVDA" : "XLK",   # Technology (GICS 45)
@@ -237,9 +119,7 @@ END   = "2026-01-01"
 DATA_DIR = Path("data/v1/raw")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Minimum trading days required to include a ticker in the universe.
-# Tickers below this threshold are skipped with a warning so a mid-period
-# delisting or recent IPO degrades gracefully instead of crashing downstream.
+# Min trading days to include a ticker; below threshold tickers are skipped.
 MIN_TRADING_DAYS = 1000
 
 
@@ -252,23 +132,15 @@ def _is_fresh(path: Path, today: pd.Timestamp) -> bool:
 
 
 def fetch_earnings_dates(ticker: str) -> list:
-    """
-    Fetch quarterly earnings announcement dates for a stock from yfinance.
-
-    Uses yf.Ticker.get_earnings_dates(limit=50) which reliably returns ~50
-    historical + upcoming quarterly dates (12+ years).  Dates are timezone-
-    stripped and returned as ISO-format strings ("YYYY-MM-DD").
-
-    Returns an empty list on failure — earnings filtering is optional and the
-    strategy works without it.  Only called for asset_class == "stock".
-    """
+    """Fetch quarterly earnings dates from yfinance (limit=50). Returns ISO strings;
+    empty list on failure. Stock-only."""
     try:
         tk = yf.Ticker(ticker)
         ed = tk.get_earnings_dates(limit=50)
         if ed is None or ed.empty:
             return []
         dates = pd.to_datetime(ed.index).tz_localize(None)
-        # Filter to our backtest window plus a small buffer
+        # Filter to backtest window
         dates = dates[(dates >= START) & (dates <= END)]
         return sorted(d.strftime("%Y-%m-%d") for d in dates)
     except Exception:
@@ -276,54 +148,23 @@ def fetch_earnings_dates(ticker: str) -> list:
 
 
 def download(ticker: str) -> pd.DataFrame:
-    """
-    Download adjusted OHLCV data for a single ticker from Yahoo Finance.
-
-    Uses ``auto_adjust=True`` so prices are dividend- and split-adjusted —
-    essential for long backtests where unadjusted prices would show
-    artificial gaps on ex-dividend dates.
-
-    Args:
-        ticker: Yahoo Finance ticker symbol (e.g., "SPY", "BRK-B").
-
-    Returns:
-        DataFrame with columns [Open, High, Low, Close, Volume] indexed by
-        timezone-naive date.  Timezone is stripped to avoid merge issues when
-        combining tickers downloaded at different times.
-    """
+    """Download adjusted OHLCV from Yahoo Finance (auto_adjust=True for div/split adj).
+    Returns DataFrame indexed by tz-naive date."""
     df = yf.download(ticker, start=START, end=END, auto_adjust=True, progress=False)
 
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)  # yfinance quirk — flatten column names
+        df.columns = df.columns.droplevel(1)  # yfinance quirk
 
     df = df[["Open", "High", "Low", "Close", "Volume"]]
-    df.index = pd.to_datetime(df.index).tz_localize(None)  # strip timezone to avoid merge issues
+    df.index = pd.to_datetime(df.index).tz_localize(None)
     df.index.name = "Date"
     return df
 
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply quality filters to raw OHLCV data.
-
-    Filters applied (in order):
-      1. Forward-fill NaN gaps (e.g., bank holidays where one exchange is
-         closed).  Forward-fill preserves the most recent real price.
-         Interpolation is deliberately NOT used — it would look forward and
-         introduce look-ahead bias.
-      2. Drop rows where any OHLC price is non-positive (bad feed data).
-      3. Drop rows where High < Low (impossible candle — corrupt data).
-      4. Remove duplicate dates, keeping the last occurrence.
-      5. Sort chronologically.
-
-    Args:
-        df: Raw OHLCV DataFrame from download().
-
-    Returns:
-        Cleaned DataFrame.  May have fewer rows than the input if corrupt
-        rows were removed.
-    """
-    df = df.ffill().dropna()  # forward-fill gaps — never interpolate (lookahead bias)
+    """Quality filters: ffill gaps, drop non-positive prices, drop High<Low rows,
+    dedupe dates (keep last), sort. Never interpolate (lookahead bias)."""
+    df = df.ffill().dropna()
     df = df[(df[["Open", "High", "Low", "Close"]] > 0).all(axis=1)]
     df = df[df["High"] >= df["Low"]]
     df = df[~df.index.duplicated(keep="last")].sort_index()
@@ -331,13 +172,8 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
-    """
-    Download and clean all tickers, then print a summary report.
-
-    Also computes and prints the cross-ticker correlation matrix so you
-    can quickly verify that the universe is genuinely diversified (target:
-    average pairwise correlation < 0.35).
-    """
+    """Download and clean all tickers; print summary + correlation matrix
+    (target avg pairwise corr < 0.35)."""
     all_data = {}
     print("Downloading and processing...\n")
     print(f"  {'Ticker':<8} {'Class':<16} {'Rows':<8} {'Driver'}")
@@ -414,11 +250,8 @@ def main():
 
     print(f"\nClose matrix: {closes.shape}  (trading days x tickers)")
 
-    # ── Earnings dates (stocks only) ───────────────────────────────────────────
-    # Fetch quarterly earnings announcement dates for individual stocks.
-    # Used by signal_generation.py to go flat 2 days before / 1 day after each
-    # release — avoids the 3-8% binary coin-flip gap risk.
-    # ETFs, bonds, and commodities are skipped (no single-date earnings event).
+    # ── Earnings dates (stocks only) ──
+    # Used by signal_generation.py to go flat 2d before / 1d after release.
     stock_tickers = [t for t in all_data if ASSET_CLASS[t] == "stock"]
     earnings_map: dict[str, list] = {}
     print("\nFetching earnings dates (stocks only)...")
@@ -432,25 +265,22 @@ def main():
         json.dump(earnings_map, fh, indent=2)
     print(f"\nEarnings dates saved -> {earn_path}")
 
-    # print correlation matrix grouped by asset class so structure is visible
+    # Correlation matrix grouped by asset class
     returns = closes.pct_change().dropna()
     corr    = returns.corr().round(2)
     print("\nCorrelation matrix:")
     print(corr)
 
-    # average pairwise correlation — lower is better
-    n    = len(corr)   # use actual matrix size, not TICKER_LIST (some may be skipped)
+    # Avg pairwise correlation — lower is better
+    n    = len(corr)
     mask = np.ones((n, n), dtype=bool)
     np.fill_diagonal(mask, False)
     avg_corr = corr.values[mask].mean()
     print(f"\nAverage pairwise correlation: {avg_corr:.3f}")
     print("Target: below 0.35 for genuine diversification")
 
-    # ── Expanded universe (opt-in) ─────────────────────────────────────────────
-    # Batch-downloads ~115 new S&P 500 stocks organised by GICS sector.
-    # Cached aggressively: a ticker is skipped if its parquet file was written
-    # today — re-running the pipeline on the same day skips re-downloads.
-    # The closes matrix is rebuilt to include all tickers once downloads complete.
+    # ── Expanded universe (opt-in) ──
+    # Batch-downloads ~115 S&P 500 stocks; cached by mtime == today.
     try:
         from v1.pipeline.universe_expansion import (
             USE_EXPANDED_UNIVERSE,
@@ -530,7 +360,7 @@ def main():
                         except Exception as e:
                             print(f"    {ticker:<8} ERROR: {e}")
 
-            # Load any tickers that were already cached into all_data
+            # Load cached tickers into all_data
             for ticker in sector_tickers:
                 if ticker not in all_data:
                     path = DATA_DIR / f"{ticker}.parquet"
@@ -540,15 +370,8 @@ def main():
                         except Exception:
                             pass
 
-        # Build expanded-only closes matrix.
-        # Use dropna(how='all') — only drop dates where EVERY expanded ticker is NaN.
-        # Individual ticker NaNs (e.g., before a stock's listing date) are fine;
-        # the signal generation handles them via sector groupby.
-        # This preserves the full ~2015-onward history instead of truncating to the
-        # DBMF 2019 listing date that constrained the combined-universe dropna().
-        #
-        # The core closes_matrix.parquet is intentionally NOT rebuilt here — it stays
-        # core-only so the core sleeve pipeline is unaffected by expanded universe changes.
+        # Expanded-only closes; dropna(how='all') preserves full 2015+ history.
+        # Core closes_matrix.parquet is NOT rebuilt here — stays core-only.
         exp_closes = pd.DataFrame(
             {t: all_data[t]["Close"] for t in NEW_TICKERS if t in all_data}
         ).dropna(how="all")
@@ -558,7 +381,7 @@ def main():
         print(f"expanded closes_matrix_expanded: {exp_closes.shape}  "
               f"({exp_closes.index[0].date()} to {exp_closes.index[-1].date()})")
 
-        # Append earnings dates for new stocks (merges into existing file)
+        # Append earnings dates for new stocks (merges existing file)
         new_stock_tickers = [
             t for t in NEW_TICKERS
             if t in all_data and expanded_asset_class.get(t) == "stock"
@@ -581,7 +404,7 @@ def main():
                 json.dump(earnings_map, fh, indent=2)
             print(f"\nEarnings dates updated -> {earn_path}")
 
-        # ── Validation gate ────────────────────────────────────────────────────
+        # ── Validation gate ──
         ref_start     = pd.Timestamp("2015-01-01")
         ref_days      = len(pd.bdate_range(ref_start, pd.Timestamp.today()))
         missing_dl    : list[str] = []

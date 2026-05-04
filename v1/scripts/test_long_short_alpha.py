@@ -1,21 +1,11 @@
 """
-Cross-sectional long/short momentum prototype as a candidate alpha sleeve
-to layer on top of V3 production (top11_adx22_momt_ac55_cap1 + 12% sleeve).
+Cross-sectional L/S momentum sleeve candidate to layer on V3
+(top11_adx22_momt_ac55_cap1 + 12% sleeve). Universe: 13 stocks + 9 sector ETFs.
 
-Universe: 13 individual stocks + 9 sector ETFs = 22 candidates.
-
-Logic each day:
-  1. Compute 63d return for each candidate.
-  2. Long the top K (highest momentum), short the bottom K (lowest momentum).
-  3. Equal-weight within long and short legs; equal $ long and short = beta-neutral.
-  4. Size the sleeve at `sleeve_pct` of capital (e.g. 15%).
-
-Tested standalone, then layered onto V3.  We want to see whether the L/S
-adds Sharpe (uncorrelated alpha) without adding much DD or eating AnnRet.
-Sleeve size is constrained so combined gross stays ≤ 1.0× (zero leverage).
-
-Rebalance: monthly (avoid noise from daily flips).
-Lookback: 63d return; skip recent 5d to avoid 1-week reversal bias.
+Daily: 63d return rank → long top-K, short bottom-K, equal-weight per leg,
+beta-neutral ($long=$short), sized at sleeve_pct (e.g. 15%).
+Tested standalone then layered on V3; combined gross ≤ 1.0× (zero leverage).
+Rebal monthly; lookback 63d skipping recent 5d (avoid 1w reversal).
 """
 
 from __future__ import annotations
@@ -89,11 +79,11 @@ def build_ls_sizes(rets: pd.DataFrame, capital: float, candidates: list,
     cands = [t for t in candidates if t in rets.columns]
     R = rets[cands]
 
-    # Cumulative returns over the lookback window (skip recent 5d to avoid reversal)
+    # Cum returns over lookback (skip recent 5d to dodge reversal)
     log_ret = R.copy()
     cum = log_ret.rolling(lookback, min_periods=int(lookback * 0.6)).sum().shift(skip)
 
-    # Rank cross-sectionally each day; build picks at month-end then forward-fill
+    # Cross-sectional rank → month-end picks, ffill
     sizes = pd.DataFrame(0.0, index=R.index, columns=R.columns)
     eom = R.index.to_series().groupby(pd.Grouper(freq=rebal_freq)).max()
     for d in eom:
@@ -111,7 +101,7 @@ def build_ls_sizes(rets: pd.DataFrame, capital: float, candidates: list,
         for t in shorts:
             sizes.loc[d, t] = -each
 
-    # Forward-fill positions until next rebalance, zero-fill before first
+    # ffill until next rebal, zero before first
     sizes = sizes.replace(0.0, np.nan).ffill().fillna(0.0)
     return sizes
 
@@ -148,7 +138,7 @@ def main():
 
     print(f"\nL/S universe: {len(stocks)} stocks + {len(sector_etfs)} sector ETFs")
 
-    # --- Standalone L/S sleeve (no V3 base) ---
+    # ── Standalone L/S sleeve (no V3 base) ──
     print("\n=== STANDALONE L/S momentum (sleeve only, sleeve_pct=1.0 = full capital) ===")
     print(f"{'Variant':<55} {'Sh':>6} {'Ann':>7} {'DD':>7} {'Cal':>5} {'Vol':>6}")
     standalone_variants = [
@@ -173,7 +163,7 @@ def main():
               f"{m.get('ann', 0)*100:>6.2f}% {m.get('mdd', 0)*100:>6.2f}% "
               f"{m.get('calmar', float('nan')):>5.2f} {m.get('vol', 0)*100:>5.1f}%")
 
-    # --- Layered: V3 base + L/S sleeve at varying sleeve sizes ---
+    # ── Layered: V3 base + L/S sleeve, varied sleeve_pct ──
     print("\n=== V3 + L/S sleeve combinations (V3 reduced by sleeve_pct, L/S added) ===")
     print(f"{'Variant':<55} {'Sh':>6} {'Ann':>7} {'DD':>7} {'Cal':>5} {'Vol':>6}")
 
@@ -185,7 +175,7 @@ def main():
           f"{m_v3['ann']*100:>6.2f}% {m_v3['mdd']*100:>6.2f}% "
           f"{m_v3['calmar']:>5.2f} {m_v3['vol']*100:>5.1f}%")
 
-    # Pick the best 2-3 standalone L/S configurations and layer them
+    # Layer best 2-3 standalone L/S configs
     best_ls_configs = [
         ("Combined-22 K=5 lookback=126", stocks + sector_etfs, dict(k=5, lookback=126)),
         ("Sectors-only K=4 lookback=126", sector_etfs, dict(k=4, lookback=126)),
@@ -196,12 +186,11 @@ def main():
     for ls_name, univ, ls_kw in best_ls_configs:
         for sp in layered_sleeve_pcts:
             ls_sizes = build_ls_sizes(rets, CAPITAL, univ, sleeve_pct=sp, **ls_kw)
-            # Reduce V3 by sp, add L/S sleeve.  L/S is beta-neutral (gross=2*sp,
-            # net=0).  Combined gross: V3 * (1-sp) + 2*sp.  At sp=0.15, gross=0.85+0.30=1.15
-            # which would breach zero-leverage.  Cap at 1.0× total gross.
+            # V3*(1-sp) + L/S sleeve. L/S beta-neutral (gross=2*sp, net=0);
+            # combined gross can exceed 1.0 (e.g. sp=0.15 → 1.15), so cap at 1.0×.
             v3_scaled = sizes_v3 * (1.0 - sp)
             combined = v3_scaled.add(ls_sizes, fill_value=0.0)
-            # Final zero-lev clip
+            # Zero-lev clip
             gross = combined.abs().sum(axis=1).replace(0, np.nan)
             cap_scale = (CAPITAL / gross).clip(upper=1.0).fillna(1.0)
             combined = combined.multiply(cap_scale, axis=0)

@@ -1,34 +1,13 @@
 """
-fred_features.py
-────────────────
-Fetches free FRED indicators and engineers daily macro features.
+fred_features.py — FRED CSV indicators (no API key) → daily macro features.
 
-Uses the same direct FRED CSV endpoint as macro_features.fetch_yield_curve() —
-no API key, no login, no pandas-datareader required.
+Indicators: HY OAS, IG OAS, UMich sentiment, jobless claims, IP manufacturing
+(PMI proxy), USD broad index, 10Y breakeven, VIX (cross-check).
 
-Indicators
-──────────
-  BAMLH0A0HYM2  — ICE BofA US High Yield OAS (credit spread, risk-off signal)
-  BAMLC0A0CM    — ICE BofA Investment Grade Corporate OAS
-  UMCSENT       — University of Michigan Consumer Sentiment (monthly, ffill)
-  ICSA          — Initial Jobless Claims (weekly, leading recession indicator)
-  IPMAN         — Industrial Production: Manufacturing (proxy for ISM PMI)
-  DTWEXBGS      — US Dollar Broad Trade-Weighted Index
-  T10YIE        — 10-Year Breakeven Inflation Rate
-  VIXCLS        — VIX daily close (FRED series, cross-check vs yfinance ^VIX)
+Per indicator: {name}_4wk_chg (20bd diff), _zscore (252d), _regime (above 252d median).
 
-For each indicator:
-  {name}_4wk_chg   — 4-week (20 business day) change
-  {name}_zscore    — z-score over rolling 252 days
-  {name}_regime    — 1 if above rolling 252-day median, 0 if below
-
-Output
-──────
-  data/shared/macro/fred_features.parquet
-
-Consumed by
-───────────
-  macro_features.compute_macro_features() — merged into fred_macro_score
+Output: data/shared/macro/fred_features.parquet → merged into fred_macro_score
+by macro_features.compute_macro_features.
 """
 
 import io
@@ -54,32 +33,24 @@ SERIES = [
     ("VIXCLS",        "vix_fred",      "VIX (FRED daily)"),
 ]
 
-# Direction for composite score: +1 = "above median is bullish",
-#                                 -1 = "above median is bearish"
+# Composite-score direction: +1 above-median bullish, -1 bearish
 DIRECTION = {
-    "hy_oas":        -1,  # wider spreads = risk-off = bearish
-    "ig_oas":        -1,  # wider spreads = risk-off = bearish
-    "sentiment":     +1,  # higher sentiment = bullish
-    "claims":        -1,  # more claims = worse economy = bearish
-    "ism_pmi":       +1,  # higher PMI = expansion = bullish
-    "usd_broad":     -1,  # stronger USD = headwind for equities
-    "breakeven_10y": -1,  # rising inflation expectations = bearish
-    "vix_fred":      -1,  # higher VIX = fear = bearish
+    "hy_oas":        -1,  # wider spread = risk-off
+    "ig_oas":        -1,
+    "sentiment":     +1,
+    "claims":        -1,  # more = worse economy
+    "ism_pmi":       +1,
+    "usd_broad":     -1,  # stronger USD = equity headwind
+    "breakeven_10y": -1,  # rising inflation expectations
+    "vix_fred":      -1,
 }
 
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
 def fetch_fred_series(series_id: str, name: str) -> pd.Series:
-    """
-    Fetch a single FRED series via the public CSV endpoint.
-
-    Uses the same URL pattern as macro_features.fetch_yield_curve():
-      https://fred.stlouisfed.org/graph/fredgraph.csv?id=<SERIES>
-
-    Returns a business-day-resampled, forward-filled Series named ``name``.
-    Weekly/monthly series (ICSA, UMCSENT) are upsampled to daily via ffill.
-    """
+    """Fetch single FRED series (CSV endpoint). Resampled to business-day
+    ffill (handles weekly/monthly upsampling for ICSA/UMCSENT)."""
     url = FRED_CSV_URL.format(series=series_id)
     r = requests.get(url, timeout=20)
     r.raise_for_status()
@@ -92,7 +63,6 @@ def fetch_fred_series(series_id: str, name: str) -> pd.Series:
     df.index.name = "Date"
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df = df.replace(".", np.nan).astype(float)
-    # Resample to business daily and forward-fill (handles weekly/monthly series)
     df = df.resample("B").last().ffill()
     return df[name].dropna()
 
@@ -122,24 +92,16 @@ def fetch_all() -> pd.DataFrame:
 # ── Feature engineering ───────────────────────────────────────────────────────
 
 def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each raw indicator compute derived features:
-      {col}_4wk_chg  — 20-business-day change (approx 4 calendar weeks)
-      {col}_zscore   — rolling 252-day z-score (1 trading year)
-      {col}_regime   — 1 if above rolling 252-day median, 0 if below
-    """
+    """Per indicator: _4wk_chg (20bd diff), _zscore (252d), _regime (>252d median)."""
     result = raw.copy()
 
     for col in raw.columns:
-        # 4-week change
         result[f"{col}_4wk_chg"] = raw[col].diff(20)
 
-        # Rolling 252-day z-score
         roll = raw[col].rolling(252, min_periods=60)
         mu, sigma = roll.mean(), roll.std()
         result[f"{col}_zscore"] = (raw[col] - mu) / sigma
 
-        # Regime dummy: 1 = above rolling 252-day median
         roll_med = raw[col].rolling(252, min_periods=60).median()
         result[f"{col}_regime"] = (raw[col] > roll_med).astype(int)
 
@@ -147,20 +109,12 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_fred_score(features: pd.DataFrame) -> pd.Series:
-    """
-    Composite fred_macro_score from -1 to +1.
-
-    Each indicator's regime dummy is directionally mapped:
-      regime=1 (above median) × direction  → +1 (bullish) or -1 (bearish)
-      regime=0 (below median) × -direction → -1 (bearish) or +1 (bullish)
-
-    Averaged across all available indicators, clipped to [-1, +1].
-    """
+    """Composite fred_macro_score [-1,+1]: per-indicator regime {0,1}→{-1,+1}
+    × DIRECTION sign, averaged across available indicators."""
     scores = []
     for col, direction in DIRECTION.items():
         regime_col = f"{col}_regime"
         if regime_col in features.columns:
-            # Map regime {0,1} to {-1,+1} then apply direction
             score = direction * (2 * features[regime_col] - 1)
             scores.append(score)
 

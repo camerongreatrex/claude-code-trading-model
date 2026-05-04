@@ -1,25 +1,7 @@
 """
-universe_screen.py
-──────────────────
-Screen candidate tickers for universe expansion.
-
-Criteria for inclusion:
-  1. Liquidity: avg daily dollar volume > $50M (tight spreads, reliable data)
-  2. History: at least 5 years of daily data (enough for walk-forward validation)
-  3. Low correlation: average pairwise correlation with existing universe < 0.35
-  4. Bear stress correlation: correlation with SPY during VIX > 20 periods < 0.40
-  5. Distinct driver: not redundant with an existing ticker's economic driver
-
-Asset classes screened:
-  - International sector ETFs (ex-US country indices)
-  - Real assets (timber, infrastructure, water, clean energy)
-  - Alternative strategies (merger arb, managed futures, anti-beta)
-  - Fixed income niches (munis, floating rate, senior loans, EM bonds)
-  - Commodity sub-sectors (uranium, lithium, rare earths, agriculture sub-indices)
-  - Currency ETFs beyond FXE/FXY (CHF, AUD, CAD, GBP)
-
-Usage:
-  python -m v1.pipeline.universe_screen
+Screen candidates for universe expansion.
+Criteria: ADV > $50M, >=5y history, avg pairwise corr < 0.35,
+bear-stress (VIX>20) SPY corr < 0.40, distinct economic driver.
 """
 
 import sys
@@ -33,10 +15,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from v1.pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 
-# ── Candidate tickers to screen ───────────────────────────────────────────────
-# Each tuple: (ticker, proposed_asset_class, description, economic_driver)
+# ── Candidates: (ticker, asset_class, description, economic_driver) ──────────
 CANDIDATES = [
-    # International sector ETFs — different regulatory/macro drivers than US sectors
+    # International sector ETFs
     ("EWG",  "equity_index", "Germany (DAX) ETF",              "EU industrial cycle, ECB policy"),
     ("EWU",  "equity_index", "UK (FTSE) ETF",                  "BOE policy, GBP, commodity-heavy index"),
     ("EWA",  "equity_index", "Australia ETF",                   "Commodity exporter, China demand, RBA"),
@@ -45,26 +26,26 @@ CANDIDATES = [
     ("EWY",  "equity_index", "South Korea ETF",                 "Samsung/SK Hynix, memory cycle"),
     ("INDA", "equity_index", "India ETF",                       "Domestic consumption, RBI policy"),
 
-    # Real assets — inflation hedges with structural demand drivers
+    # Real assets (inflation hedges)
     ("WOOD", "commodity",    "Global Timber & Forestry ETF",    "Housing starts, construction, carbon credits"),
     ("IGF",  "equity_index", "Global Infrastructure ETF",       "Government capex, toll roads, utilities"),
     ("PHO",  "commodity",    "Water Resources ETF",             "Water scarcity, infrastructure spending"),
     ("ICLN", "equity_index", "Clean Energy ETF",                "Energy transition policy, IRA subsidies"),
 
-    # Alternative strategy ETFs — structurally different return drivers
+    # Alternative strategy ETFs
     ("MNA",  "commodity",    "Merger Arbitrage ETF",            "M&A spread capture, deal completion rates"),
     ("CTA",  "commodity",    "CTA/Managed Futures ETF",         "Trend-following across all asset classes"),
     ("BTAL", "commodity",    "Anti-Beta ETF (long low-beta, short high-beta)", "Low-vol factor, structural short"),
     ("QAI",  "commodity",    "Hedge Fund Multi-Strategy ETF",   "Multi-strategy hedge fund replication"),
 
-    # Fixed income niches — different rate/credit sensitivities than TLT/HYG/TIP
+    # Fixed income niches
     ("FLOT", "bond",         "Floating Rate Notes ETF",         "Rising rate beneficiary, near-zero duration"),
     ("BKLN", "bond",         "Senior Loan ETF",                 "Floating rate, senior secured, credit spread"),
     ("MUB",  "bond",         "Municipal Bond ETF",              "Tax-exempt income, state/local credit"),
     ("VGSH", "bond",         "Short-Term Treasury ETF",         "Cash proxy, rate hike protection"),
     ("EMB",  "bond",         "EM Dollar Bond ETF",              "EM sovereign credit, USD strength inverse"),
 
-    # Commodity sub-sectors — distinct supply/demand dynamics
+    # Commodity sub-sectors
     ("URA",  "commodity",    "Uranium ETF",                     "Nuclear energy demand, supply deficit"),
     ("LIT",  "commodity",    "Lithium & Battery Tech ETF",      "EV demand, battery supply chain"),
     ("REMX", "commodity",    "Rare Earth/Strategic Metals ETF", "China supply dominance, defense demand"),
@@ -73,13 +54,13 @@ CANDIDATES = [
     ("SLV",  "commodity",    "Silver ETF",                      "Industrial demand + monetary demand (dual driver)"),
     ("PPLT", "commodity",    "Platinum ETF",                    "Auto catalytic converters, hydrogen economy"),
 
-    # Currency ETFs — carry and macro divergence
+    # Currency ETFs
     ("FXF",  "commodity",    "Swiss Franc ETF",                 "Ultimate safe haven, SNB policy"),
     ("FXA",  "commodity",    "Australian Dollar ETF",           "Commodity currency, China proxy, RBA carry"),
     ("FXC",  "commodity",    "Canadian Dollar ETF",             "Oil correlation, BOC policy divergence"),
     ("FXB",  "commodity",    "British Pound ETF",               "BOE policy, Brexit aftermath, UK macro"),
 
-    # Additional candidates for $20M threshold re-screen
+    # $20M threshold re-screen additions
     ("COPX", "commodity",    "Copper Miners ETF",               "Electrification demand, housing, industrial cycle"),
     ("HACK", "equity_index", "Cybersecurity ETF",               "Secular growth in cyber spending, low cyclicality"),
     ("XBI",  "equity_index", "Biotech ETF (SPDR)",              "FDA pipeline, binary event risk, low macro correlation"),
@@ -124,29 +105,22 @@ def screen_candidate(
     existing_returns: pd.DataFrame,
     vix: pd.Series = None,
 ) -> dict:
-    """
-    Screen one candidate against the existing universe.
-
-    Returns dict with screening metrics, or None if candidate fails
-    basic data quality checks.
-    """
+    """Screen one candidate. Returns metrics dict, or None on data quality fail."""
     if len(candidate_df) < 1000:
         return None
 
     close  = candidate_df["Close"]
     volume = candidate_df["Volume"]
 
-    # Liquidity check: average daily dollar volume
+    # Liquidity: ADV
     avg_dv = float((close * volume).mean())
-    if avg_dv < 20_000_000:  # $20M minimum (sufficient for portfolios under $500k)
+    if avg_dv < 20_000_000:  # $20M min (portfolios <$500k)
         return {"ticker": ticker, "status": "FAIL",
                 "reason": f"illiquid (${avg_dv/1e6:.0f}M avg daily vol)"}
 
-    # Compute daily log returns
     cand_ret = np.log(close / close.shift(1)).dropna()
     cand_ret.name = ticker
 
-    # Align with existing universe
     common_idx = cand_ret.index.intersection(existing_returns.index)
     if len(common_idx) < 500:
         return {"ticker": ticker, "status": "FAIL",
@@ -155,7 +129,7 @@ def screen_candidate(
     cand_aligned  = cand_ret.reindex(common_idx)
     exist_aligned = existing_returns.reindex(common_idx)
 
-    # Average pairwise correlation with existing universe
+    # Avg pairwise corr with existing universe
     pairwise_corrs = []
     for col in exist_aligned.columns:
         c = float(cand_aligned.corr(exist_aligned[col]))
@@ -173,11 +147,10 @@ def screen_candidate(
         max_corr         = corr_vals[max_idx]
         most_corr_ticker = pairwise_corrs[max_idx][0]
 
-    # SPY correlation
     spy_corr = float(cand_aligned.corr(exist_aligned["SPY"])) \
                if "SPY" in exist_aligned.columns else 1.0
 
-    # Bear stress correlation (VIX > 20 periods)
+    # Bear stress corr (VIX > 20)
     bear_stress_corr = spy_corr  # default if no VIX data
     if vix is not None:
         vix_aligned  = vix.reindex(common_idx).ffill()
@@ -187,20 +160,15 @@ def screen_candidate(
             stress_spy  = exist_aligned["SPY"][stress_mask]
             bear_stress_corr = float(stress_cand.corr(stress_spy))
 
-    # Annualized volatility
     ann_vol = float(cand_ret.std() * np.sqrt(252) * 100)
-
-    # Annualized return
     total_ret = float(np.exp(cand_ret.sum()) - 1)
     n_years   = len(cand_ret) / 252
     ann_ret   = float((1 + total_ret) ** (1 / n_years) - 1) * 100 if n_years > 0 else 0.0
-
-    # Max drawdown
     cum    = (1 + close.pct_change().fillna(0)).cumprod()
     peak   = cum.cummax()
     max_dd = float(((cum - peak) / peak).min() * 100)
 
-    # Pass/fail logic
+    # Pass/fail
     pass_corr       = avg_corr < 0.35
     pass_stress     = bear_stress_corr < 0.40
     pass_redundancy = max_corr < 0.70
@@ -240,7 +208,7 @@ def main():
     existing = _load_existing_returns()
     print(f"  {existing.shape[0]} trading days x {existing.shape[1]} tickers")
 
-    # Load VIX for bear stress correlation
+    # Load VIX for bear-stress corr
     vix = None
     macro_path = MACRO_DIR / "macro_features.parquet"
     if macro_path.exists():
@@ -248,7 +216,7 @@ def main():
         if "vix" in macro.columns:
             vix = macro["vix"]
 
-    # Current universe avg pairwise correlation (baseline)
+    # Baseline universe avg pairwise corr
     corr_mat = existing.corr()
     upper    = np.triu(np.ones(corr_mat.shape, dtype=bool), k=1)
     baseline_corr = float(corr_mat.values[upper].mean())
@@ -313,7 +281,7 @@ def main():
         for _, r in passed.iterrows():
             print(f"  {r['ticker']}: {r['description']} -- {r['driver']}")
 
-        # Show what the lower threshold surfaced vs original $50M
+        # New surface from $20M threshold (would fail at $50M)
         new_from_lower = passed[passed["avg_dollar_vol_M"] < 50]
         if not new_from_lower.empty:
             print(f"\n  NEW from $20M threshold (would have failed at $50M):")
@@ -344,7 +312,7 @@ def main():
                 reason = "no metrics available"
             print(f"    {r['ticker']:<8} {reason}")
 
-    # Projected correlation impact if PASS tickers were added
+    # Projected corr impact from adding PASS tickers
     if not passed.empty:
         print(f"\n{'=' * W}")
         print(f"  PROJECTED IMPACT")
@@ -362,14 +330,13 @@ def main():
         print(f"  Correlation reduction: {baseline_corr - projected_corr:+.3f}")
         print(f"  More tickers with active signals = higher gross exposure = less cash drag")
 
-        # Top 5 by lowest bear_stress_corr (best crash diversifiers)
+        # Top 5 lowest bear_stress_corr (best crash diversifiers)
         top5 = passed.nsmallest(5, "bear_stress_corr")
         print(f"\n  Top crash diversifiers (lowest bear_stress_corr):")
         for _, r in top5.iterrows():
             print(f"    {r['ticker']:<8} stress_corr={r['bear_stress_corr']:.3f}  "
                   f"avg_corr={r['avg_corr']:.3f}  -- {r['description']}")
 
-    # Save results
     out_path = Path("data/v1/research/universe_screen.parquet")
     Path("data/v1/research").mkdir(parents=True, exist_ok=True)
     df_results.to_parquet(out_path, engine="pyarrow", compression="snappy", index=False)

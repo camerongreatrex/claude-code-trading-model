@@ -1,64 +1,33 @@
 """
-signal_generation.py
---------------------
-Asset-class-aware trading signal generation.
+signal_generation.py — asset-class-aware trading signal generation.
 
-This module turns technical features into actionable signals.  Every design
-decision here has a principled justification — nothing was tuned by searching
-over parameter grids on the historical data.
-
-Signal types produced
-─────────────────────
-  signal_regime     — Primary MA-crossover signal (long-only for most assets).
-                      Golden cross (MA50 > MA200) = 1, otherwise 0.
-                      Post-processed by RSI entry filter, min-hold filter,
-                      and ATR trailing stop.
-  signal_composite  — Richer score combining momentum and mean-reversion
-                      sub-scores with regime-aware weighting.  Long-only
-                      for equity/commodity, two-sided for bonds.
-  signal_ensemble   — IC-weighted linear ensemble of the top 6 features ranked
-                      by information ratio from data/research/feature_ic.parquet.
-                      Continuous value in [-1, +1]: positive = long, negative =
-                      short, magnitude = conviction.  Features are z-scored over
-                      a rolling 252-day window and weighted by their trailing
-                      504-day time-series IC (adaptive — features that predicted
-                      well recently get more weight).
+Signals produced
+────────────────
+  signal_regime     — MA50/200 golden cross (long-only most assets), post-processed
+                      by RSI entry filter, min-hold, ATR trailing stop.
+  signal_composite  — momentum + mean-reversion blend with regime-aware weighting.
+  signal_ensemble   — IC-weighted linear ensemble of top 6 features (rolling 252d
+                      z-score, trailing 504d IC weights). Value in [-1, +1].
 
 Asset-class routing
 ───────────────────
-  equity_index  → MA50/200 + ADX > 25 regime filter; long-only
-                  Tickers: SPY, IWM, EEM, EFA, VWO
-  sector_etf    → MA100/300 + ADX > 20 (slower: sector rotations take months); long-only
-                  Tickers: XLE, XLU, XLF, VNQ
-  stock         → MA50/200 + ADX > dynamic threshold (higher vol → higher bar); long-only
-                  Tickers: JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA, GE, INTC, VZ
-  bond          → Two-sided momentum (rates go both ways; mean reversion is risky)
-                  Tickers: TLT (nominal rates), HYG (credit cycle), TIP (real rates)
-  commodity     → Momentum in fear (VIX > 25), mean reversion in calm; TWO-SIDED
-                  Tickers: GLD (fear/real rates), DBC (broad basket), UUP (USD/FX)
-                  Short side enabled: gold/DBC trend down in rising real-rate regimes
+  equity_index  → MA50/200 + ADX>25; long-only (SPY, IWM, EEM, EFA, VWO)
+  sector_etf    → MA100/300 + ADX>20 (slower for multi-month rotations); long-only
+                  (XLE, XLU, XLF, VNQ)
+  stock         → MA50/200 + ADX>dynamic (vol-scaled); long-only
+                  (JPM, JNJ, XOM, AMZN, NEE, BRK-B, GS, COST, MSFT, NVDA, GE, INTC, VZ)
+  bond          → two-sided momentum (TLT, HYG, TIP)
+  commodity     → momentum if VIX>25, mean-reversion otherwise; two-sided
+                  (GLD, DBC, UUP)
 
-Post-processors applied to signal_regime (principled, not curve-fitted)
-────────────────────────────────────────────────────────────────────────
-  1. RSI entry filter  — Block new longs when RSI_14 > 70 (overbought at entry)
-  2. Min-hold filter   — Stay long for at least MIN_HOLD_DAYS=5 to prevent
-                         whipsaw round-trips
-  3. ATR trailing stop — Exit if price falls ATR_TRAILING_MULT × ATR below
-                         the trailing high since entry
+Post-processors on signal_regime
+────────────────────────────────
+  1. RSI entry filter  — block new longs when RSI_14 > 70
+  2. Min-hold filter   — MIN_HOLD_DAYS=5 prevents whipsaw round-trips
+  3. ATR trailing stop — exit if price < trail_high − ATR_TRAILING_MULT × ATR
 
-Output
-──────
-  data/signals/{TICKER}.parquet          — per-ticker signal DataFrame
-  data/signals/regime_signals.parquet    — matrix of signal_regime values
-  data/signals/composite_signals.parquet — matrix of signal_composite values
-  data/signals/ensemble_signals.parquet  — matrix of signal_ensemble values
-
-Consumed by
-───────────
-  backtester.py   — simulates P&L against these signals
-  portfolio.py    — uses signal matrices for sizing and walk-forward
-  paper_trader.py — runs generate() on live data for EOD execution
-  live_signals.py — replicates regime logic for the dashboard's Live Signals tab
+Output: data/signals/{TICKER}.parquet plus matrices regime/composite/ensemble.
+Consumed by backtester.py, portfolio.py, paper_trader.py, live_signals.py.
 """
 
 import json
@@ -68,78 +37,43 @@ from pathlib import Path
 
 from .data_pipeline import TICKER_LIST, ASSET_CLASS, HEDGE_MAP
 
-# ── Strategy improvement constants ────────────────────────────────────────────
-# These are principled, not curve-fitted to the historical dataset.
-RSI_ENTRY_THRESH  = 70    # Wilder's original overbought level (1978). Skip new longs
-                           # when RSI > 70 — the golden cross has already run most of
-                           # its initial move and entry risk/reward is unfavourable.
-MIN_HOLD_DAYS     = 5     # 1 trading week. Hold at least this long before a death
-                           # cross can close the position. Prevents paying two round-
-                           # trip commissions on the same week's whipsaw.
-ATR_TRAILING_MULT = 3.0   # Exit if price drops 3× ATR below trailing high since entry.
-                           # 3× is a published institutional standard (gives room to
-                           # breathe while protecting against structural deterioration).
-ATR_TIGHTEN_THRESHOLD = 5.0  # Tighten stop once price is 5× ATR above entry price.
-                               # Source: Elder, "Trading for a Living" — large gains mean-
-                               # revert more aggressively; protect them with a tighter stop.
-ATR_TIGHTEN_MULT      = 1.5  # Tightened stop distance: 1.5× ATR (vs 3× normal).
-                               # Locks in most of a 5×-ATR gain while allowing trend to run.
-ATR_PROFIT_TARGET = 12.0  # Partial exit at 12× ATR gain above entry.
-                           # Captures monster winners while still firing on real
-                           # extreme moves.  Higher (15-20×) saturates returns and
-                           # turns the partial exit into a no-op (de facto buy-and-hold).
-                           # At 8× ATR the position has captured most of its initial move;
-                           # exiting 50% locks in profit while letting 50% ride the trend.
-ATR_PARTIAL_REMAIN = 0.75  # Keep 75% of position after partial exit.
-                              # An 8× ATR winner has demonstrated trend persistence;
-                              # cutting only 25% locks in profit while letting more
-                              # of the breakout run.  Tested 0.50 → 0.75 (iter 8).
+# ── Strategy constants (principled, not curve-fitted) ────────────────────────
+RSI_ENTRY_THRESH  = 70    # Wilder 1978 overbought level — block new longs above.
+MIN_HOLD_DAYS     = 5     # 1 trading week min hold; prevents whipsaw round-trips.
+ATR_TRAILING_MULT = 3.0   # Trailing stop = trail_high − 3×ATR. Institutional std (Elder/Schwager).
+ATR_TIGHTEN_THRESHOLD = 5.0  # Tighten stop once gain > 5×ATR (Elder: large gains revert harder).
+ATR_TIGHTEN_MULT      = 1.5  # Tightened stop distance: 1.5×ATR (vs 3× normal).
+ATR_PROFIT_TARGET = 12.0  # Partial exit at 12×ATR gain. Higher (15-20×) saturates → no-op.
+ATR_PARTIAL_REMAIN = 0.75  # Keep 75% of position post partial exit (tested 0.50→0.75 iter 8).
 
-# Regime-conditional RSI and ADX thresholds (Improvement 1: Bull-calm exposure boost).
-# In bull_calm (VIX < 20) trend signals are most reliable; tighter filters kill gross
-# exposure precisely when the edge is highest.  These relaxed thresholds are Wilder's
-# published values, not fitted to this dataset.
-RSI_ENTRY_THRESH_CALM   = 75   # Wilder relaxed overbought level for calm bull regimes
-RSI_ENTRY_THRESH_STRESS = 68   # Tighter entry gate in stress / neutral regimes
-ADX_MIN_CALM   = 22    # Wilder's published minimum trend threshold (bull_calm only)
-ADX_MIN_STRESS = 25    # Standard ADX threshold (stress and neutral regimes)
+# Regime-conditional RSI/ADX thresholds (Improvement 1: bull-calm exposure boost).
+# Wilder published values, not fitted.
+RSI_ENTRY_THRESH_CALM   = 75   # relaxed overbought in calm bull
+RSI_ENTRY_THRESH_STRESS = 68   # tighter entry in stress/neutral
+ADX_MIN_CALM   = 22    # bull_calm only
+ADX_MIN_STRESS = 25    # stress/neutral
 
-# Module-level counter: long-entry days enabled by the relaxed calm RSI threshold.
-# Incremented in generate() for equity_index and sector_etf tickers.
-# Printed in main() for validation (Improvement 1 pass criterion).
-_CALM_EXTRA_ENTRIES: int = 0
+# Validation counters incremented in generate() and printed in main().
+_CALM_EXTRA_ENTRIES: int = 0   # entries enabled by relaxed calm RSI threshold
+_VOL_DIV_EXTRA_ENTRIES: int = 0  # vol_div_sig fires while signal_r is flat
+_EARLY_ENTRY_DAYS: int = 0  # bull_calm early entry firings (Part 3)
 
-# Module-level counter: long-entry days added by volume-price divergence re-entry.
-# Counts days where vol_div_sig fires (signal=1) while the primary signal_r is flat.
-# Printed in main() alongside the breakout/bounce/reentry count.
-_VOL_DIV_EXTRA_ENTRIES: int = 0
-
-# Module-level counter: extra long-entry days from the bull_calm early entry signal
-# (Part 3).  Counts days where early_entry fires (price > MA200, MA50 slope > 0,
-# bull_calm, ADX > 15) while the primary MA50/200 golden cross has NOT yet fired.
-_EARLY_ENTRY_DAYS: int = 0
-
-# Module-level SPY close cache for bull_calm detection in generate() (Part 3).
-# Loaded once and reused across all 37+ tickers to avoid 37 parquet reads.
+# SPY close cache to avoid 37 parquet reads (Part 3 bull_calm detection).
 _SPY_CLOSE_CACHE: pd.Series | None = None
 
 # ── Profit-lock + no-new-high time-stop (overlay on signal_multi) ───────────
-# Validated 2026-04-27 on atr_lev_1.5x: the pl_5_10 + ts_40 combo Pareto-dominates
-# baseline on every metric — AnnRet 14.6→15.35, Sharpe 1.248→1.355, MaxDD
-# -10.05%→-8.67%, Calmar 1.45→1.77.  Stable plateau across ts ∈ [35, 42].
-# Acts AFTER existing trailing/time-decay exits; can only fire EARLIER.
-PROFIT_LOCK_TARGET_1 = 0.05  # Once cumulative high since entry > +5%, lock stop at entry.
-PROFIT_LOCK_LOCK_1   = 0.0   # First-tier lock level (break-even).
-PROFIT_LOCK_TARGET_2 = 0.10  # Once high > +10%, raise lock to +5%.
-PROFIT_LOCK_LOCK_2   = 0.05  # Second-tier lock (5% gain locked).
-NO_NEW_HIGH_DAYS     = 40    # Exit if 40 trading days pass with no new high since entry.
+# Validated 2026-04-27 on atr_lev_1.5x: pl_5_10 + ts_40 Pareto-dominates baseline —
+# AnnRet 14.6→15.35, Sharpe 1.248→1.355, MaxDD -10.05%→-8.67%, Calmar 1.45→1.77.
+# Stable plateau across ts ∈ [35, 42]. Acts after trailing/time-decay; can only fire earlier.
+PROFIT_LOCK_TARGET_1 = 0.05  # high > +5% → lock stop at entry (break-even)
+PROFIT_LOCK_LOCK_1   = 0.0
+PROFIT_LOCK_TARGET_2 = 0.10  # high > +10% → raise lock to +5%
+PROFIT_LOCK_LOCK_2   = 0.05
+NO_NEW_HIGH_DAYS     = 40    # exit after 40 trading days with no new high
 
-TIME_DECAY_DAYS   = 126  # Close stale longs held > 6 months that are drifting negative.
-                           # 126 = half the MA200 lookback — a structural timescale.
-                           # Addresses bear_calm underperformance: equities held flat/down for
-                           # months while TLT/GLD/TIP rally. Exit the dead weight, free cash.
-TIME_DECAY_WINDOW = 21   # Trailing return window for the decay check: 1 calendar month.
-                           # close[t] / close[t-21] - 1 < 0 → position is drifting down.
+TIME_DECAY_DAYS   = 126  # 6 trading months (half MA200). Close stale longs drifting negative;
+                           # addresses bear_calm equities held while TLT/GLD/TIP rally.
+TIME_DECAY_WINDOW = 21   # 1-month trailing return: close[t]/close[t-21]-1 < 0 → drifting down.
 
 # 5 most liquid ETFs by AUM (published fact). MA20/50 fast overlay applied
 # only to these — individual stocks are excluded (MA20/50 whipsaws on stocks).

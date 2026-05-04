@@ -1,5 +1,5 @@
 # ui/charts.py
-# All chart-builder functions and the metrics/metrics_table helpers.
+# Chart builders and metrics helpers.
 
 import numpy as np
 import pandas as pd
@@ -11,26 +11,9 @@ from v1.ui.styles import _layout, PALETTE, LABELS, get_color, get_label
 
 
 def metrics(ret: pd.Series) -> dict:
-    """
-    Compute a standard set of annualised risk/return metrics from a daily
-    returns series.
-
-    Args:
-        ret: Daily return series (fractional, e.g. 0.01 for +1%).
-             NaN values are dropped before calculation.
-
-    Returns:
-        Dict with keys:
-            ann_r    — Compound Annual Growth Rate (CAGR)
-            vol      — Annualised volatility (std dev × √252)
-            sharpe   — Sharpe ratio (ann_r / vol, risk-free = 0)
-            max_dd   — Maximum drawdown (negative fraction, e.g. -0.20)
-            calmar   — Calmar ratio (ann_r / |max_dd|)
-            win_rate — Fraction of non-zero days with a positive return
-            total    — Total return over the full period (fraction)
-            var_95   — Historical 1-day 95% VaR (positive fraction, e.g. 0.015 = 1.5% loss threshold)
-        Returns empty dict if ret is empty after dropping NaNs.
-    """
+    """Annualised risk/return metrics from daily returns (fractional).
+    Returns dict with ann_r, vol, sharpe, max_dd, calmar, win_rate, total, var_95.
+    Empty dict if ret is empty after dropna."""
     ret = ret.dropna()
     if ret.empty:
         return {}
@@ -43,12 +26,10 @@ def metrics(ret: pd.Series) -> dict:
     peak   = cum.cummax()
     max_dd = ((cum - peak) / peak).min()
     calmar = ann_r / abs(max_dd) if max_dd != 0 else 0
-    # Only count days with actual trades (non-zero return) to avoid inflating
-    # the win rate with cash/flat days where the portfolio didn't move.
+    # Count only non-zero days so cash/flat days don't inflate win rate.
     active = ret[ret != 0]
     wr     = (active > 0).sum() / len(active) if len(active) > 0 else 0
-    # Historical 1-day 95% VaR: loss exceeded only 5% of trading days.
-    # Expressed as a positive fraction (e.g. 0.015 = 1.5% daily loss threshold).
+    # 1-day 95% VaR as positive fraction (0.015 = 1.5% loss threshold).
     var_95 = float(-np.percentile(ret, 5))
     return dict(ann_r=ann_r, vol=vol, sharpe=sharpe, max_dd=max_dd,
                 calmar=calmar, win_rate=wr, total=total, var_95=var_95)
@@ -56,24 +37,8 @@ def metrics(ret: pd.Series) -> dict:
 
 # ── Summary table ─────────────────────────────────────────────────────────────
 def metrics_table(df_port: pd.DataFrame, oos_sel: pd.DataFrame = None) -> pd.DataFrame:
-    """
-    Build a human-readable summary statistics table for all sizing methods.
-
-    Calls metrics() for each method column and formats values as display
-    strings with consistent sign/decimal conventions.  The resulting
-    DataFrame is rendered in the Overview tab with green/red cell colouring
-    applied via Streamlit's .style.map().
-
-    Args:
-        df_port:  Portfolio curves DataFrame (same as load_portfolio_curves()).
-        oos_sel:  Optional OOS selection DataFrame from oos_selection.parquet.
-                  If provided, an "OOS Sharpe" column is added right after "Method".
-
-    Returns:
-        DataFrame with columns [Method, OOS Sharpe (if available), Ann. Return,
-        Volatility, Sharpe, Max DD, Calmar, Win Rate, VaR 95%].
-        One row per sizing method present in df_port.
-    """
+    """Summary stats table (one row per visible sizing method).
+    If oos_sel is provided, prepends an OOS Sharpe column and sorts by it desc."""
     from v1.ui.styles import TIER_SHOW, TIER_AVAILABLE
     _visible = TIER_SHOW | TIER_AVAILABLE
 
@@ -85,7 +50,7 @@ def metrics_table(df_port: pd.DataFrame, oos_sel: pd.DataFrame = None) -> pd.Dat
         m   = metrics(ret)
         if not m:
             continue
-        # Look up OOS Sharpe for this method
+        # OOS Sharpe lookup
         oos_sharpe_str = "—"
         if oos_sel is not None and not oos_sel.empty and "method" in oos_sel.columns:
             _oos_m = oos_sel[
@@ -107,7 +72,7 @@ def metrics_table(df_port: pd.DataFrame, oos_sel: pd.DataFrame = None) -> pd.Dat
             "VaR 95%"     : f"{m['var_95']*100:.2f}%",
         })
     result = pd.DataFrame(rows)
-    # Sort by OOS Sharpe descending (best strategies at top)
+    # Sort by OOS Sharpe desc
     if not result.empty and "OOS Sharpe" in result.columns:
         result["_sort"] = result["OOS Sharpe"].apply(
             lambda x: float(x) if x != "—" else -999
@@ -120,23 +85,8 @@ def metrics_table(df_port: pd.DataFrame, oos_sel: pd.DataFrame = None) -> pd.Dat
 # ── Chart builders ────────────────────────────────────────────────────────────
 def chart_equity(df: pd.DataFrame, height: int = 420,
                  columns: list = None) -> go.Figure:
-    """
-    Build a multi-line equity curve chart for portfolio sizing methods.
-
-    Adds one go.Scatter trace per method present in df.  Buy & Hold is
-    rendered as a dotted line to visually distinguish the benchmark from
-    the strategy variants.
-
-    Args:
-        df:      DataFrame indexed by date with one column per sizing method.
-        height:  Chart height in pixels.
-        columns: Optional list of column names to plot. If None, plots the
-                 top 5 columns by final value plus buy_hold.
-
-    Returns:
-        go.Figure with dragmode="pan" and scrollZoom enabled via config at
-        the call site.
-    """
+    """Multi-line equity curve. Buy & Hold rendered dotted.
+    columns=None → top 5 by final value + buy_hold."""
     if columns is None:
         non_bh = [c for c in df.columns if c != "buy_hold"]
         top5   = sorted(non_bh, key=lambda c: df[c].iloc[-1] if not df[c].empty else 0,
@@ -164,8 +114,8 @@ def chart_equity(df: pd.DataFrame, height: int = 420,
             line=dict(color=color, width=1.8, dash=dash),
             hovertemplate=hovertemplate,
         ))
-    # Add OOS region indicator: grey tint for training warm-up, faint green for OOS
-    if len(df) > 756:  # 3 years of trading days → first OOS window starts after that
+    # OOS region indicator: grey for training warm-up, faint green for OOS
+    if len(df) > 756:  # 3y of trading days → first OOS window starts after
         oos_start = df.index[756]
         fig.add_vrect(
             x0=df.index[0], x1=oos_start,
@@ -201,18 +151,8 @@ def chart_equity(df: pd.DataFrame, height: int = 420,
 
 def chart_equity_risk_adjusted(df: pd.DataFrame, height: int = 420,
                                columns: list = None) -> go.Figure:
-    """
-    Equity curves scaled so every strategy has 10% annualized volatility.
-
-    This is the fair comparison: at equal risk, the strategy with higher
-    Sharpe ratio produces higher return. Buy & Hold (Sharpe ~0.75) will
-    appear BELOW strategies with Sharpe > 0.75.
-
-    This is how institutional investors compare strategies — they normalize
-    for risk first, then compare returns. A hedge fund running at 10% vol
-    with Sharpe 1.5 earns 15% annualized; the S&P at 10% vol with Sharpe
-    0.75 earns only 7.5%.
-    """
+    """Equity curves scaled to 10% annualised vol — at equal risk,
+    higher Sharpe = higher return. Fair institutional comparison."""
     if columns is None:
         columns = list(df.columns)
 
@@ -269,22 +209,8 @@ def chart_equity_risk_adjusted(df: pd.DataFrame, height: int = 420,
 
 def chart_drawdown(df: pd.DataFrame, height: int = 420,
                    columns: list = None) -> go.Figure:
-    """
-    Build a drawdown chart for selected portfolio sizing methods.
-
-    Computes percentage drawdown as (price − rolling_peak) / rolling_peak × 100
-    and renders each as a filled area trace so shallow drawdowns are immediately
-    visible against the dark background.
-
-    Args:
-        df:      DataFrame indexed by date with one column per sizing method.
-        height:  Chart height in pixels.
-        columns: Optional list of column names to plot. If None, plots the
-                 top 3 columns by final value plus buy_hold.
-
-    Returns:
-        go.Figure with fill="tozeroy" traces and dragmode="pan".
-    """
+    """Drawdown chart: (price − rolling_peak)/rolling_peak × 100 as filled area.
+    columns=None → top 3 by final value + buy_hold."""
     if columns is None:
         non_bh = [c for c in df.columns if c != "buy_hold"]
         top3   = sorted(non_bh, key=lambda c: df[c].iloc[-1] if not df[c].empty else 0,
@@ -327,36 +253,15 @@ def chart_drawdown(df: pd.DataFrame, height: int = 420,
 
 def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
                       height: int = 420) -> go.Figure:
-    """
-    Build the Monte Carlo fan chart showing simulated equity path distribution.
-
-    Traces added (in order):
-      1. Faint individual sample paths — up to 80 paths merged into ONE
-         go.Scatter with None separators so rendering stays fast during
-         zoom/pan (one WebGL draw call instead of 80).
-      2. 5–95th percentile band (go.Scatter fill="toself", blue tint).
-      3. 25–75th percentile band (go.Scatter fill="toself", green tint).
-      4. Median path (go.Scatter, white line).
-      5. Actual historical equity curve (go.Scatter, blue line) overlaid
-         so the user can see where history sits within the fan.
-
-    Args:
-        eq_curves: Array of shape (n_paths, n_days) with cumulative growth
-                   factors (1.0 = break even), produced by run_monte_carlo().
-        actual:    1-D array of the real cumulative growth factor series.
-        height:    Chart height in pixels.
-
-    Returns:
-        go.Figure with dragmode="pan".
-    """
+    """Monte Carlo fan chart: faint sample paths (≤80, merged into one trace),
+    5–95 and 25–75 percentile bands, median, plus actual history overlay."""
     n   = eq_curves.shape[1]
     xs  = np.arange(n)
     p5, p25, p50, p75, p95 = (np.percentile(eq_curves, q, axis=0)
                                for q in (5, 25, 50, 75, 95))
     fig = go.Figure()
 
-    # Faint individual paths — merged into ONE trace with None separators.
-    # One trace instead of 80 = drastically faster zoom/pan rendering.
+    # Faint paths merged into one trace via None separators (faster zoom/pan).
     sample_idx = np.random.default_rng(0).choice(len(eq_curves),
                                                    size=min(80, len(eq_curves)),
                                                    replace=False)
@@ -429,20 +334,7 @@ def chart_monte_carlo(eq_curves: np.ndarray, actual: np.ndarray,
 
 
 def chart_mc_histogram(eq_curves: np.ndarray, height: int = 280) -> go.Figure:
-    """
-    Build a histogram of terminal (final-day) total returns from Monte Carlo paths.
-
-    Adds vertical reference lines at the median and 5th-percentile so the
-    user can immediately see the expected outcome and the stress-test floor.
-
-    Args:
-        eq_curves: Array of shape (n_paths, n_days) with cumulative growth
-                   factors (same array produced by run_monte_carlo()).
-        height:    Chart height in pixels.
-
-    Returns:
-        go.Figure with showlegend=False and dragmode="pan".
-    """
+    """Histogram of terminal (final-day) total returns with median + 5th-pct lines."""
     finals = (eq_curves[:, -1] - 1) * 100   # % total return
     fig = go.Figure()
     fig.add_trace(go.Histogram(
@@ -477,20 +369,8 @@ def chart_mc_histogram(eq_curves: np.ndarray, height: int = 280) -> go.Figure:
 
 
 def chart_walk_forward(wf: pd.DataFrame, height: int = 280) -> go.Figure:
-    """
-    Build a bar chart of OOS Sharpe ratios from walk-forward validation.
-
-    Each bar represents one test window (1 year of genuinely unseen data
-    after a 3-year training period).  Bars are coloured green/red based on
-    sign so poor windows are immediately visible.
-
-    Args:
-        wf:     DataFrame with columns [period, sharpe].
-        height: Chart height in pixels.
-
-    Returns:
-        go.Figure with a horizontal zero-line reference and dragmode="pan".
-    """
+    """Bar chart of OOS Sharpe per walk-forward window (3y train / 1y test).
+    Bars coloured green/red by sign."""
     colors = [PALETTE["pos"] if s >= 0 else PALETTE["neg"] for s in wf["sharpe"]]
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -523,22 +403,8 @@ def chart_walk_forward(wf: pd.DataFrame, height: int = 280) -> go.Figure:
 
 
 def chart_asset_sharpe(ticker_curves: dict, height: int = 480) -> go.Figure:
-    """
-    Build a grouped horizontal bar chart comparing per-asset Sharpe ratios
-    for the regime strategy vs Buy & Hold.
-
-    For each ticker the annualised Sharpe is computed from its individual
-    equity curve.  Tickers are sorted by strategy Sharpe so the best
-    performers appear at the top.
-
-    Args:
-        ticker_curves: Dict mapping ticker str → DataFrame with columns
-                       [regime, buy_hold] indexed by date.
-        height:        Chart height in pixels.
-
-    Returns:
-        go.Figure with barmode="group" and dragmode="pan".
-    """
+    """Grouped h-bar of per-asset Sharpe (regime strategy vs Buy & Hold).
+    Sorted by strategy Sharpe."""
     rows = []
     for ticker, df in ticker_curves.items():
         for col, label in [("regime", "Strategy"), ("buy_hold", "Buy & Hold")]:
@@ -593,30 +459,11 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                          fred: pd.DataFrame = None,
                          height: int = 560,
                          primary_method: str = None) -> go.Figure:
-    """
-    Build a multi-panel subplot chart overlaying the portfolio equity curve
-    with key macro regime indicators.
-
-    Subplots (shared x-axis):
-      Row 1 — Portfolio vs Buy & Hold equity curves (go.Scatter).
-      Row 2 — VIX level with fill, and reference lines at 20 (caution)
-               and 30 (fear).
-      Row 3 — 10Y–2Y Treasury yield spread.
-      Row 4 — HY credit spread (if FRED data available).
-      Row 5 — FRED macro score (if available).
-
-    Args:
-        df_port: Portfolio equity curve DataFrame (same as load_portfolio_curves()).
-        macro:   Macro features DataFrame (same as load_macro()).
-        fred:    FRED features DataFrame (from load_fred_features()), optional.
-        height:  Total chart height in pixels across all rows.
-
-    Returns:
-        go.Figure using make_subplots with shared x-axes and dragmode="pan".
-    """
+    """Multi-panel macro overlay: equity (row 1), VIX with refs at 20/30 (row 2),
+    10Y-2Y yield spread (row 3), optional HY OAS (row 4), optional FRED score (row 5)."""
     macro = macro.reindex(df_port.index).ffill()
 
-    # Determine how many rows based on available FRED data
+    # Row count depends on available FRED data
     has_credit = fred is not None and not fred.empty and "hy_oas" in fred.columns
     has_fred_score = "fred_macro_score" in macro.columns
     n_rows = 3 + int(has_credit) + int(has_fred_score)
@@ -629,7 +476,7 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
     if has_fred_score:
         row_heights.append(0.14)
         subtitles.append("FRED Macro Score")
-    # Normalize row heights to sum to 1
+    # Normalise row heights to sum 1
     _total = sum(row_heights)
     row_heights = [h / _total for h in row_heights]
 
@@ -638,8 +485,7 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                         row_heights=row_heights,
                         subplot_titles=tuple(subtitles))
 
-    # Row 1: Equity — show the production method (defaults to whatever is in
-    # df_port if `primary_method` is not provided / not present) plus B&H.
+    # Row 1: Equity — production method (or fallback) + B&H.
     _row1_methods = []
     if primary_method and primary_method in df_port.columns:
         _row1_methods.append(primary_method)
@@ -700,7 +546,7 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
         fig.add_hline(y=0, line_color="#555", line_dash="dot",
                       line_width=1, row=3, col=1)
 
-    # Row 4: HY credit spread (dynamic — only when FRED data available)
+    # Row 4: HY OAS (only if FRED present)
     _next_row = 4
     if has_credit:
         _fred_aligned = fred.reindex(df_port.index).ffill()
@@ -722,7 +568,7 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
                       line_width=1, row=_next_row, col=1)
         _next_row += 1
 
-    # Row 5: FRED macro score (dynamic)
+    # Row 5: FRED macro score
     if has_fred_score:
         fig.add_trace(go.Scatter(
             x=macro.index, y=macro["fred_macro_score"],
@@ -754,26 +600,11 @@ def chart_macro_overlay(df_port: pd.DataFrame, macro: pd.DataFrame,
     return fig
 
 
-# ── Monthly returns heatmap ───────────────────────────────────────────────────
+# ── Monthly heatmap ───────────────────────────────────────────────────
 def chart_monthly_heatmap(ret: pd.Series, title: str = "Equal Weight — Monthly Returns",
                           height: int = 340) -> go.Figure:
-    """
-    Build a calendar heatmap of monthly returns (year × month grid).
-
-    The colour scale is centred at zero (zmid=0) and clipped at ±10% so
-    that small monthly moves still show visible colour — extreme outliers
-    don't wash out the scale.  Cell text shows the exact % return.
-
-    Args:
-        ret:    Daily returns series (fractional).  Resampled internally
-                to month-end using compounded multiplication.
-        title:  Chart title string.
-        height: Chart height in pixels.
-
-    Returns:
-        go.Figure using go.Heatmap with year on y-axis (reversed so most
-        recent year is at the top) and month on x-axis (top).
-    """
+    """Calendar heatmap of monthly returns (year × month).
+    Colour centred at 0, clipped at ±10% so small moves still show colour."""
     monthly = (1 + ret).resample("ME").prod() - 1
     df_m = monthly.to_frame("ret")
     df_m["year"]  = df_m.index.year
@@ -817,25 +648,10 @@ def chart_monthly_heatmap(ret: pd.Series, title: str = "Equal Weight — Monthly
     return fig
 
 
-# ── MA spread bar chart (live tab) ────────────────────────────────────────────
+# ── MA spread (live tab) ────────────────────────────────────────────
 def chart_ma_spread(live_df: pd.DataFrame, height: int = 400) -> go.Figure:
-    """
-    Build a horizontal bar chart showing the MA spread for every ticker in
-    the live universe.
-
-    Each bar represents how far the fast MA is above or below the slow MA
-    as a percentage.  Positive (green) = golden cross = LONG signal.
-    Negative (red) = death cross = strategy holds cash for that ticker.
-    Tickers are sorted ascending so the weakest signals appear at the top.
-
-    Args:
-        live_df: DataFrame returned by get_live_signals(), must contain
-                 columns [Ticker, MA Spread %].
-        height:  Chart height in pixels.
-
-    Returns:
-        go.Figure with a vertical zero-line, showlegend=False, dragmode="pan".
-    """
+    """H-bar of MA spread % per ticker. Positive (green) = golden cross / LONG;
+    negative (red) = death cross / cash. Sorted ascending."""
     df = live_df.sort_values("MA Spread %")
     colors = [PALETTE["pos"] if v >= 0 else PALETTE["neg"] for v in df["MA Spread %"]]
     fig = go.Figure(go.Bar(
@@ -867,7 +683,7 @@ def chart_ma_spread(live_df: pd.DataFrame, height: int = 400) -> go.Figure:
     return fig
 
 
-# ── TradingView-style portfolio chart ────────────────────────────────────────
+# ── Paper portfolio (TradingView-style) ────────────────────────────────────────
 def chart_paper_portfolio(history_df: pd.DataFrame,
                           intraday_df: pd.DataFrame,
                           trades_df: pd.DataFrame,
@@ -875,59 +691,26 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                           now: datetime = None,
                           entry_value: float = None,
                           x_range: list = None) -> go.Figure:
-    """
-    Build the TradingView-style paper portfolio equity curve figure.
-
-    Combines three traces:
-      1. Historical daily closes (go.Scatter, blue line) — from history.csv,
-         excluding today (which is shown at higher resolution by the candles)
-      2. Today's 5-minute candles (go.Candlestick, green/red) — from yfinance
-      3. Post-close flat line (go.Scatter, blue dotted) — extends from the last
-         candle to the current time so the chart never looks "cut off"
-      4. SPY benchmark (go.Scatter, purple dotted) — normalised to the same
-         starting value as the portfolio, showing relative performance
-      5. Buy/sell markers (go.Scatter with triangle symbols) on historical dates
-      6. Reference lines at initial capital ($100k) and entry value
-
-    Args:
-        history_df:    Daily history DataFrame from load_history().
-        intraday_df:   Today's OHLC DataFrame from get_intraday_curve().
-        trades_df:     Trade log DataFrame from load_trades().
-        height:        Chart height in pixels.
-        now:           Current ET-naive Timestamp (used for the "Now" line
-                       and x-axis right edge computation).
-        entry_value:   Previous day's portfolio value (used for the entry
-                       reference line).
-        x_range:       [left, right] x-axis range strings in ISO format.
-                       Passed from session_state so it stays constant across
-                       5-second refreshes, allowing uirevision to preserve zoom.
-        spy_curve:     pd.Series of SPY benchmark values indexed by ET datetime.
-
-    Returns:
-        go.Figure ready for st.plotly_chart().
-
-    Key Plotly settings:
-        uirevision="paper_portfolio" — preserves user zoom across fragment refreshes
-        dragmode="pan"               — drag to pan (not box-zoom, which is confusing)
-        scrollZoom=True              — mouse wheel to zoom
-    """
+    """Paper portfolio equity curve: daily history candles, today's 5-min candles,
+    flat post-close line, buy/sell triangle markers, refs at $100k start + entry value.
+    uirevision="paper_portfolio" preserves zoom across 5s fragment refreshes."""
     fig = go.Figure()
 
-    # ── Resample intraday data to the requested timeframe ───────────────────
+    # ── Intraday resample ───────────────────
     candle_df = pd.DataFrame()
     if not intraday_df.empty and {"open", "high", "low", "close"}.issubset(intraday_df.columns):
         candle_df = intraday_df.copy()
 
-    # Dates covered by intraday candles — exclude these from daily history
+    # Dates covered by intraday — exclude from daily history
     _intra_dates = set()
     if not candle_df.empty:
         _intra_dates = set(candle_df.index.strftime('%Y-%m-%d'))
 
-    # ── Historical daily candlesticks (for dates NOT covered by intraday) ───
+    # ── Daily candlesticks (dates not covered by intraday) ───
     if not history_df.empty:
         history_df = history_df.copy()
-        # Drop market-holiday rows where portfolio value didn't change (e.g. Good Friday).
-        # shift(1) is NaN for the first row so it is always kept.
+        # Drop holiday rows where portfolio value didn't change (e.g. Good Friday);
+        # shift(1) is NaN for the first row so it's always kept.
         history_df = history_df[
             history_df["portfolio_value"].ne(history_df["portfolio_value"].shift(1))
         ].reset_index(drop=True)
@@ -949,7 +732,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                                 fillcolor="rgba(255,85,85,0.7)"),
             ))
 
-    # ── Intraday candlesticks (multi-day 5-min data) ────────────────────────
+    # ── Intraday candles (multi-day 5-min) ────────────────────────
     if not candle_df.empty:
         fig.add_trace(go.Candlestick(
             x=candle_df.index,
@@ -963,7 +746,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             decreasing=dict(line=dict(color="#ff5555", width=1),
                             fillcolor="rgba(255,85,85,0.7)"),
         ))
-        # Flat dotted line from last candle to now when market is closed
+        # Flat dotted line from last candle → now when market closed
         if now is not None and now > candle_df.index[-1]:
             _lv = float(candle_df["close"].iloc[-1])
             fig.add_trace(go.Scatter(
@@ -976,10 +759,10 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             ))
 
 
-    # ── Trade markers ─────────────────────────────────────────────────────────
+    # ── Trade markers ─────────────────────────────────────────
     if not trades_df.empty and not history_df.empty:
-        # Map trade date → portfolio_value on that day for marker y-position.
-        # Index by normalized date string so Timestamp vs string mismatches don't cause KeyErrors.
+        # Map trade date → portfolio_value for marker y-position; index by
+        # normalised date string to avoid Timestamp/str KeyErrors.
         hist_val = (
             history_df.assign(_d=history_df["date"].dt.strftime('%Y-%m-%d'))
             .set_index("_d")["portfolio_value"]
@@ -987,7 +770,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
         _last_pv = float(hist_val.iloc[-1])
 
         def _marker_y(date_series: pd.Series) -> list:
-            """One y value per grouped date string; falls back to last known PV."""
+            """y value per date; falls back to last known PV on miss."""
             out = []
             for d in date_series:
                 key = pd.Timestamp(d).strftime('%Y-%m-%d') if not isinstance(d, str) else d
@@ -999,7 +782,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             return out
 
         def _group_trades(subset: pd.DataFrame) -> pd.DataFrame:
-            """Collapse to one row per trading date; tickers joined as comma list."""
+            """One row per trading date; tickers joined as comma list."""
             subset = subset.copy()
             subset["_date_str"] = subset["date"].dt.strftime('%Y-%m-%d')
             grp = (
@@ -1008,7 +791,7 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 .reset_index()
             )
             grp.columns = ["date_str", "tickers"]
-            # x-position: plot at 4 PM ET same as history dots
+            # x at 4 PM ET (same as history dots)
             grp["plot_x"] = grp["date_str"] + "T16:00:00"
             grp["y"] = _marker_y(grp["date_str"])
             grp["n"] = grp["tickers"].apply(lambda t: len(t.split(",")))
@@ -1055,14 +838,13 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
                 ),
             ))
 
-    # Reference line at initial capital ($100k)
+    # Ref at initial capital ($100k)
     fig.add_hline(
         y=PT_INITIAL_CAPITAL, line_color="#444", line_dash="dot", line_width=1,
         annotation_text=f"  Start ${PT_INITIAL_CAPITAL/1000:.0f}k",
         annotation_font_color="#555",
     )
-    # Reference line at today's actual entry value (after commissions / market gaps)
-    # Shows WHY the portfolio opened below $100k — commission drag + gap risk
+    # Ref at today's actual entry value (commission drag + gap risk)
     if entry_value and abs(entry_value - PT_INITIAL_CAPITAL) > 1:
         fig.add_hline(
             y=entry_value, line_color="#666", line_dash="dash", line_width=1,
@@ -1070,8 +852,8 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
             annotation_font_color="#888",
         )
 
-    # "Now" vertical line — use add_shape + add_annotation with ISO string
-    # so the x coordinate is in the same system as the intraday data (naive ET strings)
+    # "Now" line via add_shape+annotation with ISO string so x matches
+    # the intraday data coord system (naive ET strings).
     if now is not None:
         now_str = now.strftime('%Y-%m-%dT%H:%M:%S')
         fig.add_shape(
@@ -1090,8 +872,8 @@ def chart_paper_portfolio(history_df: pd.DataFrame,
 
     fig.update_layout(**_layout(
         height=height,
-        # uirevision = constant string → Plotly.js preserves zoom/pan across data
-        # updates (same as TradingView live feed — data refreshes, viewport stays)
+        # uirevision = constant string → Plotly preserves zoom/pan across
+        # data updates (TradingView-style live feed behaviour).
         uirevision="paper_portfolio",
         title=dict(text="Paper Portfolio — Equity Curve  (live via Yahoo Finance)",
                    font=dict(size=13)),
@@ -1203,7 +985,7 @@ def chart_dead_weight(df_dw: pd.DataFrame, height: int = 380) -> go.Figure:
     if df_dw is None or df_dw.empty:
         return None
     df = df_dw.copy()
-    # Detect dead_weight column name
+    # Detect dead_weight col
     dw_col = "dead_weight_pct" if "dead_weight_pct" in df.columns else \
              next((c for c in df.columns if "dead" in c.lower()), None)
     tick_col = "ticker" if "ticker" in df.columns else df.columns[0]

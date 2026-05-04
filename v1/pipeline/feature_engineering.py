@@ -1,64 +1,21 @@
 """
-feature_engineering.py
------------------------
-Transforms raw OHLCV price data into the numerical features that the signal
-generation layer uses to make trading decisions.
+feature_engineering.py — Transforms raw OHLCV into features for signal_generation.
 
-Design principle
-────────────────
-This module is pure mathematics — no downloads, no file I/O during the
-transformation, no asset-class logic.  Features are computed identically
-for every ticker.  It is the job of signal_generation.py to decide which
-features to act on for which asset class.
+Pure math: no I/O during transformation, no asset-class logic. Features are
+computed identically per ticker; signal_generation.py decides which to act on.
 
-Features produced (per ticker)
-──────────────────────────────
-  Per-ticker technical features (always computed):
-  log_return       — daily log return (lognormal, additive over time)
-  dollar_volume    — close × volume (liquidity proxy)
-  true_range       — Wilder's TR: max(H-L, |H-prev_C|, |L-prev_C|)
-  atr_14           — 14-day average true range (volatility measure)
-  mom_5/20/60      — 5-, 20-, 60-day price momentum (% change)
-  rsi_14           — Wilder's Relative Strength Index, 14-period EWM
-  macd_line        — MACD line (EMA12 − EMA26)
-  macd_signal      — Signal line (EMA9 of MACD line)
-  macd_hist        — MACD histogram (line − signal; positive = bullish momentum)
-  adx              — Average Directional Index: trend strength 0–100
-  plus_di/minus_di — Directional Indicators (+DI > −DI = uptrend)
-  zscore_20/60     — Price z-score over 20- and 60-day rolling windows
-  bb_middle/upper/lower — Bollinger Bands (20-day, 2 std)
-  bb_pct_b         — %B: 0 = at lower band, 1 = at upper band, >1 = outside
-  bb_bandwidth     — Band width / middle (volatility expansion indicator)
-  volume_zscore    — Volume z-score over 20-day window
-  obv              — On-Balance Volume (cumulative volume-weighted direction)
-  obv_zscore       — OBV z-score over 20-day window
+Features:
+  Technical: log_return, dollar_volume, true_range, atr_14, mom_5/20/60,
+    rsi_14 (Wilder EWM), macd_line/signal/hist (12/26/9), adx/plus_di/minus_di,
+    zscore_20/60, bollinger (20, 2σ): bb_middle/upper/lower/pct_b/bandwidth,
+    volume_zscore, obv, obv_zscore.
+  Vol regime: vol_regime (21d>252d), vol_ratio (5d/63d), garch_vol (RM EWMA λ=0.94).
+  Cross-sectional (needs closes_matrix): xsec_mom_20/63 (pct rank), xsec_vol_rank,
+    relative_strength (60d return − universe avg). All strictly backward-looking.
 
-  Volatility regime features (always computed):
-  vol_regime       — 1 if 21-day realized vol > 252-day realized vol (expanding)
-  vol_ratio        — 5-day realized vol / 63-day realized vol (term structure; >1 = short-term stress)
-  garch_vol        — RiskMetrics EWMA 1-day forward vol estimate (λ=0.94, annualised)
-
-  Cross-sectional features (requires closes_matrix — see engineer()):
-  xsec_mom_20      — percentile rank of 20-day return vs full universe (0–1)
-  xsec_mom_63      — percentile rank of 63-day (3-month) return vs universe (0–1)
-  xsec_vol_rank    — percentile rank of 20-day realised vol vs full universe (0–1)
-  relative_strength — 60-day return minus equal-weighted universe 60-day return
-
-Cross-sectional features and look-ahead safety
-───────────────────────────────────────────────
-All three cross-sectional features use only data available up to and
-including date T:
-  xsec_mom_20      uses pct_change(20)  — looks back 20 days from T ✓
-  xsec_vol_rank    uses rolling(20).std() of log returns — looks back ✓
-  relative_strength uses pct_change(60) — looks back 60 days from T ✓
-  rank(axis=1, pct=True) ranks across tickers AT the same date T ✓
-
-Input / output
-──────────────
-  Reads:   data/raw/{TICKER}.parquet
-           data/raw/closes_matrix.parquet  (optional — for cross-sectional features)
-  Writes:  data/features/{TICKER}.parquet
-           data/features/returns_matrix.parquet
+I/O:
+  Reads  data/raw/{TICKER}.parquet, data/raw/closes_matrix.parquet (optional)
+  Writes data/features/{TICKER}.parquet, data/features/returns_matrix.parquet
 """
 
 import numpy as np
@@ -76,22 +33,12 @@ from .data_pipeline import TICKER_LIST, ASSET_CLASS
 
 def add_base_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute foundational features that other indicators depend on.
+    Foundational features required by other indicators (ADX, RSI, MACD).
+    Must be called first.
 
-    Must be called first in the engineer() pipeline — ATR and log_return
-    are prerequisites for ADX, RSI, and MACD calculations.
-
-    Args:
-        df: Raw OHLCV DataFrame with columns [Open, High, Low, Close, Volume].
-
-    Returns:
-        Copy of df with added columns: log_return, dollar_volume,
-        true_range, atr_14.
-
-    Notes:
-        True Range = max(High−Low, |High−prev_Close|, |Low−prev_Close|).
-        This accounts for overnight gaps that a simple High−Low would miss.
-        ATR is the 14-day rolling mean of TR (Wilder's original definition).
+    TR = max(H−L, |H−prev_C|, |L−prev_C|) — accounts for overnight gaps.
+    ATR_14 = 14d rolling mean of TR (Wilder).
+    Returns df + log_return, dollar_volume, true_range, atr_14.
     """
     df = df.copy()
 
@@ -111,20 +58,9 @@ def add_base_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_momentum(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Simple price momentum: percentage change over N days.
-
-    Args:
-        df: DataFrame with column [Close].
-
-    Returns:
-        Copy of df with columns: mom_5, mom_20, mom_60.
-
-    Notes:
-        Momentum is measured over 5, 20, and 60 trading days (~1 week,
-        1 month, 3 months).  These windows capture short-, medium-, and
-        longer-term trend persistence.  Momentum signals in signal_generation.py
-        require all three to agree before generating a signal (three-way
-        confirmation reduces false positives).
+    Price momentum over 5, 20, 60 days (~1w, 1m, 3m).
+    signal_generation.py requires all three to agree (3-way confirmation).
+    Returns df + mom_5, mom_20, mom_60.
     """
     df = df.copy()
     df["mom_5"]  = df["Close"].pct_change(5)
@@ -135,25 +71,9 @@ def add_momentum(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_rsi(df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
     """
-    Wilder's Relative Strength Index using exponential moving averages.
-
-    Args:
-        df:     DataFrame with column [Close].
-        window: Look-back period (default 14 — Wilder's original 1978 value).
-
-    Returns:
-        Copy of df with column: rsi_{window}.
-
-    Interpretation:
-        >70 = overbought (buying pressure has run too far, reversion risk)
-        <30 = oversold  (selling pressure has run too far, recovery likely)
-        50  = neutral (equal average gains and losses)
-
-    Implementation note:
-        Uses EWM with com=window-1 (equivalent to Wilder's smoothing factor
-        α = 1/window).  The standard ``rolling().mean()`` would give a
-        simple moving average RSI — technically different from Wilder's
-        original and widely used by institutional platforms.
+    Wilder's RSI using EWM (com=window-1, α=1/window). Default window=14 (Wilder 1978).
+    >70 overbought, <30 oversold, 50 neutral.
+    Returns df + rsi_{window}.
     """
     df    = df.copy()
     delta = df["Close"].diff()
@@ -170,22 +90,9 @@ def add_rsi(df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
 
 def add_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
     """
-    Moving Average Convergence / Divergence indicator.
-
-    Args:
-        df:     DataFrame with column [Close].
-        fast:   Fast EMA period (default 12).
-        slow:   Slow EMA period (default 26).
-        signal: Signal line smoothing period (default 9).
-
-    Returns:
-        Copy of df with columns: macd_line, macd_signal, macd_hist.
-
-    Interpretation:
-        macd_hist > 0  = fast EMA above slow EMA = bullish momentum
-        macd_hist < 0  = fast EMA below slow EMA = bearish momentum
-        macd_hist crossing zero = momentum reversal (used as confirmation
-        in signal_generation.momentum_rule())
+    MACD (default 12/26/9). hist>0 bullish, hist<0 bearish, zero-cross =
+    momentum reversal (used by signal_generation.momentum_rule()).
+    Returns df + macd_line, macd_signal, macd_hist.
     """
     df = df.copy()
     ema_fast = df["Close"].ewm(span=fast, adjust=False).mean()
@@ -199,30 +106,12 @@ def add_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) 
 
 def add_adx(df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
     """
-    Average Directional Index — measures TREND STRENGTH, not direction.
-
-    Args:
-        df:     DataFrame with columns [High, Low, Close] and true_range
-                (added by add_base_features()).
-        window: Smoothing period (default 14).
-
-    Returns:
-        Copy of df with columns: adx, plus_di, minus_di.
-
-    Interpretation:
-        ADX < 20   = ranging / choppy market — trend signals are unreliable
-        ADX 20–25  = developing trend
-        ADX > 25   = confirmed trend — momentum signals are meaningful
-        ADX > 40   = strong trend (less common, often precedes exhaustion)
-
-        +DI > −DI  = upward pressure dominant
-        −DI > +DI  = downward pressure dominant
-
-    Notes:
-        ADX is used in signal_generation.py as a regime filter — MA crossover
-        signals are only acted on when ADX confirms a real trend exists.
-        Without this filter, MA crossovers in choppy markets fire frequently
-        and almost always result in whipsaws (costly round-trip trades).
+    ADX trend-strength (not direction). Default window=14.
+    <20 choppy (unreliable), 20-25 developing, >25 confirmed, >40 strong.
+    +DI>-DI uptrend, -DI>+DI downtrend.
+    Used in signal_generation.py as regime filter for MA crossovers
+    (without it, choppy markets cause whipsaws).
+    Requires true_range from add_base_features(). Returns df + adx, plus_di, minus_di.
     """
     df = df.copy()
     high, low = df["High"], df["Low"]
@@ -248,19 +137,10 @@ def add_adx(df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
 
 def add_zscore(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Rolling price z-score: how many standard deviations from the rolling mean.
-
-    Args:
-        df: DataFrame with column [Close].
-
-    Returns:
-        Copy of df with columns: zscore_20, zscore_60.
-
-    Use in strategy:
-        Used by mean_reversion_rule() in signal_generation.py.
-        A very negative z-score (e.g., −2.0) means price is far below its
-        recent average — a candidate for mean reversion long entry.
-        A very positive z-score (e.g., +2.0) flags potential overextension.
+    Rolling price z-score (std-devs from mean) over 20 and 60 days.
+    Used by signal_generation.mean_reversion_rule(): -2 = long candidate,
+    +2 = overextended.
+    Returns df + zscore_20, zscore_60.
     """
     df = df.copy()
     for window in [20, 60]:
@@ -271,25 +151,10 @@ def add_zscore(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_bollinger_bands(df: pd.DataFrame, window: int = 20, num_std: float = 2.0) -> pd.DataFrame:
     """
-    Bollinger Bands: a volatility envelope around a simple moving average.
-
-    Args:
-        df:      DataFrame with column [Close].
-        window:  Rolling window for the middle band (default 20).
-        num_std: Number of standard deviations for the upper/lower bands (default 2).
-
-    Returns:
-        Copy of df with columns: bb_middle, bb_upper, bb_lower,
-        bb_pct_b, bb_bandwidth.
-
-    Interpretation:
-        bb_pct_b = 0   → price at the lower band (oversold / mean-reversion long)
-        bb_pct_b = 0.5 → price at the middle band (neutral)
-        bb_pct_b = 1   → price at the upper band (overbought / mean-reversion short)
-        bb_pct_b > 1   → price outside the upper band (strong momentum breakout)
-
-        bb_bandwidth rising → volatility expanding (often precedes a big move)
-        bb_bandwidth falling → volatility contracting (squeeze, then breakout)
+    Bollinger Bands (default 20, 2σ).
+    pct_b: 0 lower (long), 0.5 mid, 1 upper (short), >1 breakout.
+    bandwidth rising = vol expanding; falling = squeeze.
+    Returns df + bb_middle, bb_upper, bb_lower, bb_pct_b, bb_bandwidth.
     """
     df     = df.copy()
     middle = df["Close"].rolling(window).mean()

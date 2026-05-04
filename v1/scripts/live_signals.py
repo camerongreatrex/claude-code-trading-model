@@ -1,33 +1,8 @@
 """
-live_signals.py
----------------
-Fetches live market data via yfinance and computes today's signal state
-for the full trading universe.  Used by the dashboard's "Live Signals" tab.
-
-Why a separate module from signal_generation.py?
-────────────────────────────────────────────────
-signal_generation.py runs against the full historical dataset stored in
-data/features/ parquet files (produced by the offline pipeline).
-
-live_signals.py operates on fresh data downloaded in real time from
-yfinance, with no dependency on the parquet files.  This means the
-dashboard can show current signal states even if data_pipeline.py has not
-been run today.
-
-The signal logic here intentionally mirrors signal_generation.generate()
-for the regime signal (MA crossover + regime filter).  The composite score
-is not replicated here — the MA signal is what paper_trader.py actually
-trades, so it is the most useful live indicator.
-
-Strategy (daily, long-only)
-────────────────────────────
-Signals update once per day at the official close.  During market hours,
-they reflect the most recently available close (which may be yesterday's
-if today's bar has not yet settled in yfinance).
-
-Consumed by
-───────────
-  dashboard.py — Live Signals tab
+live_signals.py — Live signal state via yfinance for dashboard's Live Signals tab.
+Mirrors signal_generation.generate() MA crossover logic but fetches fresh data
+(no parquet dependency). Post-processors (RSI/min-hold/trail-stop) not replicated.
+Consumed by dashboard.py.
 """
 
 import numpy as np
@@ -39,23 +14,8 @@ from v1.pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 
 
 def fetch_live_data(tickers: list, lookback_days: int = 700) -> dict:
-    """
-    Download the most recent ``lookback_days`` of daily OHLCV for each ticker.
-
-    Uses yfinance.download() — free, no API key, approximately 15-minute
-    delayed data during market hours on the free tier.
-
-    Args:
-        tickers:       List of ticker symbols to download.
-        lookback_days: Number of calendar days of history to fetch.
-                       Default 700 days (~2.8 years) — enough for MA200
-                       to warm up (200 trading days ≈ 280 calendar days).
-
-    Returns:
-        dict[ticker -> DataFrame].  Tickers that fail (network error,
-        delisted, bad symbol) are silently skipped so one bad ticker does
-        not block the rest of the universe.
-    """
+    """Download last ``lookback_days`` OHLCV per ticker via yfinance.
+    Default 700d (~2.8y) — enough for MA200 warm-up. Failed tickers skipped."""
     end   = datetime.today()
     start = end - timedelta(days=lookback_days)
 
@@ -82,20 +42,8 @@ def fetch_live_data(tickers: list, lookback_days: int = 700) -> dict:
 
 
 def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
-    """
-    Wilder's RSI using EWM — matches feature_engineering.add_rsi() exactly.
-
-    Keeping this consistent is important: if the signal uses RSI=72 to
-    decide to hold vs. exit, the live dashboard should show the same 72,
-    not a slightly different number from a different RSI implementation.
-
-    Args:
-        close:  Close price Series.
-        window: Look-back period (default 14).
-
-    Returns:
-        RSI Series (0–100).
-    """
+    """Wilder's RSI via EWM — matches feature_engineering.add_rsi() exactly.
+    Default window=14. Returns 0-100 series."""
     delta    = close.diff()
     gains    = delta.clip(lower=0)
     losses   = delta.clip(upper=0).abs()
@@ -106,15 +54,8 @@ def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
 
 
 def _macd_hist(close: pd.Series) -> pd.Series:
-    """
-    MACD histogram (12/26/9) — matches feature_engineering.add_macd() exactly.
-
-    Args:
-        close: Close price Series.
-
-    Returns:
-        MACD histogram Series.  Positive = bullish momentum, negative = bearish.
-    """
+    """MACD histogram (12/26/9) — matches feature_engineering.add_macd().
+    Positive = bullish momentum."""
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     signal_line = (ema12 - ema26).ewm(span=9, adjust=False).mean()
@@ -122,35 +63,13 @@ def _macd_hist(close: pd.Series) -> pd.Series:
 
 
 def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
-    """
-    Compute the current signal state and supporting indicators for one ticker.
-
-    Mirrors the regime signal logic from signal_generation.generate():
-      - MA50/200 for most assets; MA100/300 for sector ETFs
-      - Golden cross (fast MA > slow MA) = LONG signal = 1
-      - Otherwise = FLAT = 0
-
-    Note: The full post-processors (RSI entry filter, min-hold, trailing stop)
-    from signal_generation.py are NOT replicated here because they require
-    per-bar state tracking over the full history.  The live dashboard shows
-    the raw golden-cross signal — the post-processors only change the signal
-    on edge cases (overbought entries, short holds, stop hits).
-
-    Args:
-        df:     OHLCV DataFrame with ≥ slow_w rows from fetch_live_data().
-        ticker: Ticker symbol string (used for asset-class routing).
-
-    Returns:
-        Flat dict of scalars for the latest available bar:
-          ticker, asset_class, price, day_chg_pct, signal, signal_label,
-          ma_fast, ma_slow, ma_fast_label, ma_slow_label, ma_spread_pct,
-          rsi, macd_hist, ret_20d_pct, ret_60d_pct, hi_52w, lo_52w,
-          dist_from_high, last_date, volume, avg_vol_20d.
-    """
+    """Compute current signal + indicators for one ticker.
+    Mirrors signal_generation.generate(): MA50/200 (MA100/300 for sector ETFs),
+    golden cross = LONG. Post-processors not replicated."""
     asset_class = ASSET_CLASS[ticker]
     close       = df["Close"]
 
-    # MA window selection matches signal_generation.py
+    # MA windows match signal_generation.py
     if asset_class == "sector_etf":
         fast_w, slow_w       = 100, 300
         fast_lbl, slow_lbl   = "MA100", "MA300"
@@ -163,31 +82,31 @@ def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
     rsi     = _rsi(close)
     macd_h  = _macd_hist(close)
 
-    # ── Latest values ────────────────────────────────────────────────────────
+    # ── Latest ──
     latest_close = float(close.iloc[-1])
     prev_close   = float(close.iloc[-2]) if len(close) > 1 else latest_close
 
     f = float(ma_fast.iloc[-1]) if not pd.isna(ma_fast.iloc[-1]) else None
     s = float(ma_slow.iloc[-1]) if not pd.isna(ma_slow.iloc[-1]) else None
 
-    # Golden-cross signal (matches signal_generation.py long-only logic)
+    # Golden-cross signal (long-only, matches signal_generation.py)
     if f is not None and s is not None:
         signal    = 1 if f > s else 0
-        ma_spread = (f / s - 1) * 100      # positive = fast above slow
+        ma_spread = (f / s - 1) * 100      # >0 = fast above slow
     else:
         signal    = 0
         ma_spread = 0.0
 
-    # 20-day and 60-day returns
+    # 20d / 60d returns
     ret_20d = (latest_close / float(close.iloc[-21]) - 1) * 100 if len(close) > 21 else 0.0
     ret_60d = (latest_close / float(close.iloc[-61]) - 1) * 100 if len(close) > 61 else 0.0
 
-    # Distance from 52-week high/low
+    # 52-week hi/lo + distance
     hi_52w = float(close.tail(252).max())
     lo_52w = float(close.tail(252).min())
     dist_from_high = (latest_close / hi_52w - 1) * 100
 
-    # Donchian breakout + squeeze detection
+    # Donchian breakout + squeeze
     donchian_high  = df["High"].rolling(20).max()
     donchian_low   = df["Low"].rolling(20).min()
     donchian_width = (donchian_high - donchian_low) / close.replace(0, np.nan)
@@ -196,7 +115,7 @@ def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
     breakout       = (close >= donchian_high)
     recent_sq      = squeeze.rolling(5, min_periods=1).max().astype(bool)
 
-    # Volume z-score (if volume available)
+    # Volume z-score
     try:
         _vol = df["Volume"].replace(0, np.nan)
         vol_zscore   = ((_vol - _vol.rolling(20).mean()) /
@@ -205,7 +124,7 @@ def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
     except Exception:
         vol_confirm = False
 
-    # Fast MA20/50 for liquid ETFs
+    # Fast MA20/50 — liquid ETFs
     FAST_TICKERS = {"SPY", "IWM", "TLT", "GLD", "EEM"}
     ma20 = close.rolling(20).mean()
     ma50 = close.rolling(50).mean()
@@ -246,19 +165,8 @@ def compute_live_signal(df: pd.DataFrame, ticker: str) -> dict:
 
 
 def get_live_signals() -> tuple[pd.DataFrame, str]:
-    """
-    Fetch live data for the full universe and return a display-ready DataFrame.
-
-    This is the primary entry point called by dashboard.py.  Results are
-    cached by Streamlit (via @st.cache_data with a short TTL) to avoid
-    fetching the same data on every page interaction.
-
-    Returns:
-        Tuple of (display_df, fetch_timestamp):
-          display_df: DataFrame with human-readable column names, ready for
-                      st.dataframe().  Empty DataFrame if all fetches failed.
-          fetch_timestamp: ISO datetime string when the fetch ran.
-    """
+    """Fetch live data for the universe; return (display_df, fetch_ts).
+    Primary entry point for dashboard.py; cached by Streamlit."""
     raw     = fetch_live_data(TICKER_LIST, lookback_days=700)
     rows    = []
 
@@ -275,7 +183,7 @@ def get_live_signals() -> tuple[pd.DataFrame, str]:
 
     df = pd.DataFrame(rows)
 
-    # Momentum rank: rank all tickers by 63-day return (pct rank 0–100)
+    # Momentum rank: pct rank by 60d return
     if "ret_60d_pct" in df.columns:
         mom_rank_pct = df["ret_60d_pct"].rank(pct=True) * 100
     else:

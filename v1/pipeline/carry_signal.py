@@ -1,40 +1,15 @@
 """
-carry_signal.py
-───────────────
-Compute daily carry signals for all universe tickers.
+carry_signal.py — daily carry signals (return from HOLDING, uncorrelated
+to momentum).
 
-Carry = expected return from HOLDING, not from price direction.
-Structurally uncorrelated to momentum/trend signals.
+Signals: bond carry = 60d z-score of 10Y-2Y spread (applied to TLT/HYG/TIP/BWX);
+commodity carry = 21d ret − (252d ret)/12 → futures-curve slope proxy
+(GLD/DBC/UUP/DBA/FXE/FXY); equity carry = 0 (yfinance dividend data unreliable,
+noisy proxy hurts more than helps).
 
-Signal types:
-  Bond carry     — rolling 60-day z-score of the 10Y-2Y yield curve spread.
-                   Steep curve → positive carry (hold bonds earns roll-down).
-                   Inverted curve → negative carry (hold bonds loses carry).
-                   Applied equally to TLT, HYG, TIP, BWX — all share the
-                   same rate environment.
-
-  Commodity carry — short-term (21d) return minus monthly-equivalent of the
-                    long-term (252d) return.  Approximates the futures curve
-                    slope (backwardation = positive carry, contango = negative).
-                    Tickers: GLD, DBC, UUP, DBA, FXE, FXY.
-
-  Equity carry   — returns 0.0 for all equity tickers.  Dividend yield requires
-                   fundamental data that is not reliably available from OHLCV
-                   (yfinance ex-dates are retroactively adjusted, biasing any
-                   returns-based proxy).  A noisy equity carry signal hurts more
-                   than it helps, so we omit it.
-
-Output: data/signals/carry_signals.parquet
-  Columns = all TICKER_LIST tickers
-  Index   = same DatetimeIndex as macro_features
-  Values  = [-1, +1] continuous signal (0 for equity tickers)
-
-shift(1) is applied so yesterday's carry is used to size today's position.
-No look-ahead bias.
-
-Consumed by:
-  portfolio.py       — multi_mom_carry_sizes(), portable_carry
-  signal_generation  — per-ticker signal_carry column in *.parquet files
+Output: data/signals/carry_signals.parquet — all TICKER_LIST cols, values
+[-1,+1], shifted(1) so yesterday's carry sizes today (no look-ahead).
+Consumed by portfolio.multi_mom_carry_sizes/portable_carry, and signal_generation.
 """
 
 import numpy as np
@@ -52,29 +27,8 @@ COMMODITY_TICKERS = [t for t in TICKER_LIST if ASSET_CLASS.get(t) == "commodity"
 
 
 def bond_carry(macro_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.DataFrame:
-    """
-    Bond carry signal from the 10Y-2Y yield curve slope.
-
-    A steep yield curve (spread > rolling average) means bonds earn positive
-    carry from rolling down the curve.  An inverted curve means negative carry.
-
-    Signal construction:
-      1. Reindex yield_curve to the common date index
-      2. Compute rolling 60-day z-score
-      3. Clip at ±2 and divide by 2 → values in [-1, +1]
-      4. shift(1) — use yesterday's curve to size today
-
-    The same signal is applied to ALL bond tickers because the rate environment
-    drives all bond carry uniformly (TLT, HYG, TIP, BWX all respond to the
-    steepness of the curve, even if magnitudes differ).
-
-    Args:
-        macro_df: DataFrame from macro_features.parquet with a 'yield_curve' column.
-        index:    DatetimeIndex to reindex the output to.
-
-    Returns:
-        DataFrame (len(index) × 4) with one column per bond ticker, values ∈ [-1, +1].
-    """
+    """Bond carry from 10Y-2Y slope: 60d z-score, clip ±2, /2 → [-1,+1],
+    shift(1). Same signal for all bond tickers (uniform rate environment)."""
     if "yield_curve" not in macro_df.columns:
         return pd.DataFrame(0.0, index=index, columns=BOND_TICKERS)
 
@@ -92,29 +46,8 @@ def bond_carry(macro_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.DataFrame:
 
 
 def commodity_carry(features_dict: dict, index: pd.DatetimeIndex) -> pd.DataFrame:
-    """
-    Commodity carry signal from the 21-day vs 252-day return differential.
-
-    For physical commodity ETFs, the futures-curve slope determines whether
-    the roll is a cost (contango) or an income (backwardation).  We proxy this
-    using price data:
-
-      carry_proxy = 21d_return − (252d_return / 12)
-
-    If the 21-day return exceeds the monthly-equivalent of the annual return,
-    the near end of the curve is elevated → backwardation → positive carry.
-    The reverse signals contango → negative carry.
-
-    The proxy is z-scored over a 252-day window to normalise across assets with
-    different return volatilities.
-
-    Args:
-        features_dict: Dict[ticker → feature DataFrame] with Close column.
-        index:         DatetimeIndex to align the output to.
-
-    Returns:
-        DataFrame (len(index) × 6) with one column per commodity ticker.
-    """
+    """Commodity carry: 21d_ret − (252d_ret/12) proxies futures-curve slope
+    (>0 backwardation, <0 contango). 252d z-score, clip ±2, /2 → [-1,+1]."""
     result = {}
     for ticker in COMMODITY_TICKERS:
         if ticker not in features_dict or "Close" not in features_dict[ticker].columns:
@@ -141,20 +74,8 @@ def commodity_carry(features_dict: dict, index: pd.DatetimeIndex) -> pd.DataFram
 
 
 def compute_all_carry():
-    """
-    Orchestrate carry signal computation for the full universe and save output.
-
-    Steps:
-      1. Load macro_features.parquet (requires macro_features.py to have run)
-      2. Load per-ticker feature parquets for Close prices
-      3. Compute bond_carry() and commodity_carry()
-      4. Fill all equity tickers with 0.0 (no carry signal)
-      5. Save to data/signals/carry_signals.parquet
-      6. Print summary statistics
-
-    The output index aligns to macro_features — the longest common history.
-    This matches the index used by portfolio.py for backtesting.
-    """
+    """Orchestrate full-universe carry compute → carry_signals.parquet.
+    Equity tickers filled 0; index aligned to macro_features."""
     # ── 1. Macro features ─────────────────────────────────────────────────────
     macro_path = MACRO_DIR / "macro_features.parquet"
     if not macro_path.exists():

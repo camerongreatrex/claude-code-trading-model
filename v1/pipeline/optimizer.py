@@ -1,41 +1,10 @@
 """
-optimizer.py
-────────────
-Mean-variance optimizer that maximises Information Ratio (active return / active
-risk vs SPY) subject to portfolio constraints.
+optimizer.py — Mean-variance optimizer maximising IR vs SPY subject to constraints.
 
-Objective
-─────────
-  max  w^T α − λ w^T Σ w
-  s.t. constraints below
-
-  where:
-    α    = expected return vector from IC-weighted ensemble signal
-    Σ    = Ledoit-Wolf annualised covariance from risk_model.estimate_covariance()
-    λ    = risk aversion calibrated so unconstrained portfolio vol ≈ 10%
-
-Constraints
-───────────
-  1. Long-only for equities, sectors, and stocks  (w_i ≥ 0)
-  2. Two-sided for bonds and commodities           (w_i ∈ [-0.20, +0.20])
-  3. Max single position: 20% of capital           (|w_i| ≤ 0.20)
-  4. Max sector concentration: 40% in any asset class
-  5. Min position: 0.5% if signal > 0              (avoids rounding to zero)
-  6. Turnover penalty: 0.5 × Σ|w_t − w_{t−1}| × tc  added to objective
-  7. Gross exposure ≤ 100% (no leverage)
-
-Solver
-──────
-  scipy.optimize.minimize with SLSQP — no new packages.
-
-Rebalance
-─────────
-  Daily: optimizer runs on each day's signals and trailing covariance.
-
-Input / output
-──────────────
-  Consumed by portfolio.py via optimizer_sizes()
-  Adds "ir_optimized" method to all_methods registry
+Objective: max w^T α − λ w^T Σ w with α from IC-weighted ensemble × trailing vol,
+Σ Ledoit-Wolf annualised, λ calibrated for ~10% portfolio vol.
+Constraints: long-only equities; two-sided bonds/commodities ±20%; sector cap 40%;
+min 0.5% if signal>0; turnover penalty; gross ≤100%. SLSQP daily rebalance.
 """
 
 import warnings
@@ -72,32 +41,16 @@ def _estimate_alpha(
     tickers: list,
     lookback: int = ALPHA_LOOKBACK,
 ) -> np.ndarray:
-    """
-    Expected return vector from ensemble signals scaled by trailing realised vol.
-
-    alpha_i = ensemble_signal_i × trailing_vol_i × sqrt(252)
-
-    The ensemble signal is already an IC-weighted conviction score in [-1, +1].
-    Scaling by trailing vol converts the normalised signal into return-space
-    units so that the optimizer's quadratic objective is well-conditioned.
-
-    Args:
-        ensemble_signals: Series of ensemble signal values for each ticker.
-        returns:          Full returns DataFrame.
-        tickers:          List of active ticker names.
-        lookback:         Rolling window for vol estimation.
-
-    Returns:
-        Alpha vector (N,) in annualised return units.
-    """
+    """alpha_i = ensemble_signal_i × trailing_vol_i × sqrt(252).
+    Converts [-1,+1] conviction into return-space units."""
     alpha = np.zeros(len(tickers))
     for i, t in enumerate(tickers):
         sig = float(ensemble_signals.get(t, 0.0))
         if t in returns.columns:
             vol = returns[t].iloc[-lookback:].std() * np.sqrt(252)
-            vol = max(vol, 0.01)  # floor at 1% to avoid div-by-zero
+            vol = max(vol, 0.01)  # floor 1%
         else:
-            vol = 0.15  # default 15% if missing
+            vol = 0.15  # default 15%
         alpha[i] = sig * vol
     return alpha
 
@@ -109,17 +62,8 @@ def _calibrate_lambda(
     cov: np.ndarray,
     target_vol: float = TARGET_VOL,
 ) -> float:
-    """
-    Calibrate risk aversion λ so the unconstrained optimal portfolio has
-    approximately target_vol annual volatility.
-
-    Unconstrained solution: w* = (1/2λ) Σ^{-1} α
-    Portfolio vol:          σ_p = sqrt(w*^T Σ w*)
-
-    Solving:  λ = sqrt(α^T Σ^{-1} α) / (2 × target_vol)
-
-    Falls back to λ = 5.0 if the algebra is degenerate.
-    """
+    """Calibrate λ so unconstrained portfolio has ~target_vol.
+    λ = sqrt(α^T Σ^{-1} α) / (2 × target_vol). Fallback λ=5.0."""
     try:
         cov_inv = np.linalg.pinv(cov, rcond=1e-10)
         quad = float(alpha @ cov_inv @ alpha)
@@ -133,12 +77,7 @@ def _calibrate_lambda(
 # ── Optimisation core ────────────────────────────────────────────────────────
 
 def _build_bounds(tickers: list) -> list:
-    """
-    Per-ticker weight bounds based on asset class.
-
-    Equities/sectors/stocks: [0, MAX_POSITION_PCT]  (long-only)
-    Bonds/commodities:       [-MAX_POSITION_PCT, MAX_POSITION_PCT]  (two-sided)
-    """
+    """Per-ticker weight bounds: equities long-only [0, MAX], bonds/commodities ±MAX."""
     bounds = []
     for t in tickers:
         ac = ASSET_CLASS.get(t, "equity_index")
@@ -150,13 +89,8 @@ def _build_bounds(tickers: list) -> list:
 
 
 def _sector_concentration_constraints(tickers: list) -> list:
-    """
-    Build inequality constraints so no single asset class exceeds MAX_SECTOR_PCT.
-
-    Returns list of constraint dicts for scipy SLSQP.
-    Each constraint: MAX_SECTOR_PCT - sum(|w_i| for i in class) >= 0
-    """
-    # Group ticker indices by asset class
+    """SLSQP inequality: MAX_SECTOR_PCT - sum(|w_i| in class) >= 0."""
+    # Group indices by asset class
     class_groups: dict = {}
     for i, t in enumerate(tickers):
         ac = ASSET_CLASS.get(t, "equity_index")
@@ -164,7 +98,6 @@ def _sector_concentration_constraints(tickers: list) -> list:
 
     constraints = []
     for ac, indices in class_groups.items():
-        # Constraint: MAX_SECTOR_PCT - sum(|w_i|) >= 0
         def make_fn(idx_list):
             def fn(w):
                 return MAX_SECTOR_PCT - sum(abs(w[j]) for j in idx_list)
@@ -178,7 +111,7 @@ def _sector_concentration_constraints(tickers: list) -> list:
 
 
 def _gross_exposure_constraint():
-    """Total gross exposure <= 1.0 (no leverage)."""
+    """Gross exposure ≤ 1.0 (no leverage)."""
     return {
         "type": "ineq",
         "fun": lambda w: 1.0 - np.sum(np.abs(w)),
@@ -192,26 +125,8 @@ def optimize_weights(
     prev_weights: Optional[np.ndarray] = None,
     ensemble_signals: Optional[pd.Series] = None,
 ) -> np.ndarray:
-    """
-    Solve the mean-variance optimisation problem with constraints.
-
-    max  w^T α − λ w^T Σ w − turnover_penalty
-    s.t. bounds, sector concentration, gross exposure
-
-    After optimisation, enforces min_position: any weight below MIN_POSITION_PCT
-    for a ticker with positive signal is bumped to MIN_POSITION_PCT (then
-    renormalised if needed).
-
-    Args:
-        alpha:             Expected return vector (N,).
-        cov:               Annualised covariance matrix (N × N).
-        tickers:           List of ticker names (N,).
-        prev_weights:      Previous period weights for turnover penalty.
-        ensemble_signals:  Ensemble signal Series for min-position enforcement.
-
-    Returns:
-        Optimal weight vector (N,), satisfying all constraints.
-    """
+    """Solve max w^T α − λ w^T Σ w − turnover_penalty subject to bounds, sector,
+    and gross constraints. Enforces MIN_POSITION_PCT for positive-signal tickers."""
     n = len(tickers)
     if n == 0:
         return np.array([])

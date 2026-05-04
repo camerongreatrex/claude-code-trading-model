@@ -1,56 +1,20 @@
 """
-portfolio.py
-------------
-Turns +1/-1/0 signals (and continuous ensemble scores) into actual dollar
-position sizes and evaluates the combined portfolio using walk-forward
-validation.
+portfolio.py — V4N-B production: top11_adx22_momt_ac55_cap1 + diversifier
+sleeve + profit-take + cond vol-carry. Zero-leverage. Pinned 2026-05-01.
 
-Sizing methods (in order of complexity)
-────────────────────────────────────────
-  1. equal_weight      — Equal fraction of capital per active signal.
-                          Simple baseline; no volatility awareness.
-  2. atr_sizes         — Risk a fixed dollar amount (1% of capital) per
-                          1-ATR adverse move.  Normalises exposure across
-                          assets with very different volatility profiles.
-  3. kelly_sizes       — Half-Kelly: sizes positions by the signal's
-                          rolling edge (win rate × profit factor).
-  4. atr + pca         — ATR sizing scaled down when portfolio correlations
-                          spike (diversification benefit is falling).
-  5. atr + pca + macro — Full system: adds macro size_multiplier from
-                          macro_features.py (0.5× in fear / 1.25× in calm).
-  6. vol_target        — Scales all sizes so realised portfolio vol targets 10%.
-  7. drawdown_control  — Circuit breaker: halves positions when in a drawdown
-                          deeper than 12%.
-  8. ensemble_sizes    — Uses the continuous IC-weighted ensemble signal from
-                          signal_generation.ensemble_signal() as a fractional
-                          position weight (signal × ATR base position), then
-                          applies PCA scaling and macro multiplier.  Conviction
-                          magnitude directly controls size — no binary threshold.
+Turns +1/-1/0 signals (and continuous ensemble scores) into dollar position
+sizes and runs walk-forward (3yr train / 1yr test) validation.
 
-Key constants
-─────────────
-  CAPITAL          = $100,000  — starting capital for all simulations
-  MAX_POSITION_PCT = 20%       — single position capped at 20% of capital
-  RISK_PER_TRADE   = 1%        — dollar risk per 1-ATR adverse move
+Sizing methods include equal_weight, atr_sizes (risk 1% per 1-ATR move),
+kelly_sizes (half-Kelly), atr+pca, atr+pca+macro, vol_target (10% ann),
+drawdown_control (halve below 12% DD), ensemble_sizes (continuous IC).
 
-Walk-forward validation
-────────────────────────
-walk_forward() divides history into rolling 3-year training / 1-year test
-windows.  Each test window is genuinely out-of-sample.  Comparing mean OOS
-Sharpe to in-sample Sharpe reveals whether a method is overfit.
+Constants: CAPITAL=$100,000, MAX_POSITION_PCT=12%, RISK_PER_TRADE=1%.
 
-Output (written to data/results/)
-──────────────────────────────────
-  portfolio_comparison.parquet   — equity curves for all sizing methods
-  walk_forward_regime.parquet    — OOS results (equal-weight, regime signal)
-  walk_forward_atr_pca.parquet   — OOS results (ATR+PCA+macro sizing)
-  oos_selection.parquet          — IS vs OOS Sharpe comparison for all candidates
-  portfolio_equity_curve.parquet — equity curve for the best OOS method
+Outputs (data/results/): portfolio_comparison.parquet, walk_forward_regime.parquet,
+walk_forward_atr_pca.parquet, oos_selection.parquet, portfolio_equity_curve.parquet.
 
-Consumed by
-───────────
-  dashboard.py  — reads all result parquets for the backtest / portfolio tabs
-  paper_trader.py — imports atr_sizes, apply_macro_multiplier for live sizing
+Consumed by dashboard.py and paper_trader.py (imports atr_sizes, apply_macro_multiplier).
 """
 
 import sys
@@ -58,8 +22,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# Windows terminals default to cp1252 which can't encode box-drawing characters.
-# Force UTF-8 so all print() output works regardless of terminal locale.
+# Force UTF-8: Windows cp1252 can't encode box-drawing characters.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -80,61 +43,38 @@ RESULTS_DIR = Path("data/v1/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 CAPITAL          = 100_000
-MAX_POSITION_PCT = 0.12    # 12% per-name cap = $12k on $100k capital.
-                            # Bumped from 0.10 (2026-04-30) — sweep + walk-forward
-                            # showed +1.32pp AnnRet, +0.18 worst-period Sharpe, no
-                            # DD cost.  Stays strictly zero leverage (gross ≤ 1.0×).
-                            # Note: tighter than the empirical Sharpe optimum (0.20),
-                            # but required for diversification & single-name beta control.
+MAX_POSITION_PCT = 0.12    # 12% per-name cap (bumped from 0.10 on 2026-04-30:
+                            # +1.32pp AnnRet, +0.18 worst-period Sharpe, no DD cost,
+                            # stays zero leverage). Tighter than empirical Sharpe optimum (0.20)
+                            # for diversification and single-name beta control.
 RISK_PER_TRADE   = 0.01
 
-# Cap broad index ETFs at 8% of portfolio to prevent alpha dilution.
-# Rationale: SPY/IWM/EEM track the market — large allocations to these
-# mean the portfolio is just an expensive index fund. The alpha comes from
-# sector ETFs, individual stocks, and uncorrelated assets (bonds, commodities).
-# 8% = enough to maintain the trend signal's participation without dominating.
+# Index ETF cap: SPY/IWM/EEM track the market — keep small to preserve alpha
+# from sector ETFs, individual stocks, and uncorrelated assets.
 INDEX_ETF_CAP     = 0.04
 INDEX_ETF_TICKERS = {"SPY", "IWM", "EEM", "EFA", "VWO"}
 
 RESEARCH_DIR = Path("data/v1/research")
 
-# Module-level cache for regime label data (loaded once per process, re-used across
-# all momentum_tilt_sizes calls including walk-forward windows).
+# Module-level cache for regime label data (per-process).
 _REGIME_DATA_CACHE: dict = {}
 
-# ── Improvement #3: GARCH vol scaling + trend-conviction Kelly tilt ──────────
-# A/B test 2026-04-26: when applied inside momentum_tilt_sizes (the production
-# sizing path), this overlay HURT performance:
+# ── GARCH vol scaling + trend-conviction Kelly tilt ──────────
+# A/B test 2026-04-26 in momentum_tilt_sizes: HURT performance.
 #   multi_mom_tilt   OOS Sharpe 1.527 → 1.413 (-0.114), DD -6.81% → -8.30%
 #   adaptive_blend   OOS Sharpe 1.522 → 1.465 (-0.057), DD -6.24% → -7.02%
-#   regime_adaptive  unchanged (uses atr_sizes path, not momentum_tilt_sizes)
-# Both the GARCH cut (target 30%) and the Kelly trend-conviction multiplier
-# under-sized the high-conviction equities that drove the multi_mom_tilt edge
-# in 2024-2025.  Disabled by default; infrastructure (GARCH matrix, trend
-# ensemble matrix, _load_*_matrix helpers) stays in place for re-tuning.
-# Set to True to re-enable; consider a per-asset-class application instead of
-# blanket sizing cuts (e.g. only cut equities when GARCH > 35%, leave bonds
-# and managed futures untouched).
+#   regime_adaptive  unchanged (uses atr_sizes path)
+# Both GARCH cut and Kelly multiplier under-sized high-conviction equities driving
+# multi_mom_tilt edge in 2024-2025. Disabled; infrastructure preserved for re-tuning.
 IMPROVEMENT_3_GARCH_KELLY: bool = False
 
-# GARCH vol scale: when conditional vol exceeds this annualised target, cut
-# position size proportionally (target_vol / max(garch_vol, target_vol)).
-# Caps at 1.0 so the overlay only REDUCES exposure during vol spikes; it
-# never inflates positions when vol is calm (that's already done by the
-# regime-adaptive tilt range).  Mirror Avellaneda-Lee: condition on σ_t,
-# not on ATR which lags by ~half the lookback window.
-GARCH_VOL_TARGET = 0.30  # 30% annualised — only true vol-spike days are cut.
-                          # 20% was too aggressive: NVDA/INTC/AMZN/GE spend 50-70%
-                          # of time above 20% (just because they're naturally high
-                          # vol), so the overlay constantly downsized them and
-                          # widened the multi_mom_tilt drawdown.  At 30% only ~15%
-                          # of days for the highest-vol names trigger, focusing the
-                          # cut on actual stress periods (Aug 2015, COVID, etc.).
+# GARCH vol scale: cut size when conditional vol > target (target/max(garch,target)).
+# Caps at 1.0 (only reduces). Avellaneda-Lee: condition on σ_t, not lagging ATR.
+GARCH_VOL_TARGET = 0.30  # 30% annualised. 20% too aggressive: NVDA/INTC/AMZN/GE
+                          # spend 50-70% of time above 20% (naturally high vol);
+                          # at 30% only ~15% of days trigger for highest-vol names.
 
-# Trend-conviction Kelly tilt: scale per-ticker sizes by a function of the
-# trend ensemble score (already exposed by signal_generation).  Score = 1.0
-# (full conviction) → +12% size; score = 0.0 (no voters) → −12% size.
-# Soft modulation, doesn't dominate the existing momentum tilt or floor.
+# Trend-conviction Kelly tilt: score=1.0 → +12% size; score=0.0 → −12% size.
 KELLY_TILT_BASE  = 0.88   # size multiplier at ensemble_score = 0
 KELLY_TILT_RANGE = 0.24   # additional multiplier at ensemble_score = 1
 
@@ -143,13 +83,8 @@ _TREND_ENS_CACHE: pd.DataFrame | None = None
 
 
 def _load_garch_vol_matrix() -> pd.DataFrame:
-    """
-    Load the wide GARCH conditional-vol matrix produced by v1/risk/garch_vol.py.
-
-    Returns an empty DataFrame if the file is missing — callers must handle
-    that gracefully (the GARCH overlay is opt-in via IMPROVEMENT_3_GARCH_KELLY
-    and skips automatically when the matrix is unavailable).
-    """
+    """Load wide GARCH conditional-vol matrix from v1/risk/garch_vol.py.
+    Returns empty DataFrame if missing; GARCH overlay is opt-in via IMPROVEMENT_3_GARCH_KELLY."""
     global _GARCH_VOL_CACHE
     if _GARCH_VOL_CACHE is not None:
         return _GARCH_VOL_CACHE
@@ -163,7 +98,7 @@ def _load_garch_vol_matrix() -> pd.DataFrame:
 
 
 def _load_trend_ensemble_matrix() -> pd.DataFrame:
-    """Load the per-ticker trend ensemble score matrix from signal_generation."""
+    """Load per-ticker trend ensemble score matrix from signal_generation."""
     global _TREND_ENS_CACHE
     if _TREND_ENS_CACHE is not None:
         return _TREND_ENS_CACHE
@@ -175,12 +110,9 @@ def _load_trend_ensemble_matrix() -> pd.DataFrame:
         _TREND_ENS_CACHE = pd.DataFrame()
     return _TREND_ENS_CACHE
 
-# Regime-conditional tilt ranges for momentum_tilt_sizes (Part 1).
-# bull_calm:   [0.50, 1.50]  ±50% — maximum concentration toward top-ranked
-# bull_stress: [0.60, 1.40]  ±40%
-# bear_calm:   [0.80, 1.20]  ±20%
-# bear_stress: [0.90, 1.10]  ±10% — near-equal weight in momentum crash regime
-# Default (unknown): [0.70, 1.30] ±30% — unchanged from original
+# Regime tilt ranges for momentum_tilt_sizes Part 1 (tilt_min, tilt_range):
+# bull_calm ±50%, bull_stress ±40%, bear_calm ±20%, bear_stress ±10%.
+# Default (unknown): [0.70, 1.30] ±30%.
 _REGIME_TILT_PARAMS: dict = {
     "bull_calm":   (0.50, 1.00),
     "bull_stress": (0.60, 0.80),
@@ -188,10 +120,8 @@ _REGIME_TILT_PARAMS: dict = {
     "bear_stress": (0.90, 0.20),
 }
 
-# Regime-conditional safe-haven floor fractions (Part 2).
-# In bull_calm: halve the floor to free 7% for equity deployment.
-# In bear_stress: increase floor for stronger crisis protection.
-# VIX guardrail: if regime == bull_calm AND VIX >= 20 → use bull_stress floor.
+# Regime safe-haven floor fractions (Part 2). bull_calm halves floor; bear_stress
+# raises it. VIX guardrail: bull_calm + VIX≥20 → use bull_stress floor.
 _REGIME_FLOOR_PARAMS: dict = {
     "bull_calm":   {"VGSH": 0.02, "DBMF": 0.02, "WTMF": 0.02},
     "bull_stress": {"VGSH": 0.03, "DBMF": 0.03, "WTMF": 0.03},
@@ -199,8 +129,7 @@ _REGIME_FLOOR_PARAMS: dict = {
     "bear_stress": {"VGSH": 0.07, "DBMF": 0.05, "WTMF": 0.05},
 }
 
-# Gross exposure targets by regime — non-floor positions are scaled UP toward
-# these targets after the adaptive floor is applied (Part 2).
+# Per-regime gross targets — non-floor positions scaled up to these (Part 2).
 _REGIME_GROSS_TARGET: dict = {
     "bull_calm":   1.05,
     "bull_stress": 0.95,

@@ -1,17 +1,7 @@
 """
-integrity_audit.py
-──────────────────
-Read-only diagnostic: 4 integrity checks + production recommendation.
-
-Checks:
-  1. Look-ahead bias — position sizes must not use future data
-  2. Walk-forward window integrity — non-overlapping, sufficient trading days
-  3. Regime parameter sensitivity — key params must not be fragile / overfit
-  4. Transaction cost reality check — turnover must not destroy net Sharpe
-
-Run:
-  python run.py audit          (via run.py shortcut)
-  python -m v1.pipeline.integrity_audit  (direct)
+integrity_audit.py — read-only: 4 integrity checks + production recommendation.
+Checks: look-ahead bias, walk-forward integrity, regime param sensitivity, txn costs.
+Run: `python run.py audit` or `python -m v1.pipeline.integrity_audit`.
 """
 
 import json
@@ -23,7 +13,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# ── imports from pipeline ─────────────────────────────────────────────────────
+# ── pipeline imports ──
 from v1.portfolio.portfolio import (
     regime_adaptive_sizes,
     adaptive_blend_sizes,

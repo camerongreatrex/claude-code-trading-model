@@ -1,37 +1,12 @@
 """
-cross_asset_signals.py
-──────────────────────
-Compute daily cross-asset lead-lag features that exploit documented
-information transmission between asset classes.
-
-These are NOT price momentum — they are relative-value and spread signals
-designed to capture structural lead-lag relationships:
-
-  1. credit_equity_spread   — HYG–SPY rolling correlation, lagged 1-3 days.
-                              When HYG leads SPY lower, predicts equity weakness.
-  2. tlt_spy_divergence     — TLT 5d return minus SPY 5d return.
-                              Positive = institutional flight-to-quality.
-  3. vix_term_structure_signal — (VIX9D − VIX) 60-day z-score.
-                              Spikes predict elevated short-term vol for 5-10 days.
-  4. commodity_dollar_signal — DBC 5d return minus UUP 5d return.
-                              Positive = reflation. Negative = deflation/$ strength.
-  5. bond_equity_rotation   — 20-day rolling beta of TLT to SPY.
-                              β < −0.3 = normal negative correlation.
-                              β > 0 = correlation breakdown (crisis or reflation).
-  6. hy_ig_spread           — HYG/LQD price ratio, 252-day z-score.
-                              Widening (falling ratio) precedes equity sell-offs.
-
-No look-ahead: all features use shift(1) before output.
-
-Data sources
-────────────
-  data/features/{SPY,HYG,TLT,DBC,UUP}.parquet  — log_return, Close
-  data/shared/macro/macro_features.parquet              — vix, vix9d
-  yfinance (LQD only — not in the main universe)
-
-Output
-──────
-  data/signals/cross_asset_features.parquet
+Cross-asset lead-lag features (relative-value/spread signals, not momentum):
+  1. credit_equity_spread     - HYG-SPY 5d corr, lags 1-3
+  2. tlt_spy_divergence       - TLT 5d - SPY 5d (flight-to-quality)
+  3. vix_term_structure_signal- (VIX9D-VIX) 60d z-score
+  4. commodity_dollar_signal  - DBC 5d - UUP 5d
+  5. bond_equity_rotation     - 20d TLT~SPY beta
+  6. hy_ig_spread             - HYG/LQD ratio 252d z-score
+All features shift(1). Output: data/signals/cross_asset_features.parquet.
 """
 
 import numpy as np

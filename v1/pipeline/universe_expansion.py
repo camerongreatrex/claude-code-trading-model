@@ -1,45 +1,11 @@
-# DISABLED: Expanded stock universe failed validation (3 iterations, Apr 2026).
-# Bull_calm alpha remained negative due to 0.91 SPY correlation. Cross-asset
-# allocation (core system) confirmed as primary alpha source per QUANTT ANOVA
-# findings (p>0.49 for within-regime cross-industry dispersion). Retained for
-# future research.
+# DISABLED: Expanded universe failed validation (Apr 2026). Bull_calm alpha negative
+# due to 0.91 SPY correlation. Cross-asset allocation confirmed as primary alpha source.
 
 """
-universe_expansion.py
-─────────────────────
-Expands the tradeable universe from the 42-instrument core to ~157 instruments
-by adding top-liquidity S&P 500 constituents organised by GICS sector.
-
-Config flag
-───────────
-  USE_EXPANDED_UNIVERSE = True   # set False to use only the original core
-
-Public API
-──────────
-  get_expanded_universe()         → (ticker_list, asset_class_dict, sector_map)
-  refresh_universe_quarterly()    → re-screens live S&P 500 (run manually)
-
-Design
-──────
-  The core instruments are the foundation — their ASSET_CLASS and HEDGE_MAP
-  entries in data_pipeline.py are unchanged.  New stock tickers are ADDITIVE:
-  assigned asset_class "stock" and catalogued in SECTOR_MAP.
-
-  Sector coverage (GICS ETF → individual stocks):
-    XLK  Technology (45)            XLV  Healthcare (35)
-    XLE  Energy (10)                XLI  Industrials (20)
-    XLF  Financials (40)            XLC  Communication Services (50)
-    XLP  Consumer Staples (30)      XLY  Consumer Discretionary (25)
-    XLRE Real Estate (60)           XLB  Materials (15)
-    XLU  Utilities (55)
-
-  Static pre-screening criteria (applied when building this list):
-    ADV > $20M    — sufficient liquidity for EOD execution
-    MCap > $5B    — avoids micro-cap noise (all S&P 500 members qualify)
-    Top 10–15 most liquid names per sector from the S&P 500 index
-
-  To refresh this list quarterly, run:
-    python -m v1.pipeline.universe_expansion
+Expands tradeable universe from 42 core to ~157 instruments via top-liquidity S&P 500
+constituents by GICS sector. Set USE_EXPANDED_UNIVERSE=True to enable.
+Public API: get_expanded_universe(), refresh_universe_quarterly().
+Static screen: ADV>$20M, MCap>$5B, top 10–15 per sector.
 """
 
 import numpy as np
@@ -51,14 +17,11 @@ from pathlib import Path
 USE_EXPANDED_UNIVERSE: bool = False  # gates not yet passing — set True to re-enable
 
 # ── New stocks per GICS sector ────────────────────────────────────────────────
-# Additive to the core universe. Each list contains the top 10–15 most liquid
-# S&P 500 names for that sector. Tickers already in the core are excluded.
-# ADV > $20M and MCap > $5B verified at time of construction (2026-Q1).
+# Additive to core. Top 10–15 liquid S&P 500 names per sector (ADV>$20M, MCap>$5B,
+# 2026-Q1). Core tickers excluded.
 
 SECTOR_STOCKS: dict[str, list[str]] = {
-    # Top 10-15 most liquid S&P 500 names per GICS sector (excluding core tickers).
-    # MMC removed — delisted (0 rows downloaded).
-    # Beta filtering removed — replaced with beta-weighted sizing in signal_generation.py.
+    # MMC removed — delisted. Beta filtering replaced with beta-weighted sizing.
     "XLK": ["AAPL", "ACN", "ADBE", "AVGO", "CRM", "AMD", "QCOM", "TXN", "AMAT", "MU", "ORCL", "NOW"],
     "XLV": ["UNH", "LLY", "ABBV", "ABT", "MRK", "BMY", "AMGN", "PFE", "MDT", "GILD", "SYK", "DHR", "TMO"],
     "XLE": ["COP", "CVX", "EOG", "DVN", "OXY", "MPC", "SLB", "HAL", "PSX", "KMI", "VLO"],
@@ -72,7 +35,7 @@ SECTOR_STOCKS: dict[str, list[str]] = {
     "XLU": ["DUK", "SO", "D", "EXC", "AEP", "XEL", "PEG", "WEC", "ED"],
 }
 
-# Flat list of all new tickers (unique, sector insertion order preserved)
+# Flat unique ticker list (insertion order preserved)
 _seen: set[str] = set()
 NEW_TICKERS: list[str] = []
 for _sector_tickers in SECTOR_STOCKS.values():
@@ -83,27 +46,24 @@ for _sector_tickers in SECTOR_STOCKS.values():
 del _seen, _sector_tickers, _t
 
 # ── SECTOR_MAP ────────────────────────────────────────────────────────────────
-# Maps every individual stock ticker → its GICS sector ETF.
-# Covers both the existing core stocks and all new expansion stocks.
-# Non-stock instruments (broad ETFs, bonds, commodities) are excluded.
-# Uses actual GICS classifications, NOT the hedging shortcuts in HEDGE_MAP.
+# Stock ticker → GICS sector ETF (real GICS, not HEDGE_MAP shortcuts).
+# Excludes broad ETFs, bonds, commodities.
 
 SECTOR_MAP: dict[str, str] = {
-    # ── Core stocks (from data_pipeline.py) ──────────────────────────────────
-    "JPM"  : "XLF",   # Financials
-    "GS"   : "XLF",   # Financials
-    "BRK-B": "XLF",   # Financials (conglomerate; insurance-heavy per GICS)
-    "JNJ"  : "XLV",   # Healthcare
-    "XOM"  : "XLE",   # Energy
-    "GE"   : "XLI",   # Industrials
-    "NEE"  : "XLU",   # Utilities
-    "COST" : "XLP",   # Consumer Staples
-    "MSFT" : "XLK",   # Technology
-    "NVDA" : "XLK",   # Technology
-    "INTC" : "XLK",   # Technology
-    "VZ"   : "XLC",   # Communication Services
-    # AMZN: GICS Consumer Discretionary (XLY), distinct from XLK hedging role
-    "AMZN" : "XLY",
+    # ── Core stocks ─────────────────────────────────────────────────────────
+    "JPM"  : "XLF",
+    "GS"   : "XLF",
+    "BRK-B": "XLF",   # conglomerate; insurance-heavy per GICS
+    "JNJ"  : "XLV",
+    "XOM"  : "XLE",
+    "GE"   : "XLI",
+    "NEE"  : "XLU",
+    "COST" : "XLP",
+    "MSFT" : "XLK",
+    "NVDA" : "XLK",
+    "INTC" : "XLK",
+    "VZ"   : "XLC",
+    "AMZN" : "XLY",   # GICS XLY, distinct from XLK hedging role
 }
 
 # Add all expansion stocks using SECTOR_STOCKS as the source of truth
@@ -117,15 +77,8 @@ del _sector, _tickers, _t
 
 def get_expanded_universe() -> tuple[list[str], dict[str, str], dict[str, str]]:
     """
-    Return the full expanded universe.
-
-    Returns:
-        ticker_list    : all tickers in order (core + expansion stocks)
-        asset_class    : {ticker: asset_class} for every ticker
-        sector_map     : {ticker: sector_etf} for all individual stocks
-
-    Core tickers retain their original asset_class from data_pipeline.TICKERS.
-    All new expansion stocks are assigned asset_class "stock".
+    Return (tickers, asset_class, sector_map). Core tickers keep their original
+    asset_class; expansion stocks assigned "stock".
     """
     from v1.pipeline.data_pipeline import TICKERS as CORE_TICKERS  # lazy — avoids circular import
 
@@ -147,36 +100,10 @@ def compute_beta_size_scalars(
     scalar_max: float = 1.00,
 ) -> "pd.DataFrame":
     """
-    Compute a per-ticker, per-date sizing scalar based on 252-day rolling OLS beta to SPY.
-
-    Scalar formula (linear, clamped):
+    Per-ticker sizing scalar from 252d rolling OLS beta to SPY:
         scalar = clip(1.50 - beta, scalar_min, scalar_max)
-
-    Breakpoints:
-        beta ≤ 0.50  → scalar = 1.0  (full size)
-        beta = 0.85  → scalar ≈ 0.65
-        beta ≥ 1.20  → scalar = 0.3  (minimum 30% of base size — never zero)
-
-    The scalar is applied to the POSITION SIZE, not to a hard include/exclude decision.
-    A high-beta stock (beta=1.5) still participates at 30% of base weight, maintaining
-    cross-sectional signal quality in all sectors.
-
-    Tightened scalar (beta_high=1.00):
-        Call with beta_high=1.00 to use scalar = clip(1.50 - beta, 0.30, 1.00) with
-        a steeper drop-off, reducing high-beta exposure more aggressively.
-
-    Args:
-        closes    : date × ticker DataFrame of adjusted close prices
-        spy_closes: SPY adjusted close prices (date-aligned with closes)
-        window    : rolling beta lookback in days (default 252 = 1 year)
-        beta_low  : beta at or below which scalar = scalar_max (default 0.50)
-        beta_high : beta at or above which scalar = scalar_min (default 1.20)
-        scalar_min: minimum scalar applied to highest-beta names (default 0.30)
-        scalar_max: maximum scalar applied to lowest-beta names (default 1.00)
-
-    Returns:
-        DataFrame of shape (len(closes), len(closes.columns)) with scalar values
-        in [scalar_min, scalar_max].  NaN betas (insufficient data) → scalar_max.
+    Breakpoints: beta<=0.50 -> 1.0, beta=0.85 -> ~0.65, beta>=1.20 -> 0.30.
+    Applied to size (never excludes). NaN betas -> scalar_max.
     """
     spy_ret = spy_closes.pct_change()
     scalars = pd.DataFrame(
@@ -206,22 +133,9 @@ def refresh_universe_quarterly(
     start: str = "2015-01-01",
 ) -> dict[str, list[str]]:
     """
-    Re-screen S&P 500 constituents and return the top-N most liquid names per
-    GICS sector that pass the ADV filter.
-
-    Run manually (not automated) — intended for quarterly universe review.
-    Prints a suggested SECTOR_STOCKS diff so you can update the static list.
-
-    S&P 500 membership implies MCap > $14.5B (index inclusion threshold),
-    so a separate market-cap filter is not needed here.
-
-    Args:
-        adv_threshold    : Minimum average daily dollar volume ($20M default).
-        top_n_per_sector : Max tickers returned per GICS sector (default 15).
-        start            : Start date for the ADV calculation window.
-
-    Returns:
-        {sector_etf: [ticker, ...]} — tickers that passed, sorted ADV-descending.
+    Re-screen S&P 500: top-N most liquid per GICS sector passing ADV filter.
+    Manual quarterly run; prints suggested SECTOR_STOCKS diff. Returns
+    {sector_etf: [ticker, ...]} sorted ADV-descending.
     """
     print("Fetching S&P 500 constituents from Wikipedia...")
     try:
@@ -331,20 +245,9 @@ def validate_expanded_universe(
     max_mean_beta: float = 0.80,
 ) -> bool:
     """
-    Validate the expanded universe and print a sector-level summary table.
-
-    Beta is now used for SIZING SCALARS only (compute_beta_size_scalars), not for
-    hard inclusion/exclusion.  No tickers are removed based on beta.
-
-    Checks (hard pass/fail):
-      1. No sector has fewer than min_stocks_per_sector (default 5) stocks
-      2. All NEW_TICKERS have > min_coverage (90%) data since coverage_start (2018)
-
-    Prints per-sector table:
-      Sector | Count | Mean Beta | Median Beta | Mean ADV ($M) | Mean Coverage | Pass?
-
-    Returns:
-        True if all checks pass, False otherwise.
+    Validate expanded universe; print sector summary. Beta is informational only.
+    Hard checks: per-sector count >= min_stocks_per_sector (5),
+    and per-ticker coverage >= min_coverage (90%) since coverage_start (2018).
     """
     all_tickers, asset_class, sector_map = get_expanded_universe()
 
@@ -362,7 +265,7 @@ def validate_expanded_universe(
         except Exception:
             pass
 
-    # ── Per-ticker stats ──────────────────────────────────────────────────────
+    # ── Per-ticker stats ─────────────────────────────────────────────────────
     ticker_stats: dict[str, dict] = {}
 
     for ticker in NEW_TICKERS:
@@ -453,8 +356,7 @@ def validate_expanded_universe(
                   if not ticker_stats.get(t, {}).get("missing")
                   and not np.isnan(ticker_stats[t]["beta"])]
     mean_beta  = float(np.mean(all_betas)) if all_betas else float("nan")
-    # Beta is informational only — no hard gate. High-beta tickers get reduced
-    # sizing via compute_beta_size_scalars(), not exclusion.
+    # Beta informational only; high-beta gets reduced sizing via compute_beta_size_scalars().
     beta_note  = ("NOTE: beta-weighted sizing active — no hard beta gate" if True else "")
 
     missing    = [t for t in NEW_TICKERS if ticker_stats.get(t, {}).get("missing")]
@@ -497,11 +399,7 @@ def validate_expanded_universe(
 
 def main() -> None:
     """
-    Entry point for manual validation / quarterly re-screen.
-
-    Usage:
-        python -m v1.pipeline.universe_expansion            # validate only
-        python -m v1.pipeline.universe_expansion --refresh  # full S&P 500 re-screen
+    Manual entry point. Use --refresh for full S&P 500 re-screen, else validate-only.
     """
     import sys
 

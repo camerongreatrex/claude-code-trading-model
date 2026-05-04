@@ -1,17 +1,9 @@
 """
-correlation_diagnostic.py
---------------------------
-Read-only diagnostic: regime decomposition baseline + beta decomposition +
-regime correlation + dead weight ticker analysis.
+correlation_diagnostic.py — read-only diagnostic: regime decomposition,
+beta decomposition (alpha after SPY-beta strip), regime correlation, and
+dead-weight ticker analysis. Does not modify pipeline data.
 
-This module does NOT modify any pipeline data.  It reads existing outputs and
-prints diagnostics to help understand where edge comes from (true alpha vs
-beta-driven returns) and which tickers are dragging performance.
-
-Usage
-─────
-  python -m v1.pipeline.correlation_diagnostic
-  python run.py diagnostic
+Usage: python -m v1.pipeline.correlation_diagnostic | python run.py diagnostic
 """
 
 import sys
@@ -95,14 +87,8 @@ def beta_decomposition(
     portfolio_df: pd.DataFrame,
     returns_matrix: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    For each sizing method in portfolio_comparison compute:
-      total_sharpe, OLS beta to SPY, avg rolling 60-day beta,
-      avg rolling 60-day correlation, active return Sharpe.
-
-    Portfolio equity curves are converted to daily pct returns.
-    SPY daily log returns come from returns_matrix (small-return approx holds).
-    """
+    """Per-method: total_sharpe, OLS beta vs SPY, avg rolling-60d beta/corr,
+    and active Sharpe (post beta-strip)."""
     # Daily pct returns from equity curves
     port_returns = portfolio_df.pct_change().dropna()
 
@@ -124,12 +110,12 @@ def beta_decomposition(
         # OLS beta (full period)
         ols_beta = float(p.cov(s) / s.var())
 
-        # Rolling 60-day beta and correlation
+        # Rolling 60d beta/corr
         roll_beta, roll_corr = _rolling_beta_corr(pret, spy_aligned, window=60)
         avg_roll_beta = float(roll_beta.mean())
         avg_roll_corr = float(roll_corr.mean())
 
-        # Active return: strip market beta
+        # Active = strip market beta
         active_ret    = p - ols_beta * s
         total_sharpe  = _sharpe(p)
         active_sharpe = _sharpe(active_ret)
@@ -190,12 +176,8 @@ def regime_correlation(
     regimes: pd.Series,
     portfolio_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    For each of the 4 regimes compute:
-      - Average pairwise correlation of all universe tickers
-      - Equal-weight portfolio beta to SPY within the regime
-      - Annualised active return within the regime (after beta-strip)
-    """
+    """Per regime: avg pairwise corr of universe, EW portfolio beta vs SPY,
+    annualised active return (post beta-strip)."""
     port_returns = portfolio_df.pct_change().dropna()
     port_col = "equal_weight" if "equal_weight" in port_returns.columns else port_returns.columns[0]
     port_ret = port_returns[port_col]
@@ -206,7 +188,7 @@ def regime_correlation(
     for regime in REGIME_ORDER:
         mask = regimes == regime
 
-        # ── Avg pairwise correlation of universe tickers ──────────────────────
+        # ── Avg pairwise correlation of universe ──────────────────────────────
         ret_mask    = mask.reindex(returns_matrix.index).fillna(False).infer_objects(copy=False).astype(bool)
         regime_rets = returns_matrix.loc[ret_mask]
         n_regime    = int(ret_mask.sum())
@@ -223,7 +205,7 @@ def regime_correlation(
         upper    = np.triu(np.ones(corr_mat.shape, dtype=bool), k=1)
         avg_corr = float(corr_mat.where(upper).stack().mean())
 
-        # ── Portfolio beta and active return within regime ────────────────────
+        # ── Portfolio beta + active return within regime ──────────────────────
         port_mask = mask.reindex(port_ret.index).fillna(False).infer_objects(copy=False).astype(bool)
         p_regime  = port_ret[port_mask]
         s_regime  = spy_ret.reindex(p_regime.index)
@@ -267,7 +249,7 @@ def _print_regime_corr_table(df: pd.DataFrame) -> None:
         beta_str = f"{row['portfolio_beta']:.3f}" if pd.notna(row["portfolio_beta"]) else "   N/A"
         act_str  = f"{row['active_return_ann_pct']:+.2f}%" if pd.notna(row["active_return_ann_pct"]) else "   N/A"
 
-        # Flag regimes where correlations spike (diversification collapses)
+        # Flag corr-spike regimes (diversification collapses)
         flag = ""
         if pd.notna(row["avg_corr"]) and row["avg_corr"] > 0.6:
             flag = "  <-- corr spike: diversification collapses"
@@ -294,14 +276,8 @@ def dead_weight_analysis(
     signals: pd.DataFrame,
     returns_matrix: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    For each ticker: fraction of days where the regime signal == 1 (long)
-    AND the ticker's daily return was negative (holding a loser).
-
-    Ranked descending by dead_weight_pct.
-    A perfect signal would yield 0%.  A random signal yields ~50%.
-    Tickers above 50% are net drags on signal quality.
-    """
+    """Per ticker: % of long-signal days with negative return (perfect=0%, random~50%).
+    Ranked desc; >50% indicates a net drag."""
     tickers = [t for t in signals.columns if t in returns_matrix.columns]
 
     rows = []
@@ -391,7 +367,7 @@ def main() -> None:
     print("  (read-only — no pipeline files modified)")
     print("=" * 70)
 
-    # ── Load shared data ───────────────────────────────────────────────────────
+    # ── Load shared data ────────────────────────────────────────────────────
     print("\nLoading data...")
     macro          = _load_macro()
     signals        = _load_signals()
@@ -399,10 +375,10 @@ def main() -> None:
     portfolio_df   = _load_portfolio()
     returns_matrix = _load_returns_matrix()
 
-    # Filter tickers to those present in both signals and returns_matrix
+    # Tickers present in both signals and returns_matrix
     tickers = [t for t in TICKER_LIST if t in signals.columns and t in returns_matrix.columns]
 
-    # Build common index (signals window) and align
+    # Common index = signals window
     idx               = signals.index
     returns_aligned   = returns_matrix.reindex(idx)
     spy_close_aligned = spy_close.reindex(idx).ffill()
@@ -412,10 +388,10 @@ def main() -> None:
     print(f"  Portfolio curves : {portfolio_df.shape}")
     print(f"  Tickers in both  : {len(tickers)}")
 
-    # ── Label regimes (shared across all analyses) ─────────────────────────────
+    # ── Label regimes (shared) ──────────────────────────────────────────────
     regimes = label_regimes(macro["vix"], spy_close_aligned, idx)
 
-    # ── 1. Regime Decomposition ────────────────────────────────────────────────
+    # ── 1. Regime Decomposition ─────────────────────────────────────────────
     print("\n" + "─" * 70)
     print("  [1/4]  Regime Decomposition  (existing regime_analysis output)")
     print("─" * 70)
@@ -427,7 +403,7 @@ def main() -> None:
     decomp = decompose(strat_ret, bnh_ret, signals, regimes)
     _print_table(decomp)
 
-    # ── 2. Beta Decomposition ──────────────────────────────────────────────────
+    # ── 2. Beta Decomposition ───────────────────────────────────────────────
     print("─" * 70)
     print("  [2/4]  Beta Decomposition  (true alpha Sharpe after SPY beta strip)")
     print("─" * 70)
@@ -435,7 +411,7 @@ def main() -> None:
     beta_df = beta_decomposition(portfolio_df, returns_matrix)
     _print_beta_table(beta_df)
 
-    # ── 3. Regime Correlation ──────────────────────────────────────────────────
+    # ── 3. Regime Correlation ───────────────────────────────────────────────
     print("─" * 70)
     print("  [3/4]  Regime Correlation  (avg pairwise corr by market regime)")
     print("─" * 70)
@@ -443,7 +419,7 @@ def main() -> None:
     regime_corr_df = regime_correlation(returns_matrix, regimes, portfolio_df)
     _print_regime_corr_table(regime_corr_df)
 
-    # ── 4. Dead Weight ─────────────────────────────────────────────────────────
+    # ── 4. Dead Weight ──────────────────────────────────────────────────────
     print("─" * 70)
     print("  [4/4]  Dead Weight  (long signal on down days, ranked by ticker)")
     print("─" * 70)
@@ -451,9 +427,8 @@ def main() -> None:
     dw_df = dead_weight_analysis(signals, returns_matrix)
     _print_dead_weight_table(dw_df)
 
-    # ── Save ───────────────────────────────────────────────────────────────────
-    # Primary output: beta decomposition (most actionable table)
-    # Secondary:      regime correlation + dead weight
+    # ── Save ────────────────────────────────────────────────────────────────
+    # Primary: beta decomposition; secondary: regime corr + dead weight
     out_beta    = RESEARCH_DIR / "correlation_diagnostic.parquet"
     out_rc      = RESEARCH_DIR / "correlation_diagnostic_regime_corr.parquet"
     out_dw      = RESEARCH_DIR / "correlation_diagnostic_dead_weight.parquet"

@@ -1,22 +1,7 @@
 """
-Breadth-focused sweep: keep CAND-A (cap 12%, top11, ac55, mom63) as new
-baseline and test variants that increase the *number* of names actually
-held each day.  User reported the strategy concentrating in 4 names
-(NVDA-driven), causing single-name DD when NVDA pulled back.
-
-Variants tested:
-  - Higher top_n (15, 18, 22, 28) — let more names into the pool
-  - Lower ADX threshold (15, 18, 20) — fewer names get filtered out
-  - Equal-weight overlay (within selected longs, ignore vol-target sizing)
-  - "Min positions floor" — if fewer than X names selected, expand selection
-  - Diversifier sleeve — small forced equal-weight allocation across uncorrelated
-                          assets (TLT, GLD, IWM) on top of momentum picks
-
-We measure:
-  - mean # active names (count > $500 position) on each day
-  - distribution of #names: median, p25, p75
-  - max single-name share of gross
-  - all standard return/risk metrics on the OOS slice
+Breadth sweep on CAND-A (cap12, top11, ac55, mom63): widen top_n, drop ADX,
+EW overlay, diversifier sleeve. Reports name count distribution + max single-name
+share alongside OOS return/risk metrics.
 """
 
 from __future__ import annotations
@@ -46,7 +31,7 @@ from v1.pipeline.signal_generation import ATR_PARTIAL_REMAIN
 from v1.pipeline.backtester import sharpe_ratio, max_drawdown
 
 OOS_WARMUP = 756
-ACTIVE_THRESHOLD = 500.0  # $500 = "real" position, not floating dust
+ACTIVE_THRESHOLD = 500.0  # $500 = real position
 
 
 def sortino_ratio(ret: pd.Series, target: float = 0.0) -> float:
@@ -111,13 +96,12 @@ def load_inputs():
 
 
 def equal_weight_overlay(sizes: pd.DataFrame, top_n: int, capital: float) -> pd.DataFrame:
-    """Replace per-name vol-target dollars with equal-weight within active longs.
-    Each active name gets capital/top_n (or 1/n_active if more names active)."""
+    """Equal-weight active longs at gross 95% (each gets capital/min(n_active,top_n))."""
     out = sizes.copy()
     abs_sz = out.abs()
-    active_mask = abs_sz > 1.0  # any non-zero size = active
+    active_mask = abs_sz > 1.0
     n_act = active_mask.sum(axis=1).clip(lower=1)
-    target_per_name = (capital * 0.95 / n_act.clip(upper=top_n))  # gross 95%
+    target_per_name = (capital * 0.95 / n_act.clip(upper=top_n))
     sign = np.sign(out)
     out = sign.multiply(target_per_name, axis=0).where(active_mask, 0.0)
     return out.clip(-capital * _pp.MAX_POSITION_PCT, capital * _pp.MAX_POSITION_PCT)
@@ -125,15 +109,13 @@ def equal_weight_overlay(sizes: pd.DataFrame, top_n: int, capital: float) -> pd.
 
 def add_diversifier_sleeve(sizes: pd.DataFrame, capital: float,
                            tickers: list, sleeve_pct: float) -> pd.DataFrame:
-    """Force long allocation in given tickers as a permanent diversifier sleeve.
-    Reduces existing positions proportionally so total gross stays ≤ 1.0×."""
+    """Force long sleeve; existing scaled by (1-sleeve_pct) to keep gross <= 1.0x."""
     out = sizes.copy()
     sleeve_dollar = capital * sleeve_pct
     each = sleeve_dollar / max(len(tickers), 1)
     available = [t for t in tickers if t in out.columns]
     if not available:
         return out
-    # Scale existing down by (1 - sleeve_pct) to make room
     out = out * (1.0 - sleeve_pct)
     for t in available:
         out[t] = out[t] + each
@@ -159,7 +141,6 @@ def run_variant(name, sig, feats, rets, macro,
     sizes = defensive_tilt_overlay(sizes, sig, macro, CAPITAL)
     pr = portfolio_returns(sizes, rets).dropna()
 
-    # Slice OOS for breadth + perf
     oos_sizes = sizes.iloc[OOS_WARMUP:]
     bs = breadth_stats(oos_sizes)
     m = metrics(pr.iloc[OOS_WARMUP:]) if len(pr) > OOS_WARMUP else {}
@@ -173,35 +154,35 @@ def main():
     print(f"Loaded {len(rets)} days, {len(rets.columns)} tickers in {time.time()-t0:.1f}s\n")
 
     variants = [
-        # === Baseline (NEW: CAND-A) ===
+        # === Baseline CAND-A ===
         ("CAND-A baseline (cap12,top11)",     dict()),
 
-        # === Higher top_n — let more names in ===
+        # === Higher top_n ===
         ("top15",                             dict(top_n=15)),
         ("top18",                             dict(top_n=18)),
         ("top22",                             dict(top_n=22)),
         ("top28 (almost full universe)",      dict(top_n=28)),
 
-        # === Lower ADX threshold — let more names qualify ===
+        # === Lower ADX threshold ===
         ("adx18",                             dict(adx_threshold=18)),
         ("adx15",                             dict(adx_threshold=15)),
         ("adx12",                             dict(adx_threshold=12)),
         ("adx0 (no ADX filter)",              dict(adx_threshold=0)),
 
-        # === Bigger pool + lower filter — expect better breadth ===
+        # === Bigger pool + lower filter ===
         ("top18 + adx18",                     dict(top_n=18, adx_threshold=18)),
         ("top22 + adx15",                     dict(top_n=22, adx_threshold=15)),
         ("top28 + adx12",                     dict(top_n=28, adx_threshold=12)),
         ("top28 + adx0",                      dict(top_n=28, adx_threshold=0)),
 
-        # === Pool-expansion + tighter ac_quota — diversification floor ===
+        # === Pool expansion + tighter ac_quota ===
         ("top22 + adx15 + ac0.40",            dict(top_n=22, adx_threshold=15, ac_quota=0.40)),
         ("top28 + adx12 + ac0.35",            dict(top_n=28, adx_threshold=12, ac_quota=0.35)),
 
-        # === Equal-weight overlay (kills NVDA dominance via vol-target) ===
-        ("EW overlay top15",                  dict(top_n=15)),  # equal_weight set below
-        ("EW overlay top22",                  dict(top_n=22)),  # equal_weight set below
-        ("EW overlay top28",                  dict(top_n=28)),  # equal_weight set below
+        # === Equal-weight overlay ===
+        ("EW overlay top15",                  dict(top_n=15)),
+        ("EW overlay top22",                  dict(top_n=22)),
+        ("EW overlay top28",                  dict(top_n=28)),
     ]
 
     rows = []
@@ -224,43 +205,41 @@ def main():
 
     # Diversifier sleeve variants on top of best breadth picks
     div_variants = [
-        # Sleeve size sweep on bonds+gold (uncorrelated to equity momentum)
+        # Bonds+gold sleeve sweep
         ("CAND-A + 5% TLT/GLD",       dict(), ["TLT", "GLD"], 0.05),
         ("CAND-A + 8% TLT/GLD",       dict(), ["TLT", "GLD"], 0.08),
         ("CAND-A + 10% TLT/GLD",      dict(), ["TLT", "GLD"], 0.10),
         ("CAND-A + 15% TLT/GLD",      dict(), ["TLT", "GLD"], 0.15),
         ("CAND-A + 20% TLT/GLD",      dict(), ["TLT", "GLD"], 0.20),
-        # Try DBMF (managed futures) — positive carry, low equity correlation
+        # +DBMF managed futures
         ("CAND-A + 8% TLT/GLD/DBMF",  dict(), ["TLT", "GLD", "DBMF"], 0.08),
         ("CAND-A + 12% TLT/GLD/DBMF", dict(), ["TLT", "GLD", "DBMF"], 0.12),
         ("CAND-A + 15% TLT/GLD/DBMF/WTMF",
                                        dict(), ["TLT", "GLD", "DBMF", "WTMF"], 0.15),
-        # Just managed futures, no bonds
+        # Managed futures only
         ("CAND-A + 10% DBMF/WTMF",    dict(), ["DBMF", "WTMF"], 0.10),
         ("CAND-A + 15% DBMF/WTMF",    dict(), ["DBMF", "WTMF"], 0.15),
-        # Wider diversifier — bonds, gold, MF, short-bonds
+        # Wider diversifier
         ("CAND-A + 12% TLT/GLD/DBMF/VGSH",
                                        dict(), ["TLT", "GLD", "DBMF", "VGSH"], 0.12),
-        # Equity-beta sleeve (won't help DD but will boost beta exposure on dull days)
+        # Equity-beta sleeve
         ("CAND-A + 10% SPY/IWM/QQQ",  dict(), ["SPY", "IWM", "QQQ"], 0.10),
 
-        # ── Wide-diversifier permanent sleeves to hit 50% universe target ──
-        # 8 ETFs across asset classes — gets us to 11+8 = 19 active names
+        # ── Wide-8 sleeve (target ~19 active names) ──
         ("CAND-A + 16% wide-8",       dict(),
             ["TLT", "GLD", "VGSH", "DBMF", "WTMF", "VWO", "EFA", "TIP"], 0.16),
         ("CAND-A + 20% wide-8",       dict(),
             ["TLT", "GLD", "VGSH", "DBMF", "WTMF", "VWO", "EFA", "TIP"], 0.20),
-        # 10 ETFs — gets us to ~21 active = 50% of universe
+        # Wide-10 (~21 active = ~50% universe)
         ("CAND-A + 20% wide-10",      dict(),
             ["TLT", "GLD", "VGSH", "DBMF", "WTMF", "VWO", "EFA", "TIP", "MUB", "EMB"], 0.20),
         ("CAND-A + 25% wide-10",      dict(),
             ["TLT", "GLD", "VGSH", "DBMF", "WTMF", "VWO", "EFA", "TIP", "MUB", "EMB"], 0.25),
-        # Concentrated 4-asset diversifier (best per-name conviction, less breadth)
+        # Concentrated 4-asset diversifier
         ("CAND-A + 12% TLT/GLD/DBMF/VGSH (4-asset)", dict(),
             ["TLT", "GLD", "DBMF", "VGSH"], 0.12),
 
-        # ── Aiming for 50%+ universe (21+ names = 11 momentum + 10+ sleeve) ──
-        # 14-asset sleeve: bonds, gold, MF, intl, FX, defensive
+        # ── 14-asset wide sleeve ──
         ("CAND-A + 20% wide-14",      dict(),
             ["TLT","GLD","VGSH","DBMF","WTMF","VWO","EFA","TIP","MUB","EMB","IWM","EWJ","FXE","UUP"], 0.20),
         ("CAND-A + 25% wide-14",      dict(),

@@ -1,45 +1,17 @@
 """
-macro_features.py
------------------
-Fetches market-level regime indicators and engineers derived features.
+macro_features.py — market-regime indicators consumed by signal_generation
+(vix gating) and portfolio (macro-scaled sizing).
 
-The macro layer answers one question: "What kind of market environment are
-we in right now?"  This context is consumed by signal_generation.py (to
-gate signals on extreme VIX days) and portfolio.py (to scale position sizes
-up/down based on macro conditions).
+Sources: VIX/VIX9D (yfinance), 10Y-2Y spread (FRED CSV), FRED composite via
+fred_features.py.
 
-Data sources
-────────────
-  VIX  (^VIX)   — Yahoo Finance, free, no API key
-  VIX9D (^VIX9D) — Yahoo Finance, free, no API key
-  10Y-2Y spread  — FRED public CSV (no API key, no library required)
-  FRED features  — fred_features.py (credit spreads, sentiment, claims, PMI,
-                   USD index, breakeven inflation, VIX cross-check)
+Output: data/shared/macro/macro_features.parquet with vix, vix9d,
+yield_curve, vix_calm/fear, vix_zscore (60d), vix_term_ratio,
+vol_backwardation, curve_inverted/steep/momentum (20d), macro_score (-1..+1),
+fred_macro_score, size_multiplier (0.50–1.25).
 
-Output
-──────
-  data/shared/macro/macro_features.parquet
-
-  Columns:
-    vix              — CBOE 30-day implied volatility index
-    vix9d            — CBOE 9-day implied volatility (spikes faster)
-    yield_curve      — 10Y minus 2Y US Treasury spread (FRED T10Y2Y)
-    vix_calm         — 1 when vix < 20 (complacency)
-    vix_fear         — 1 when vix > 30 (stress)
-    vix_zscore       — rolling 60-day z-score of VIX level
-    vix_term_ratio   — vix9d / vix  (>1 = vol backwardation = acute stress)
-    vol_backwardation— 1 when vix_term_ratio > 1
-    curve_inverted   — 1 when yield_curve < 0 (recession signal)
-    curve_steep      — 1 when yield_curve > 1 (strong growth signal)
-    curve_momentum   — 20-day change in spread (steepening vs flattening)
-    macro_score      — composite -1 to +1 (−1 = full bear, +1 = full bull)
-    fred_macro_score — composite -1 to +1 from FRED indicators (if available)
-    size_multiplier  — position size scalar for portfolio.py (0.50 to 1.25)
-
-Consumed by
-───────────
-  signal_generation.py — vix_gate(), commodity_regime()
-  portfolio.py         — apply_macro_multiplier()
+Consumed by: signal_generation.vix_gate/commodity_regime,
+portfolio.apply_macro_multiplier.
 """
 
 import io
@@ -58,26 +30,10 @@ END   = "2026-01-01"
 
 
 def fetch_vix() -> pd.DataFrame:
-    """
-    Download VIX and VIX9D from Yahoo Finance.
-
-    VIX (^VIX): The CBOE 30-day expected S&P 500 volatility derived from
-    options prices.  Commonly called the "fear gauge".
-      <15  = market complacency / low demand for hedges
-      15–20 = normal / baseline
-      20–30 = elevated anxiety, some hedging demand
-      >30   = fear, forced selling likely
-      >40   = panic / crisis conditions
-
-    VIX9D (^VIX9D): The 9-day equivalent.  Because it uses shorter-dated
-    options, VIX9D spikes faster than VIX at the onset of a stress event.
-    When VIX9D > VIX (backwardation), near-term risk is elevated relative
-    to medium-term risk — a useful early warning signal.
-
-    Returns:
-        DataFrame with columns [vix, vix9d] indexed by timezone-naive date.
-        If VIX9D download fails, vix9d is filled with vix values.
-    """
+    """Download VIX (30d, fear gauge: <15 calm, 15–20 normal, 20–30 elevated,
+    >30 fear, >40 panic) and VIX9D (9d, spikes faster; ratio>1 = backwardation
+    = acute near-term stress) from yfinance. Falls back to vix if vix9d fails.
+    Returns DataFrame[vix, vix9d], tz-naive index."""
     print("  Fetching VIX...")
     vix = yf.download("^VIX", start=START, end=END, auto_adjust=True, progress=False)
     if isinstance(vix.columns, pd.MultiIndex):
@@ -101,30 +57,10 @@ def fetch_vix() -> pd.DataFrame:
 
 
 def fetch_yield_curve() -> pd.DataFrame:
-    """
-    Download the 10Y-2Y Treasury yield spread from the FRED public CSV.
-
-    The 10-year minus 2-year spread is the most widely cited recession
-    indicator.  Interpretation:
-      > 1.0  = steep yield curve → strong growth expectations, bank NIM favourable
-      0–1.0  = flat curve → late-cycle, growth slowing
-      < 0.0  = inverted curve → reliable recession predictor (historically
-               precedes recession by 6–18 months)
-
-    Uses a direct HTTP GET to the FRED CSV endpoint rather than
-    pandas-datareader, which is incompatible with Python 3.12+ (the
-    ``distutils`` module it depends on was removed from the standard library).
-
-    Returns:
-        DataFrame with column [yield_curve] indexed by timezone-naive date,
-        forward-filled and cropped to [START, END].
-
-    Fallback:
-        If the FRED download fails (network outage, API change), returns a
-        neutral (0.0) proxy so the macro score degrades gracefully rather
-        than crashing the pipeline.  Does NOT proxy from VIX to avoid
-        introducing circular correlation between the two macro indicators.
-    """
+    """10Y-2Y Treasury spread from FRED CSV (T10Y2Y). >1 steep, 0–1 flat
+    late-cycle, <0 inverted (precedes recession 6–18mo). Direct HTTP GET
+    (pandas-datareader needs distutils, removed in 3.12+).
+    Fallback: 0.0 neutral series (do NOT proxy from VIX — circular)."""
     print("  Fetching yield curve from FRED...")
     try:
         url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y2Y"
@@ -151,28 +87,12 @@ def fetch_yield_curve() -> pd.DataFrame:
 
 
 def compute_macro_features(vix: pd.DataFrame, curve: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute all derived macro features from raw VIX and yield curve data.
+    """Derive macro features from raw VIX and yield-curve data.
 
-    Args:
-        vix:   DataFrame with columns [vix, vix9d] from fetch_vix().
-        curve: DataFrame with column [yield_curve] from fetch_yield_curve().
-
-    Returns:
-        Joined DataFrame with all raw and derived macro columns.
-
-    Design notes
-    ────────────
-    All threshold values (VIX < 20, VIX > 30, spread < 0, spread > 1) are
-    published academic / industry standards, not fitted to this dataset.
-    Fitting thresholds to historical data would introduce in-sample bias
-    and make the features useless for prediction.
-
-    The size_multiplier scalar of 0.5 (giving range 0.50–1.25) was chosen
-    so that the "maximum bear" environment (all signals bad) cuts exposure
-    to 50% — a standard institutional risk heuristic.  The previous scalar
-    of 0.2 only varied from 0.80 to 1.20 and had virtually no effect.
-    """
+    Thresholds (VIX <20, >30, spread <0, >1) are industry-standard, not
+    fitted (avoids in-sample bias). size_multiplier scalar 0.5 → range
+    0.50–1.25; max-bear cuts exposure to 50% (institutional heuristic).
+    Prior 0.2 scalar (0.80–1.20) was too weak."""
     macro = vix.join(curve, how="outer").ffill().dropna()
 
     # VIX regime thresholds: industry-standard, not fitted to this dataset
@@ -199,23 +119,11 @@ def compute_macro_features(vix: pd.DataFrame, curve: pd.DataFrame) -> pd.DataFra
 
     macro["macro_score"] = (calm_score + curve_score + term_score) / 3
 
-    # Position size multiplier for portfolio.py.
-    # Previous formula (0.2 scalar) only spanned 0.80–1.20 — virtually no effect.
-    # With scalar = 0.5, the range becomes 0.50–1.25 (clipped), giving the macro
-    # overlay real teeth in bear conditions:
-    #   calm/steep/normal vol  → ~1.25x (more aggressive in favourable env)
-    #   neutral                → 1.00x
-    #   elevated VIX, inverted → ~0.75-0.85x (meaningful reduction)
-    #   full crisis (all bad)  → 0.50x (half exposure)
-    # The 0.5 scalar is not tuned to a specific year — it reflects the intuition
-    # that "max bear" should produce half-exposure, which is a standard risk
-    # management heuristic across systematic funds.
+    # Size multiplier: 0.5 scalar → 0.50–1.25 (calm/steep ~1.25x, neutral 1.0,
+    # elevated/inverted ~0.75–0.85, full crisis 0.50). Untuned heuristic.
     macro["size_multiplier"] = (1.0 + 0.5 * macro["macro_score"]).clip(0.50, 1.25)
 
-    # ── FRED macro score (from fred_features.py) ─────────────────────────
-    # Merge fred_macro_score if the parquet exists.  This keeps the two
-    # pipelines decoupled — macro_features.py works fine without FRED data,
-    # and fred_features.py can be run independently.
+    # ── FRED macro score (decoupled — works without FRED data) ───────────
     fred_path = MACRO_DIR / "fred_features.parquet"
     if fred_path.exists():
         try:

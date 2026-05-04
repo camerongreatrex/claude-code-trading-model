@@ -1,20 +1,7 @@
 """
-ML viability probe: can a gradient-boosted classifier find non-linear edges
-in the existing per-ticker + macro features that beat the linear V3 momentum
-signal?
-
-Setup (designed to be honest, not overfit):
-  - Features: per-ticker (mom/rsi/adx/atr/macd/zscore/bb/volume) + macro VIX/curve
-  - Target  : 5d forward log-return positive (binary)
-  - Training: rolling 504d window, predict next 63d, retrain quarterly
-  - Universe: 13 stocks + 9 sector ETFs (same as V3 candidate set)
-  - All features lagged 1d to ensure no leakage
-  - Out-of-sample slice: after 756d warmup (matches V3 metric reporting)
-
-Two evaluations:
-  (A) Standalone ML cross-sectional sleeve: each day, long top-K names by
-      predicted probability.  Sized at sleeve_pct of capital.
-  (B) Layered: V3 reduced by sleeve_pct, ML sleeve added, zero-lev clipped.
+ML viability probe: can HistGBM on per-ticker+macro features beat linear V3 momentum?
+Target: 5d fwd log-return >0; rolling 504d train, retrain quarterly, 1d lagged feats.
+Two evals: (A) standalone top-K sleeve; (B) layered V3 + ML sleeve, zero-lev clipped.
 """
 
 from __future__ import annotations
@@ -111,11 +98,7 @@ def make_v3_sizer():
 
 def build_panel(feats: dict, macro: pd.DataFrame, rets: pd.DataFrame,
                  universe: list, fwd: int = 5) -> pd.DataFrame:
-    """
-    Long-format panel: rows = (date, ticker), cols = features + target.
-    Target = (forward fwd-day cum log-return > 0).
-    All features lagged 1d (use yesterday's signals for today's bet).
-    """
+    """Long panel rows=(date,ticker); target = fwd-day cum log-return >0; feats lagged 1d."""
     macro_aligned = macro.reindex(rets.index).ffill()
     macro_view = macro_aligned[[c for c in MACRO_FEATS if c in macro_aligned.columns]]
     parts = []
@@ -127,13 +110,10 @@ def build_panel(feats: dict, macro: pd.DataFrame, rets: pd.DataFrame,
         if not cols:
             continue
         x = df[cols].copy()
-        # ATR-normalized return as extra feature
         if "atr_14" in df.columns and "Close" in df.columns:
             x["atr_pct"] = (df["atr_14"] / df["Close"]).replace([np.inf, -np.inf], np.nan)
-        x = x.shift(1)  # lag features by 1d
-        # Join macro
+        x = x.shift(1)
         x = x.join(macro_view, how="left")
-        # Target: next fwd-day cumulative log-return > 0
         fwd_ret = rets[t].rolling(fwd).sum().shift(-fwd)
         x["target"] = (fwd_ret > 0).astype(int)
         x["fwd_ret"] = fwd_ret
@@ -147,11 +127,7 @@ def build_panel(feats: dict, macro: pd.DataFrame, rets: pd.DataFrame,
 
 def walkforward_predict(panel: pd.DataFrame, train_days: int = 504,
                          retrain_freq: int = 63, min_train: int = 252) -> pd.Series:
-    """
-    Walk-forward predict P(target=1) for each (date, ticker).  Train on
-    expanding-window history up to train_days back, retrain every retrain_freq
-    days.  Returns a Series indexed (date, ticker) -> predicted prob.
-    """
+    """Walk-forward predict P(target=1); train on last train_days, retrain every retrain_freq."""
     feature_cols = [c for c in panel.columns
                      if c not in ("target", "fwd_ret", "ticker")]
     panel = panel.copy()
@@ -164,7 +140,6 @@ def walkforward_predict(panel: pd.DataFrame, train_days: int = 504,
     for i, d in enumerate(dates):
         if i < min_train:
             continue
-        # Retrain every retrain_freq days
         if i - last_train_idx >= retrain_freq or model is None:
             train_start_pos = max(0, i - train_days)
             train_dates = dates[train_start_pos: i]
@@ -181,7 +156,6 @@ def walkforward_predict(panel: pd.DataFrame, train_days: int = 504,
             )
             model.fit(X[mask], y[mask])
             last_train_idx = i
-        # Predict for this date
         today = panel.loc[panel.index == d]
         Xt = today[feature_cols].values
         mask = ~np.isnan(Xt).any(axis=1)
@@ -196,11 +170,7 @@ def walkforward_predict(panel: pd.DataFrame, train_days: int = 504,
 def ml_sleeve_from_preds(panel: pd.DataFrame, preds: pd.Series, rets: pd.DataFrame,
                           k: int = 5, sleeve_pct: float = 0.10,
                           rebal_freq: str = "W") -> pd.DataFrame:
-    """
-    Each rebalance, take top-K names by predicted prob, equal-weight long.
-    Hold until next rebal.  Weekly rebalance trades a bit more but uses the
-    5d forward target more directly.
-    """
+    """Each rebalance: long top-K by predicted prob, equal-weight; held until next rebal."""
     panel = panel.copy()
     panel["pred"] = preds.values
     sizes = pd.DataFrame(0.0, index=rets.index, columns=rets.columns)
@@ -260,11 +230,10 @@ def main():
     print(f"  Predictions generated in {time.time()-t1:.1f}s "
           f"({preds.notna().sum():,} valid)")
 
-    # Sanity: top-K by prediction has positive mean fwd return?
+    # Sanity: cross-sectional quintile spread
     panel_eval = panel.copy()
-    panel_eval["pred"] = preds.values  # same length, same order
+    panel_eval["pred"] = preds.values
     panel_eval = panel_eval.dropna(subset=["pred", "fwd_ret"])
-    # Cross-sectional decile spread
     panel_eval["decile"] = (panel_eval.groupby(level=0)["pred"]
                               .transform(lambda x: pd.qcut(x, 5, labels=False, duplicates="drop")))
     decile_ret = panel_eval.groupby("decile")["fwd_ret"].mean() * 252 / 5
@@ -275,7 +244,7 @@ def main():
     print(f"  Top-Bottom spread: {spread*100:+.2f}% — "
           f"{'POSITIVE' if spread > 0 else 'NEGATIVE'} signal")
 
-    # ---- Standalone ML sleeve ----
+    # ---- Standalone ML sleeve ----  (header)
     print("\n" + "=" * 92)
     print(f"{'Variant':<48} {'Sh':>6} {'Ann':>7} {'DD':>7} {'Cal':>5} {'Vol':>6}")
     print("=" * 92)

@@ -1,28 +1,6 @@
 """
-strategy_audit.py
------------------
-Comprehensive strategy audit: ranks all strategies by composite score and
-produces KEEP / DELETE / LIVE recommendations for pipeline cleanup.
-
-Metrics computed per strategy:
-  - OOS Sharpe          (from oos_selection.parquet)
-  - IS Sharpe           (from oos_selection.parquet)
-  - IS-OOS gap          (raw signed; abs used in scoring)
-  - Annualised return   (from portfolio_comparison.parquet equity curves)
-  - Max drawdown        (from portfolio_comparison.parquet equity curves)
-  - Terminal value      (final equity curve value on $100k capital)
-  - Capture ratio       (upside_capture / downside_capture vs SPY)
-  - Avg gross exposure  (mean fraction of tickers with active signal)
-  - Return gap vs B&H   (annualised strategy return − buy & hold return)
-
-Composite score:
-  score = 0.35 × norm(oos_sharpe)
-        + 0.25 × norm(ann_return)
-        + 0.20 × norm(capture_ratio)
-        + 0.20 × (1 − norm(abs_is_oos_gap))
-
-Usage:
-  python strategy_audit.py
+strategy_audit.py — ranks strategies by composite score (KEEP/DELETE/LIVE recs).
+Composite: 0.35*norm(oos_sharpe) + 0.25*norm(ann_ret) + 0.20*norm(capture) + 0.20*(1-norm(abs_gap)).
 """
 
 import sys
@@ -38,9 +16,7 @@ RESULTS = Path("data/v1/results")
 SIGNALS = Path("data/v1/signals")
 FEATURES = Path("data/v1/features")
 
-# ── Name mapping: portfolio_comparison column → oos_selection method string ────
-# oos_selection uses mixed naming (spaces, underscores); portfolio_comparison
-# uses underscores.  Map the equity curve column names to OOS table method names.
+# ── Name map: portfolio_comparison col -> oos_selection method string ─────────
 _PC_TO_OOS = {
     "equal_weight"       : "equal weight",
     "risk_parity"        : "risk parity",
@@ -95,15 +71,7 @@ def _max_drawdown(equity: pd.Series) -> float:
 
 
 def _capture_ratio(strat_returns: pd.Series, spy_returns: pd.Series) -> float:
-    """
-    Convexity ratio: upside capture / downside capture.
-
-    upside_capture  = mean(strat on SPY+days) / mean(SPY on SPY+days)
-    downside_capture = mean(strat on SPY-days) / mean(SPY on SPY-days)
-
-    Values > 1.0 indicate the strategy captures more upside per unit of
-    downside than SPY — i.e. convex payoff profile.
-    """
+    """Convexity ratio: upside capture / downside capture vs SPY (>1.0 = convex)."""
     aligned = pd.concat([strat_returns, spy_returns], axis=1).dropna()
     aligned.columns = ["strat", "spy"]
 
@@ -119,7 +87,6 @@ def _capture_ratio(strat_returns: pd.Series, spy_returns: pd.Series) -> float:
     up_cap  = up["strat"].mean()  / spy_up_mean  if spy_up_mean  != 0 else np.nan
     dn_cap  = down["strat"].mean() / spy_dn_mean  if spy_dn_mean  != 0 else np.nan
 
-    # dn_cap is positive (both strategy and SPY are negative, ratio is positive)
     if dn_cap is None or np.isnan(dn_cap) or dn_cap <= 0:
         return np.nan
 
@@ -127,7 +94,7 @@ def _capture_ratio(strat_returns: pd.Series, spy_returns: pd.Series) -> float:
 
 
 def _normalize(series: pd.Series) -> pd.Series:
-    """Min-max normalise to [0, 1].  Returns 0.5 if all values identical."""
+    """Min-max normalise to [0,1]; 0.5 if identical."""
     mn, mx = series.min(), series.max()
     if mx == mn:
         return pd.Series(0.5, index=series.index)
@@ -145,12 +112,11 @@ def main():
 
     oos = oos.set_index("method")
 
-    # SPY returns from buy_hold equity curve (buy_hold is 100% SPY since the
-    # portfolio_comparison uses SPY-based buy_hold as the benchmark).
+    # SPY returns from buy_hold (100% SPY benchmark)
     spy_equity  = pc["buy_hold"].dropna()
     spy_returns = spy_equity.pct_change().dropna()
 
-    # Signal matrices for gross-exposure proxy
+    # Signal matrices (gross-exposure proxy)
     sig_regime = pd.read_parquet(SIGNALS / "regime_signals.parquet")
     sig_multi  = pd.read_parquet(SIGNALS / "multi_signals.parquet")
 
@@ -169,7 +135,7 @@ def main():
             oos_sharpe = np.nan
             is_sharpe  = np.nan
 
-        gap     = is_sharpe - oos_sharpe          # signed: positive = overfitting
+        gap     = is_sharpe - oos_sharpe          # +ve = overfitting
         abs_gap = abs(gap)
 
         # ── Equity curve metrics ───────────────────────────────────────────────
@@ -189,11 +155,10 @@ def main():
         # ── Gross exposure proxy ──────────────────────────────────────────────
         src = _SIGNAL_SOURCE.get(key, "multi")
         sig_df = sig_regime if src == "regime" else sig_multi
-        # Align signal dates to equity curve dates (signals may start earlier)
         common_idx = sig_df.index.intersection(equity.index)
         if len(common_idx) > 0:
             sig_slice  = sig_df.reindex(common_idx)
-            gross_exp  = float(sig_slice.abs().mean().mean())  # avg fraction active
+            gross_exp  = float(sig_slice.abs().mean().mean())
         else:
             gross_exp  = np.nan
 
@@ -214,20 +179,11 @@ def main():
     df = pd.DataFrame(rows).set_index("strategy")
 
     # ── Composite score ────────────────────────────────────────────────────────
-    # score = 0.35×norm(oos_sharpe) + 0.25×norm(ann_ret) +
-    #         0.20×norm(capture)    + 0.20×(1 − norm(abs_gap))
-    #
-    # Weight rationale:
-    #   35% OOS Sharpe     — risk-adjusted performance on unseen data (primary)
-    #   25% Ann return     — raw return matters psychologically for live trading
-    #   20% Capture ratio  — convexity: want upside > downside participation
-    #   20% Robustness     — strategies with huge IS-OOS gaps are regime-dependent
-    #                        and likely to mean-revert toward IS Sharpe in live trading
-
+    # 35% OOS Sharpe / 25% AnnRet / 20% Capture / 20% Robustness (1-norm(abs_gap))
     n_oos     = _normalize(df["oos_sharpe"])
     n_ret     = _normalize(df["ann_ret"])
     n_cap     = _normalize(df["capture"].fillna(df["capture"].median()))
-    n_rob     = 1.0 - _normalize(df["abs_gap"])   # larger gap → penalised
+    n_rob     = 1.0 - _normalize(df["abs_gap"])
 
     df["composite"] = (
         0.35 * n_oos
@@ -287,9 +243,7 @@ def main():
     top5 = df.index[:5].tolist()
     rest = df.index[5:].tolist()
 
-    # Tie-break rule: if momentum_tilt and portable_carry are within 0.02 of
-    # each other in composite score, prefer momentum_tilt (simpler, no hedge
-    # friction, closer to raw return, fewer live failure modes).
+    # Tie-break: within 0.02 composite, prefer multi_mom_tilt over portable_carry
     recommended = top5[0]
     if "portable_carry" in top5[:3] and "multi_mom_tilt" in top5[:3]:
         pc_score  = df.loc["portable_carry",  "composite"]
@@ -330,7 +284,6 @@ def main():
     print(f"    Composite    {df.loc[recommended,'composite']:.3f}")
     print()
 
-    # Return top5 and recommended for programmatic use
     return top5, recommended, df
 
 

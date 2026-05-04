@@ -1,20 +1,16 @@
 """
-run_v1.py
----------
-Pipeline orchestrator for the v1 trend-following momentum system.
-Runs each module as a subprocess in sequence.
+run_v1.py — V1 pipeline orchestrator. Runs each module as a subprocess.
 
-Usage
-─────
-  python -m v1.scripts.run_v1              — full run (all stages)
-  python -m v1.scripts.run_v1 signals      — skip data download
-  python -m v1.scripts.run_v1 portfolio    — portfolio only
-  python -m v1.scripts.run_v1 backtest     — backtester + portfolio
-  python -m v1.scripts.run_v1 macro        — from macro onward
-  python -m v1.scripts.run_v1 diagnostic   — correlation diagnostic
-  python -m v1.scripts.run_v1 capture      — capture diagnostic
-  python -m v1.scripts.run_v1 audit        — integrity audit
-  python -m v1.scripts.run_v1 screen       — universe screen
+Usage:
+  python -m v1.scripts.run_v1              full run
+  python -m v1.scripts.run_v1 signals      skip data download
+  python -m v1.scripts.run_v1 portfolio    portfolio only
+  python -m v1.scripts.run_v1 backtest     backtester + portfolio
+  python -m v1.scripts.run_v1 macro        from macro onward
+  python -m v1.scripts.run_v1 diagnostic   correlation diagnostic
+  python -m v1.scripts.run_v1 capture      capture diagnostic
+  python -m v1.scripts.run_v1 audit        integrity audit
+  python -m v1.scripts.run_v1 screen       universe screen
 """
 
 import subprocess
@@ -33,20 +29,20 @@ STEPS = [
     ("v1.portfolio.portfolio",           "Building portfolio"),
 ]
 
-# shortcut entry points — skip early steps when data already exists
+# shortcut entry points
 SHORTCUTS = {
-    "signals"   : "v1.pipeline.feature_engineering",  # skip data download
-    "portfolio" : "v1.portfolio.portfolio",             # run portfolio only
-    "backtest"  : "v1.pipeline.backtester",            # run backtester + portfolio
-    "macro"     : "v1.pipeline.macro_features",        # run from macro onward
+    "signals"   : "v1.pipeline.feature_engineering",   # skip data download
+    "portfolio" : "v1.portfolio.portfolio",            # portfolio only
+    "backtest"  : "v1.pipeline.backtester",            # backtester + portfolio
+    "macro"     : "v1.pipeline.macro_features",        # from macro onward
 }
 
-# standalone diagnostics — run directly, not part of the main pipeline
+# standalone diagnostics — not part of main pipeline
 DIAGNOSTICS = {
-    "diagnostic": "v1.risk.correlation_diagnostic",    # regime / beta / dead-weight analysis
-    "capture"   : "v1.risk.capture_diagnostic",        # upside/downside capture decomposition
-    "audit"     : "v1.validation.integrity_audit",     # look-ahead / WF / sensitivity / cost checks
-    "screen"    : "v1.pipeline.universe_screen",       # liquidity + correlation screen for new tickers
+    "diagnostic": "v1.risk.correlation_diagnostic",    # regime/beta/dead-weight
+    "capture"   : "v1.risk.capture_diagnostic",        # up/down capture
+    "audit"     : "v1.validation.integrity_audit",     # look-ahead / WF / cost
+    "screen"    : "v1.pipeline.universe_screen",       # liquidity + correlation
 }
 
 

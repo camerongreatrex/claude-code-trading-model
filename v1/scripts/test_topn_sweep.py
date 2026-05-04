@@ -1,16 +1,10 @@
 """
-Sweep variants of `top_n_adx_momt_ac_sizes` (the V1 production sizer) and
-report OOS metrics so we can see which knob, if any, beats the pinned
-`top11_adx22_momt_ac55_cap1` on Sharpe / AnnRet / MaxDD / Calmar / Sortino
-without ever using leverage.
+Sweep `top_n_adx_momt_ac_sizes` variants vs pinned `top11_adx22_momt_ac55_cap1`
+on OOS Sharpe/AnnRet/MaxDD/Calmar/Sortino. Strictly zero-leverage (max_gross=1.0).
 
-Baseline pinned in v1/config/params.py:
-    top_n=11, target_vol=0.14, scale_max=2.5, vt_window=63,
-    lev_x=1.5, max_gross=1.0, adx_threshold=22.0,
-    mom_window=63, mom_lo=0.7, mom_hi=1.3, ac_quota=0.55,
-    gross_floor=0.95.
-
-Every variant is strictly zero-leverage (max_gross=1.0).
+Baseline (v1/config/params.py): top_n=11, target_vol=0.14, scale_max=2.5,
+vt_window=63, lev_x=1.5, max_gross=1.0, adx_threshold=22, mom_window=63,
+mom_lo=0.7, mom_hi=1.3, ac_quota=0.55, gross_floor=0.95.
 """
 
 from __future__ import annotations
@@ -121,7 +115,7 @@ def main():
     print(f"  loaded {len(rets)} days, {len(rets.columns)} tickers, "
           f"{len(feats)} features in {time.time()-t0:.1f}s\n")
 
-    # Allow temporary per-name cap override via module attribute monkey-patch
+    # Per-name cap monkey-patch
     import v1.portfolio.portfolio as _pp
     _orig_cap = _pp.MAX_POSITION_PCT
 
@@ -135,9 +129,8 @@ def main():
     variants = [
         ("BASELINE (top11/ac55/mom63/gf95, cap10)", {}),
 
-        # Round-2 stacking: best Calmar driver was top_n=10, best Sharpe driver
-        # was ac_quota=0.45-0.50, and gfloor=0.90 gave a small DD improvement.
-        # Test all sensible combinations of those three.
+        # Round-2 stack: top_n=10 (Calmar), ac_quota=0.45-0.50 (Sharpe),
+        # gfloor=0.90 (small DD gain) — combinations of the three.
         ("top10",                            dict(top_n=10)),
         ("top10 + ac0.45",                   dict(top_n=10, ac_quota=0.45)),
         ("top10 + ac0.50",                   dict(top_n=10, ac_quota=0.50)),
@@ -152,19 +145,18 @@ def main():
         ("top10 + ac0.45 + adx25",           dict(top_n=10, ac_quota=0.45, adx_threshold=25)),
         ("top10 + ac0.45 + gf1.00",          dict(top_n=10, ac_quota=0.45, gross_floor=1.00)),
 
-        # Also try top_n=11 with ac0.45 (keep current top_n)
+        # top_n=11 (current) with ac0.45
         ("top11 + ac0.45",                   dict(ac_quota=0.45)),
         ("top11 + ac0.50",                   dict(ac_quota=0.50)),
         ("top11 + ac0.45 + gf0.90",          dict(ac_quota=0.45, gross_floor=0.90)),
         ("top11 + ac0.45 + mom84",           dict(ac_quota=0.45, mom_window=84)),
 
-        # Edge case: top_n=10 with all-best
+        # Edge: top_n=10 all-best
         ("top10 + ac0.45 + mom84 + gf0.90",  dict(top_n=10, ac_quota=0.45, mom_window=84, gross_floor=0.90)),
         ("top10 + ac0.50 + mom84 + gf0.90",  dict(top_n=10, ac_quota=0.50, mom_window=84, gross_floor=0.90)),
     ]
 
-    # Per-name cap variants — push gross up by allowing 11% or 12% per name
-    # so concentrated top-10 can still deploy near the 95% floor.
+    # Cap 11/12% per name — let top-10 deploy near 95% floor.
     cap_variants = [
         (0.11, "cap11 + top10 + ac0.50 + mom84",   dict(top_n=10, ac_quota=0.50, mom_window=84)),
         (0.11, "cap11 + top10 + ac0.45 + mom84",   dict(top_n=10, ac_quota=0.45, mom_window=84)),
@@ -191,7 +183,7 @@ def main():
               f"gross {r['gross_avg']*100:.1f}%  "
               f"({time.time()-ts:.1f}s)")
 
-    # Per-name cap sweeps (need module monkey-patch)
+    # Per-name cap sweeps (monkey-patched)
     for cap_pct, name, kw in cap_variants:
         ts = time.time()
         try:

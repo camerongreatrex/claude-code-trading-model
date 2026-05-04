@@ -1,56 +1,23 @@
 """
-feature_research.py
--------------------
-Information Coefficient (IC) analysis for all engineered features.
+feature_research.py — IC (Spearman rank correlation between feature[T] and
+fwd return[T+N]) analysis for engineered features.
 
-What is IC?
-───────────
-IC (Information Coefficient) is the Spearman rank correlation between a
-feature value at time T and the actual forward return at T+N.  It measures
-how predictive a feature is — an IC of 0 means the feature is random noise;
-an IC of 1.0 means it perfectly predicts the direction of future returns.
+Benchmarks: |IC|<0.02 noise, 0.02–0.05 marginal, >0.05 useful.
+IC IR (= mean/std IC) Sharpe of IC: <0.3 inconsistent, 0.3–0.5 ok, >0.5 strong.
 
-Typical quant benchmarks:
-  |IC| < 0.02  → weak / noise
-  |IC| 0.02–0.05 → marginal predictive power
-  |IC| > 0.05  → useful signal (large quant funds often act on IC this small
-                  when combined with many factors in a composite model)
+Method: per ticker × feature, rank-IC via 252d rolling Pearson on percentile
+ranks of feature vs fwd 5d return; pool across tickers.
+Level features (bb_middle/upper/lower, obv): IC may be inflated by trend
+autocorrelation — prefer bb_pct_b, bb_bandwidth, obv_zscore.
 
-IC Information Ratio (IC IR = mean IC / std IC) is the Sharpe ratio of the
-IC signal.  Higher = more consistent predictive signal over time.
-  IC IR < 0.3  → inconsistent
-  IC IR 0.3–0.5 → acceptable
-  IC IR > 0.5  → strong / institutional-grade
-
-Method
-──────
-For each ticker and each feature column:
-  1. Compute forward 5-day return at each date T: fwd[T] = Close[T+5]/Close[T] - 1
-  2. Convert both feature and fwd_return to percentile ranks (rank IC approximation)
-  3. Compute rolling 252-day Pearson correlation of those ranks (≈ rolling Spearman IC)
-  4. Pool the IC time series across all tickers to get aggregate statistics
-
-Note on price-level features:
-  bb_middle, bb_upper, bb_lower, and obv are cumulative or level features.
-  Their IC may appear inflated due to trend autocorrelation rather than
-  genuine predictive alpha.  Prefer their normalised variants:
-  bb_pct_b, bb_bandwidth, obv_zscore.
-
-Input / output
-──────────────
-  Reads:  data/features/{TICKER}.parquet  (from feature_engineering.py)
-  Writes: data/research/feature_ic.parquet
-
-Usage
-─────
-  python -m v1.pipeline.feature_research   # run as module
-  python pipeline/feature_research.py   # run as script
+Reads data/features/{T}.parquet → writes data/research/feature_ic.parquet.
+Run: `python -m v1.pipeline.feature_research`.
 """
 
 import sys
 from pathlib import Path
 
-# ── Allow running as a script from the repo root ───────────────────────────────
+# ── Allow running as script from repo root ───────────────────────────────────
 _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -65,14 +32,13 @@ FEATURE_DIR  = Path("data/v1/features")
 RESEARCH_DIR = Path("data/v1/research")
 RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
 
-FWD_DAYS  = 5    # forward return horizon (trading days)
-IC_WINDOW = 252  # rolling window for IC computation (1 trading year)
+FWD_DAYS  = 5    # fwd return horizon (days)
+IC_WINDOW = 252  # rolling IC window (1y)
 
-# Raw OHLCV columns — not engineered features, excluded from IC analysis
+# Raw OHLCV — excluded from IC
 _OHLCV = {"Open", "High", "Low", "Close", "Volume"}
 
-# Price-level features: their IC can be inflated by trend autocorrelation.
-# Flag them in the output rather than removing them — useful for diagnosis.
+# Price-level features — IC inflated by trend autocorr; flagged not removed
 _LEVEL_FEATURES = {"bb_middle", "bb_upper", "bb_lower", "obv"}
 
 
@@ -86,17 +52,11 @@ def _load_features(ticker: str) -> "pd.DataFrame | None":
 
 
 def _rolling_rank_ic(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each engineered feature column in df, compute a rolling 252-day rank IC
-    against the 5-day forward return.
-
-    Returns a DataFrame of IC time series (index = dates, columns = features).
-    The first IC_WINDOW rows will be NaN (warm-up).
-    """
-    # Forward 5-day return aligned to signal date T (no look-ahead):
-    # fwd[T] = Close[T+5] / Close[T] - 1  →  shift(-FWD_DAYS) after pct_change
+    """Per-feature rolling 252d rank IC vs 5d fwd return.
+    Returns DataFrame[dates × features]; first IC_WINDOW rows NaN."""
+    # fwd[T] = Close[T+5]/Close[T]-1 (shift(-FWD_DAYS) after pct_change, no look-ahead)
     fwd       = df["Close"].pct_change(FWD_DAYS).shift(-FWD_DAYS)
-    fwd_rank  = fwd.rank(pct=True)           # percentile rank of forward returns
+    fwd_rank  = fwd.rank(pct=True)
 
     feature_cols = [c for c in df.columns if c not in _OHLCV]
 
@@ -111,16 +71,8 @@ def _rolling_rank_ic(df: pd.DataFrame) -> pd.DataFrame:
 # ── Aggregation ────────────────────────────────────────────────────────────────
 
 def _aggregate_ic(all_ic: dict) -> pd.DataFrame:
-    """
-    Pool IC time series across all tickers and compute summary statistics.
-
-    Args:
-        all_ic: dict mapping feature_name -> list of IC Series (one per ticker).
-
-    Returns:
-        DataFrame with columns: feature, mean_ic, std_ic, ic_ir, pct_positive,
-        n_obs, level_feature.  Sorted by ic_ir descending.
-    """
+    """Pool IC across tickers → summary DataFrame [feature, mean_ic, std_ic,
+    ic_ir, pct_positive, n_obs, level_feature], sorted by ic_ir desc."""
     rows = []
     for feat, ic_list in all_ic.items():
         if not ic_list:
@@ -160,7 +112,7 @@ def main():
     print(f"  Universe               : {len(TICKER_LIST)} tickers")
     print("=" * 70)
 
-    all_ic: dict[str, list] = {}   # feature -> list of IC Series
+    all_ic: dict[str, list] = {}
 
     for ticker in TICKER_LIST:
         df = _load_features(ticker)
@@ -179,13 +131,12 @@ def main():
         print("\nNo data loaded — cannot produce IC table.")
         return
 
-    # Aggregate and save
     results  = _aggregate_ic(all_ic)
     out_path = RESEARCH_DIR / "feature_ic.parquet"
     results.to_parquet(out_path, engine="pyarrow", compression="snappy", index=False)
     print(f"\nResults saved  ->  {out_path}")
 
-    # ── Print ranked table ────────────────────────────────────────────────────
+    # ── Ranked table ───────────────────────────────────────────────────────
     print("\n" + "=" * 78)
     print(
         f"{'#':<4} {'Feature':<22} {'Mean IC':>8} {'Std IC':>8} "
@@ -202,8 +153,8 @@ def main():
 
     print("=" * 78)
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-    clean = results[~results["level_feature"]]   # exclude potentially inflated features
+    # ── Summary (excludes potentially inflated level features) ─────────────
+    clean = results[~results["level_feature"]]
     n_strong    = (clean["ic_ir"].abs() > 0.5).sum()
     n_moderate  = ((clean["ic_ir"].abs() >= 0.3) & (clean["ic_ir"].abs() <= 0.5)).sum()
     n_weak      = (clean["ic_ir"].abs() < 0.3).sum()

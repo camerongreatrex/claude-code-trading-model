@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
 """
-run_expanded_validation.py
-──────────────────────────
-Full validation, diagnostic, and fix pass for the expanded universe.
-Runs every step end-to-end, prints actual numbers, applies fixes.
-
-Changes vs prior pass:
-  - Step 1: beta is INFORMATIONAL ONLY — no hard removal gate.
-  - Step 2: loads from closes_matrix_expanded.parquet (full ~2015 history).
-  - Step 3: frozen-weight sizing + beta scalars (in signal_generation.py).
-  - Step 4a: 7-window walk-forward OOS validation.
-  - Step 4b: allocation split optimisation if all gates pass.
-  - Step 5: expanded Sharpe gate lowered from 0.80 → 0.50.
-
-Usage:
-    cd /Users/cameron/Documents/GitHub/Algorithmic-Trading-2
-    python run_expanded_validation.py
+End-to-end validation/diagnostic/fix pass for the expanded universe.
+Step 1 beta is informational (no removal); Step 2 uses closes_matrix_expanded.parquet;
+Step 3 frozen-weight sizing + beta scalars; Step 4a 7-window WF OOS;
+Step 4b alloc-split optim if gates pass; Step 5 expanded Sharpe gate 0.80→0.50.
 """
 
 import sys
@@ -38,7 +26,7 @@ RESULTS_DIR = Path("data/v1/results")
 MACRO_DIR   = Path("data/shared/macro")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ─── helpers ──────────────────────────────────────────────────────────────────
+# ─── helpers ──────────────────────────────────────────────
 
 def section(title: str, width: int = 72) -> None:
     print(f"\n{'='*width}")
@@ -124,7 +112,7 @@ def regime_alpha_bps(rets: pd.Series, spy: pd.Series, mask: pd.Series) -> float:
 
 
 def _build_exp_returns(sizes: pd.DataFrame, allocation_split_expanded: float) -> pd.Series:
-    """Build the expanded sleeve return series from sizes and raw closes."""
+    """Expanded sleeve returns from sizes + raw closes."""
     ret_cols: dict = {}
     for t in sizes.columns:
         for p in [FEATURE_DIR / f"{t}.parquet", DATA_DIR / f"{t}.parquet"]:
@@ -148,9 +136,7 @@ def _build_exp_returns(sizes: pd.DataFrame, allocation_split_expanded: float) ->
     return exp_ret
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 0 — Build closes_matrix_expanded.parquet from existing raw files
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ STEP 0 — Build closes_matrix_expanded.parquet from raw files ══
 
 def step0_build_expanded_matrix() -> None:
     section("STEP 0: Build closes_matrix_expanded.parquet")
@@ -158,7 +144,7 @@ def step0_build_expanded_matrix() -> None:
 
     exp_path = DATA_DIR / "closes_matrix_expanded.parquet"
 
-    # Check which raw files we have
+    # Available raw files
     available = [t for t in NEW_TICKERS if (DATA_DIR / f"{t}.parquet").exists()]
     missing   = [t for t in NEW_TICKERS if t not in available]
 
@@ -172,7 +158,7 @@ def step0_build_expanded_matrix() -> None:
         print("  ERROR: no raw files found — run pipeline.data_pipeline first")
         return
 
-    # Build expanded closes from individual raw files
+    # Build expanded closes from raw files
     print(f"\n  Building expanded closes matrix from {len(available)} raw files...")
     closes_dict: dict = {}
     for t in available:
@@ -188,28 +174,25 @@ def step0_build_expanded_matrix() -> None:
         return
 
     exp_closes = pd.DataFrame(closes_dict).sort_index()
-    # Drop rows where ALL tickers are NaN (e.g., pre-market history)
+    # Drop rows where all tickers NaN (pre-market history)
     exp_closes = exp_closes.dropna(how="all")
 
     exp_closes.to_parquet(exp_path)
     print(f"  closes_matrix_expanded.parquet: {exp_closes.shape[0]} rows × {exp_closes.shape[1]} cols")
     print(f"  Date range: {exp_closes.index[0].date()} → {exp_closes.index[-1].date()}")
 
-    # Also print core closes_matrix for comparison
+    # Core closes_matrix for comparison
     core_path = DATA_DIR / "closes_matrix.parquet"
     if core_path.exists():
         cm = pd.read_parquet(core_path)
         print(f"\n  closes_matrix.parquet (core): {cm.shape[0]} rows × {cm.shape[1]} cols")
         print(f"  Date range: {pd.to_datetime(cm.index[0]).date()} → {pd.to_datetime(cm.index[-1]).date()}")
 
-    print(f"\n  NOTE: expanded matrix uses dropna(how='all') — individual ticker NaNs "
-          f"are preserved. The signal generation's sector groupby handles per-ticker "
-          f"NaN gaps via pct_change which naturally produces NaN for missing rows.")
+    print(f"\n  NOTE: dropna(how='all') preserves per-ticker NaNs; "
+          f"signal generation sector groupby handles them via pct_change.")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 0b — Engineer features for expanded tickers (if missing)
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ STEP 0b — Engineer features for expanded tickers if missing ══
 
 def step0b_features() -> None:
     section("STEP 0b: Engineer features for expanded tickers")
@@ -249,19 +232,14 @@ def step0b_features() -> None:
     print(f"\n  Features engineered: {ok} tickers  |  Skipped: {skipped}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 1 — Data integrity check (beta is INFORMATIONAL ONLY — no removal)
-# ══════════════════════════════════════════════════════════════════════════════
+# ══ STEP 1 — Data integrity (beta informational, no removal) ══
 
 def step1_data_integrity() -> dict:
-    """
-    Returns ticker_stats dict. Beta is printed for information; NO hard removal.
-    Beta-weighted sizing in signal_generation.py handles high-beta exposure.
-    """
+    """Returns ticker_stats. Beta printed for info; sizing scalars handle high-beta."""
     section("STEP 1: Data Integrity Check")
     from v1.pipeline.universe_expansion import NEW_TICKERS, SECTOR_MAP, SECTOR_STOCKS
 
-    # ── 1a. closes_matrix_expanded.parquet ───────────────────────────────────
+    # ── 1a. closes_matrix_expanded.parquet ──
     exp_path = DATA_DIR / "closes_matrix_expanded.parquet"
     core_path = DATA_DIR / "closes_matrix.parquet"
 
@@ -290,10 +268,9 @@ def step1_data_integrity() -> dict:
     else:
         print("      closes_matrix_expanded.parquet : NOT FOUND — run Step 0 first")
 
-    # ── 1b. Per-ticker beta table ─────────────────────────────────────────────
+    # ── 1b. Per-ticker beta table ──
     print(f"\n  1b. Beta table for NEW_TICKERS (sorted by 252d beta)")
-    print(f"  NOTE: Beta is informational only — no hard removal. "
-          f"High-beta tickers get reduced sizing via compute_beta_size_scalars().")
+    print(f"  NOTE: Beta informational; high-beta tickers reduced via compute_beta_size_scalars().")
     spy_path = DATA_DIR / "SPY.parquet"
     spy_ret  = pd.Series(dtype=float)
     if spy_path.exists():
@@ -336,7 +313,7 @@ def step1_data_integrity() -> dict:
     for t, s in sorted_tickers:
         b_str  = f"{s['beta']:.3f}"      if not np.isnan(s["beta"])      else "   n/a"
         bb_str = f"{s['bear_beta']:.3f}" if not np.isnan(s["bear_beta"]) else "   n/a"
-        # Compute the scalar that would be applied at this beta level (point-in-time)
+        # Point-in-time scalar at this beta
         beta_v = s["beta"] if not np.isnan(s["beta"]) else 0.5
         scalar = float(np.clip(1.50 - beta_v, 0.30, 1.00))
         flag   = " ← reduced" if beta_v > 0.80 else ""

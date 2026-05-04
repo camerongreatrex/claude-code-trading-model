@@ -1,21 +1,8 @@
 """
 V4 candidate construction & walk-forward validation.
-
-From the overlay/ML sweep we have two real winners on top of V3:
-  A. Vol-carry overlay  — scale gross down in high VIX-z (calm=0->1.0,
-                           fear=+2->0.5)  | -2pp Ann, -1.3pp DD, +0.6 Calmar
-  B. ML second-opinion filter — skip V3 picks where HistGBM P(positive 5d) <
-                           0.40  | +0.08 Sh, +0.19pp Ann, DD unchanged
-
-Two V4 candidates:
-  V4A = V3 + ML filter only          (push Sh, keep Ann)
-  V4B = V3 + ML filter + vol-carry   (push Calmar, accept Ann hit)
-
-Validation:
-  1. Full-period OOS metrics (post 756d warmup)
-  2. Calendar-year breakdown
-  3. 1-yr walk-forward with TRUE OOS retraining (3 windows: 22-23, 23-24, 24-25)
-  4. 6-month walk-forward stability check (~6 windows)
+V4A = V3 + ML filter (HistGBM P(5d+)<0.40 skip).
+V4B = V3 + ML filter + vol-carry (calm=0->1.0, fear=+2->0.5).
+Reports full-period OOS, calendar-year, 1-yr walk-forward (3 windows), 6-mo stability.
 """
 
 from __future__ import annotations
@@ -237,7 +224,7 @@ def main():
     sig, feats, rets, macro = load_inputs()
     print(f"Loaded {len(rets)} days, {len(rets.columns)} tickers in {time.time()-t0:.1f}s\n")
 
-    # Full-period OOS comparison
+    # Full-period OOS
     sv3 = make_v3_sizes(sig, feats, rets, macro)
     sv4a = make_v4a(sig, feats, rets, macro)
     sv4b = make_v4b(sig, feats, rets, macro)

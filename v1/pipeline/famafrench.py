@@ -1,14 +1,7 @@
 """
-shared/famafrench.py
---------------------
-Download and cache Fama-French factor data from Ken French's data library.
-
-Provides daily and monthly 5-factor + momentum data for:
-  - Factor attribution (Mkt-RF, SMB, HML, RMW, CMA, Mom)
-  - Extended historical validation (industry portfolios back to 1963)
-
-Data source: https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html
-Uses CSV zip files — no API key required.
+famafrench.py — download/cache Ken French FF5+Mom (daily/monthly) for factor
+attribution and 10-industry monthly returns for extended validation (back to 1963).
+Source: mba.tuck.dartmouth.edu (CSV zip, no API key).
 """
 
 import io
@@ -49,7 +42,7 @@ def _parse_ff5(text: str, freq: str) -> pd.DataFrame:
     """Parse Fama-French 5-factor CSV text into a DataFrame."""
     lines = text.strip().split("\n")
 
-    # Find the header row (first row with "Mkt-RF")
+    # Locate header row containing "Mkt-RF"
     start_idx = None
     for i, line in enumerate(lines):
         if "Mkt-RF" in line:
@@ -58,8 +51,8 @@ def _parse_ff5(text: str, freq: str) -> pd.DataFrame:
     if start_idx is None:
         raise ValueError("Could not find header row in FF5 data")
 
-    # Read until blank line or non-numeric data (annual factors section)
-    data_lines = [lines[start_idx]]  # header
+    # Read until blank/annual-factors section
+    data_lines = [lines[start_idx]]
     for line in lines[start_idx + 1:]:
         stripped = line.strip()
         if not stripped or not stripped[0].isdigit():
@@ -69,7 +62,7 @@ def _parse_ff5(text: str, freq: str) -> pd.DataFrame:
     df = pd.read_csv(io.StringIO("\n".join(data_lines)))
     df.columns = [c.strip() for c in df.columns]
 
-    # Parse date column (first unnamed column)
+    # First unnamed column is date
     date_col = df.columns[0]
     if freq == "daily":
         df["Date"] = pd.to_datetime(df[date_col], format="%Y%m%d")
@@ -79,8 +72,7 @@ def _parse_ff5(text: str, freq: str) -> pd.DataFrame:
 
     df = df.set_index("Date").drop(columns=[date_col])
     df = df.apply(pd.to_numeric, errors="coerce")
-    # Convert from percentage to decimal
-    df = df / 100.0
+    df = df / 100.0  # pct → decimal
     return df
 
 
@@ -88,7 +80,7 @@ def _parse_momentum(text: str, freq: str) -> pd.DataFrame:
     """Parse Fama-French momentum factor CSV."""
     lines = text.strip().split("\n")
 
-    # Find the CSV header row: ",Mom" or "Date,Mom" pattern
+    # Header pattern: ",Mom" or "Date,Mom"
     start_idx = None
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -108,7 +100,6 @@ def _parse_momentum(text: str, freq: str) -> pd.DataFrame:
     df = pd.read_csv(io.StringIO("\n".join(data_lines)))
     df.columns = [c.strip() for c in df.columns]
 
-    # First column is unnamed (date), rename it
     date_col = df.columns[0]
     if freq == "daily":
         df["Date"] = pd.to_datetime(df[date_col], format="%Y%m%d")
@@ -127,7 +118,7 @@ def _parse_industries(text: str) -> pd.DataFrame:
     """Parse Fama-French 10-industry portfolio monthly returns."""
     lines = text.strip().split("\n")
 
-    # Find the value-weighted returns section
+    # Value-weighted returns header
     start_idx = None
     for i, line in enumerate(lines):
         if "NoDur" in line and "Durbl" in line:
@@ -156,23 +147,14 @@ def _parse_industries(text: str) -> pd.DataFrame:
 
 
 def get_ff5_factors(freq: str = "monthly", use_cache: bool = True) -> pd.DataFrame:
-    """
-    Get Fama-French 5 factors + Momentum as a single DataFrame.
-
-    Returns columns: Mkt-RF, SMB, HML, RMW, CMA, Mom, RF
-    Values in decimal (0.01 = 1%).
-
-    Args:
-        freq: "daily" or "monthly"
-        use_cache: if True, use cached parquet if available
-    """
+    """FF5+Mom (Mkt-RF, SMB, HML, RMW, CMA, Mom, RF) as decimals.
+    freq: 'daily' or 'monthly'. Cached as parquet."""
     cache_path = CACHE_DIR / f"ff5_mom_{freq}.parquet"
     if use_cache and cache_path.exists():
         df = pd.read_parquet(cache_path)
         print(f"  Loaded cached FF5+Mom ({freq}): {len(df):,} obs")
         return df
 
-    # Download and parse
     ff5_text = _download_and_extract(f"ff5_{freq}")
     ff5 = _parse_ff5(ff5_text, freq)
 
@@ -183,7 +165,6 @@ def get_ff5_factors(freq: str = "monthly", use_cache: bool = True) -> pd.DataFra
     df = df.dropna()
     df.index.name = "Date"
 
-    # Cache
     df.to_parquet(cache_path)
     print(f"  Cached FF5+Mom ({freq}): {len(df):,} obs, "
           f"{df.index.min().date()} → {df.index.max().date()}")
@@ -191,10 +172,7 @@ def get_ff5_factors(freq: str = "monthly", use_cache: bool = True) -> pd.DataFra
 
 
 def get_industry_portfolios(use_cache: bool = True) -> pd.DataFrame:
-    """
-    Get Fama-French 10-industry portfolio monthly returns.
-    For extended historical validation (back to 1926).
-    """
+    """FF 10-industry monthly returns (back to 1926). For extended validation."""
     cache_path = CACHE_DIR / "industries_monthly.parquet"
     if use_cache and cache_path.exists():
         df = pd.read_parquet(cache_path)

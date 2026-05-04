@@ -1,37 +1,13 @@
 """
-capture_diagnostic.py
----------------------
-Read-only diagnostic: upside/downside capture decomposition.
+capture_diagnostic.py — read-only upside/downside capture decomposition.
+Diagnoses concave (low-beta) profile vs target convex.
 
-Diagnoses the structural problem when a strategy beats S&P on down days but
-lags on up days (low-beta concave profile vs the target convex profile).
+Sections: (1) capture ratios per method (up/dn = mean(strat|spy>0)/mean(spy|spy>0)),
+(2) cash drag of production method, (3) asset-class up/down-day P&L bps,
+(4) per-ticker efficiency = upside_capture × active_pct/100 (bottom-5 = drag),
+(5) filter-impact ladder: raw_ma → +RSI → +min_hold → +ATR_stop → +time_decay.
 
-Five sections
-─────────────
-  Section 1 — Upside/Downside Capture Ratios across all sizing methods
-               upside_capture   = mean(strat | spy>0) / mean(spy | spy>0)
-               downside_capture = mean(strat | spy<0) / mean(spy | spy<0)
-               capture_ratio    = upside / downside  (>1 = convex, goal)
-
-  Section 2 — Cash Drag Analysis for the production (best OOS) method
-               Gross exposure % per day, cash allocation, annualised drag
-               vs SPY, days below 50% invested, exposure by regime
-
-  Section 3 — Asset Class Contribution (up-day vs down-day P&L in bps)
-               Identifies which asset classes drag on rally days
-
-  Section 4 — Per-Ticker Signal Efficiency
-               Upside capture per ticker × active days % → efficiency score
-               Flags bottom-5 "drag candidates"
-
-  Section 5 — Filter Impact Analysis (equity/sector/stock tickers only)
-               Raw MA → +RSI → +min_hold → +ATR stop → +time_decay
-               Delta in upside capture at each step reveals the costliest filter
-
-Usage
-─────
-  python -m v1.pipeline.capture_diagnostic
-  python run.py capture
+Usage: python -m v1.pipeline.capture_diagnostic | python run.py capture
 """
 
 import sys
@@ -123,10 +99,7 @@ def _load_returns_matrix() -> pd.DataFrame:
 
 
 def _production_method(oos_df: pd.DataFrame) -> tuple:
-    """
-    Return (method_label, portfolio_col_name) for the best OOS Sharpe method.
-    Falls back to equal_weight if oos_selection is unavailable.
-    """
+    """Return (method_label, portfolio_col) for best OOS Sharpe. Falls back to equal_weight."""
     if oos_df.empty or "oos_sharpe" not in oos_df.columns or "method" not in oos_df.columns:
         return "equal weight", "equal_weight"
     idx   = oos_df["oos_sharpe"].idxmax()
@@ -136,10 +109,7 @@ def _production_method(oos_df: pd.DataFrame) -> tuple:
 
 
 def _signal_matrix_for_method(col_name: str) -> pd.DataFrame:
-    """
-    Return the appropriate signal matrix for a portfolio column name.
-    Methods with 'multi' use multi_signals.parquet; others use regime.
-    """
+    """Signal matrix for a portfolio column: 'multi' methods → multi_signals.parquet, else regime."""
     if "multi" in col_name:
         return _load_signal_matrix("multi_signals")
     return _load_regime_signals()
@@ -151,12 +121,8 @@ def compute_capture_ratios(
     portfolio_df: pd.DataFrame,
     spy_ret: pd.Series,
 ) -> pd.DataFrame:
-    """
-    For each sizing method in portfolio_comparison compute:
-      upside_capture   >1 = beats S&P on up days
-      downside_capture <1 = loses less than S&P on down days (good)
-      capture_ratio    >1 = convex profile (the goal)
-    """
+    """Per method: upside_capture (>1 beats SPY on up days), downside_capture (<1 better),
+    capture_ratio = up/dn (>1 = convex)."""
     port_returns = portfolio_df.pct_change().dropna()
     rows = []
 
@@ -250,24 +216,18 @@ def compute_cash_drag(
     spy_ret: pd.Series,
     regimes: pd.Series,
 ) -> tuple:
-    """
-    Quantify how much time in cash costs the strategy.
-
-    Returns (summary_df, regime_df):
-      summary_df — scalar metrics (gross exposure, drag, days below 50%)
-      regime_df  — avg gross exposure per regime
-    """
+    """Quantify cash-time cost. Returns (summary_df scalar metrics, regime_df per-regime exposure)."""
     tickers = [t for t in signals.columns if t in TICKER_LIST]
     n = len(tickers)
     if n == 0:
         return pd.DataFrame(), pd.DataFrame()
 
     sig       = signals[tickers].reindex(spy_ret.index).fillna(0)
-    gross_exp = sig.abs().sum(axis=1) / n          # fraction of universe active
+    gross_exp = sig.abs().sum(axis=1) / n          # universe-active fraction
     cash_frac = 1.0 - gross_exp
 
     spy_aligned = spy_ret.reindex(sig.index).fillna(0)
-    daily_drag  = cash_frac * spy_aligned          # return missed per day
+    daily_drag  = cash_frac * spy_aligned          # missed return/day
     ann_drag    = float(daily_drag.mean() * 252)
 
     below50     = int((gross_exp < 0.50).sum())
@@ -341,25 +301,19 @@ def compute_asset_class_contribution(
     returns_matrix: pd.DataFrame,
     spy_ret: pd.Series,
 ) -> pd.DataFrame:
-    """
-    For each asset class compute annualised P&L contribution in basis points,
-    split into SPY-up days and SPY-down days.
-
-    Uses equal-weight normalised signals so contribution = fraction of capital
-    allocated to each class times its return.  position[t] = signal[t-1]/n_active[t-1]
-    to avoid look-ahead.
-    """
+    """Per asset-class annualised P&L bps split SPY-up vs SPY-dn days.
+    EW-normalised signals; position[t]=signal[t-1]/n_active[t-1] (no look-ahead)."""
     tickers = [t for t in signals.columns if t in returns_matrix.columns]
     sig = signals[tickers].reindex(returns_matrix.index).fillna(0)
     ret = returns_matrix[tickers].reindex(sig.index)
 
-    # Normalise to equal-weight portfolio weights each day
+    # EW portfolio weights per day
     n_active = sig.abs().sum(axis=1).replace(0, np.nan)
     weights  = sig.divide(n_active, axis=0).fillna(0)
 
-    # shift(1): yesterday's weight earns today's return — no look-ahead
+    # shift(1): yesterday's weight earns today's return (no look-ahead)
     pos          = weights.shift(1).fillna(0)
-    contributions = pos * ret   # (T × N) daily fractional P&L per ticker
+    contributions = pos * ret   # daily fractional P&L per ticker
 
     spy_aligned = spy_ret.reindex(contributions.index).fillna(0)
     up_mask     = spy_aligned > 0
@@ -373,11 +327,11 @@ def compute_asset_class_contribution(
             continue
         ac_contrib = contributions[ac_tickers].sum(axis=1)
 
-        # Annualised basis points: mean_daily × 252 × 10000
+        # Annualised bps: mean_daily × 252 × 10000
         total_bps  = float(ac_contrib.mean()       * 252 * 10_000)
         up_bps     = float(ac_contrib[up_mask].mean() * 252 * 10_000)
         dn_bps     = float(ac_contrib[dn_mask].mean() * 252 * 10_000)
-        avg_weight = float(pos[ac_tickers].abs().sum(axis=1).mean() * 100)  # % of portfolio
+        avg_weight = float(pos[ac_tickers].abs().sum(axis=1).mean() * 100)  # % portfolio
 
         rows.append({
             "asset_class"  : ac,
@@ -413,7 +367,7 @@ def _print_asset_class_table(df: pd.DataFrame) -> None:
             flag = "  <-- RALLY DRAG"
         elif row["up_day_bps"] > 0 and row["down_day_bps"] > 0:
             flag = "  <-- adds on both"
-        # Truncate tickers list if long
+        # Truncate long ticker list
         tk_str = row["tickers"]
         if len(tk_str) > 28:
             tk_str = tk_str[:25] + "..."
@@ -438,15 +392,8 @@ def compute_ticker_efficiency(
     returns_matrix: pd.DataFrame,
     spy_ret: pd.Series,
 ) -> pd.DataFrame:
-    """
-    For each ticker compute:
-      upside_capture   = mean(ticker_strat_ret | spy>0) / mean(spy | spy>0)
-      active_pct       = % of days with nonzero signal
-      cash_drag_days   = days signal=0 AND ticker_return>0  (missed upside)
-      efficiency_score = upside_capture × active_pct/100
-
-    Ranked descending by efficiency_score.
-    """
+    """Per ticker: upside_capture vs SPY-up, active_pct, cash_drag_days
+    (signal=0 ∧ ret>0), efficiency_score = up_cap × active_pct/100. Ranked desc."""
     tickers = [t for t in signals.columns if t in returns_matrix.columns]
     spy_aligned  = spy_ret.reindex(returns_matrix.index).fillna(0)
     up_mask      = spy_aligned > 0
@@ -457,10 +404,10 @@ def compute_ticker_efficiency(
         sig = signals[ticker].reindex(returns_matrix.index).fillna(0)
         ret = returns_matrix[ticker]
 
-        # Strategy return: shift signal 1 day so yesterday's signal earns today's return
+        # shift(1) so yesterday's signal earns today's return
         strat_ret = sig.shift(1).fillna(0) * ret
 
-        # Per-ticker upside capture vs SPY (not vs ticker's own return)
+        # Per-ticker upside capture vs SPY (not vs own ret)
         if mean_spy_up and mean_spy_up != 0 and up_mask.sum() > 5:
             up_cap = float(strat_ret[up_mask].mean() / mean_spy_up)
         else:

@@ -1,7 +1,6 @@
 """
-Walk-forward (3-yr train / 1-yr test, rolling) verification of the top
-sweep candidates so we can see whether the win is consistent across regimes,
-not just the aggregated OOS slice.
+Walk-forward (3y train / 1y test, rolling) on top sweep candidates to confirm
+regime-stable wins (not just aggregate OOS).
 """
 
 from __future__ import annotations

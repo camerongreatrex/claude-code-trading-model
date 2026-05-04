@@ -1,16 +1,7 @@
 """
-Sweep five candidate alpha overlays on top of V3 production
-(top11_adx22_momt_ac55_cap1 + 12% diversifier sleeve):
-
-  1. Trend-quality filter   — drop/halve names whose 63d return came from <=3 days
-  2. Vol-carry (VIX scaling) — scale gross down when VIX-zscore is high, up when calm
-  3. Earnings event filter   — flatten any V3 name within +-N trading days of earnings
-  4. Mean-reversion sleeve   — small contrarian sleeve buying gap-down names
-  5. FF5+Mom residual signal — long-only sleeve of names with strongest 63d alpha
-                                (residual return after FF5+Mom regression)
-
-For each overlay we report OOS Sh/Ann/MaxDD/Calmar vs V3 baseline.  Zero leverage
-(gross <= 1.0 x capital) is enforced after every overlay.
+Sweep 5 candidate alpha overlays on V3 (top11_adx22_momt_ac55_cap1 + 12% sleeve):
+trend-quality filter, vol-carry (VIX), earnings-event filter, mean-rev sleeve,
+FF5+Mom residual sleeve. Reports OOS Sh/Ann/DD/Calmar; zero-leverage enforced.
 """
 
 from __future__ import annotations
@@ -104,24 +95,19 @@ def zero_lev_clip(sizes: pd.DataFrame, capital: float = CAPITAL) -> pd.DataFrame
     return sizes.multiply(cap_scale, axis=0)
 
 
-# ============================================================================
-# 1. TREND-QUALITY FILTER
-# ============================================================================
+# ── 1. Trend-quality filter ──
 def trend_quality_filter(sizes: pd.DataFrame, rets: pd.DataFrame,
                           lookback: int = 63, top_k_days: int = 3,
                           quality_floor: float = 0.5,
                           punish_factor: float = 0.5) -> pd.DataFrame:
-    """
-    For each long position, compute what fraction of the 63d cum log-return
-    came from the top-K abs-return days.  If > quality_floor, halve position
-    (signal that the trend is fragile / driven by 1-2 jumps).
-    """
+    """Halve longs whose 63d return is concentrated in top-K abs days (fragile trend)."""
     out = sizes.copy()
     cands = [c for c in sizes.columns if c in rets.columns]
     for t in cands:
         r = rets[t]
         roll_sum = r.rolling(lookback).sum()
         # Rolling sum of top-K abs values via apply (acceptable: small universe)
+        # Rolling top-K abs sum via apply (small universe, acceptable)
         top_sum = r.abs().rolling(lookback).apply(
             lambda x: np.sort(np.abs(x))[-top_k_days:].sum(), raw=True
         )
@@ -133,36 +119,23 @@ def trend_quality_filter(sizes: pd.DataFrame, rets: pd.DataFrame,
     return zero_lev_clip(out)
 
 
-# ============================================================================
-# 2. VOL-CARRY OVERLAY (VIX scaling)
-# ============================================================================
+# ── 2. Vol-carry (VIX) ──
 def vol_carry_overlay(sizes: pd.DataFrame, macro: pd.DataFrame,
                        calm_z: float = -0.5, fear_z: float = 1.5,
                        calm_mult: float = 1.0, fear_mult: float = 0.6) -> pd.DataFrame:
-    """
-    Scale daily gross by VIX zscore.  Calm regime (z <= calm_z) -> calm_mult.
-    Fear regime (z >= fear_z) -> fear_mult.  Linear interp between.
-    Zero leverage cap means calm_mult > 1 won't add leverage, so we use 1.0
-    for calm and trim for fear (asymmetric: cut risk in stress).
-    """
+    """Scale gross by VIX zscore: calm_mult at z<=calm_z, fear_mult at z>=fear_z, linear between."""
     if "vix_zscore" not in macro.columns:
         return sizes
     z = macro["vix_zscore"].reindex(sizes.index).ffill().bfill()
-    # Linear ramp: at calm_z -> calm_mult, at fear_z -> fear_mult
     span = max(fear_z - calm_z, 1e-6)
     raw = calm_mult + (fear_mult - calm_mult) * ((z - calm_z) / span).clip(0, 1)
     mult = raw.clip(lower=fear_mult, upper=calm_mult)
     return sizes.multiply(mult, axis=0)
 
 
-# ============================================================================
-# 3. EARNINGS EVENT FILTER
-# ============================================================================
+# ── 3. Earnings event filter ──
 def earnings_event_filter(sizes: pd.DataFrame, window: int = 2) -> pd.DataFrame:
-    """
-    Zero out positions in any name within +-`window` trading days of an
-    earnings announcement (idiosyncratic gap risk).
-    """
+    """Zero positions within +-window trading days of earnings (gap risk)."""
     if not EARN_PATH.exists():
         return sizes
     earn = json.load(open(EARN_PATH))
@@ -177,7 +150,6 @@ def earnings_event_filter(sizes: pd.DataFrame, window: int = 2) -> pd.DataFrame:
                 d = pd.Timestamp(d)
             except Exception:
                 continue
-            # Find nearest trading day, mask +-window
             pos = idx.searchsorted(d)
             lo = max(0, pos - window)
             hi = min(len(idx), pos + window + 1)
@@ -186,28 +158,21 @@ def earnings_event_filter(sizes: pd.DataFrame, window: int = 2) -> pd.DataFrame:
     return out
 
 
-# ============================================================================
-# 4. MEAN-REVERSION SLEEVE (gap-down buy)
-# ============================================================================
+# ── 4. Mean-rev sleeve (gap-down) ──
 def mean_rev_sleeve(rets: pd.DataFrame, capital: float, candidates: list,
                      z_thresh: float = -2.0, hold_days: int = 2,
                      sleeve_pct: float = 0.05, lookback: int = 60) -> pd.DataFrame:
-    """
-    Each day, rank current 1d returns vs name's recent vol.  Names with
-    z <= -z_thresh get a long position for `hold_days` (mean-revert).
-    Equal-weight within picks; total dollar exposure capped at sleeve_pct.
-    """
+    """Long names with 1d z <= -z_thresh for hold_days; equal-weight, capped at sleeve_pct."""
     cands = [t for t in candidates if t in rets.columns]
     R = rets[cands]
     vol = R.rolling(lookback).std()
     z = R / vol.replace(0, np.nan)
     triggers = (z <= z_thresh).fillna(False)
     sizes = pd.DataFrame(0.0, index=R.index, columns=R.columns)
-    # Forward-fill triggers for hold_days
+    # Hold each trigger for hold_days
     held = triggers.copy()
     for shift in range(1, hold_days):
         held = held | triggers.shift(shift).fillna(False)
-    # Daily count of active picks; size each pick equally up to sleeve_pct
     n_active = held.sum(axis=1).replace(0, np.nan)
     per_name = (sleeve_pct * capital) / n_active
     for t in cands:
@@ -215,26 +180,17 @@ def mean_rev_sleeve(rets: pd.DataFrame, capital: float, candidates: list,
     return sizes.fillna(0.0)
 
 
-# ============================================================================
-# 5. FAMA-FRENCH RESIDUAL ALPHA SIGNAL
-# ============================================================================
+# ── 5. FF5+Mom residual alpha sleeve ──
 def ff_residual_sleeve(rets: pd.DataFrame, capital: float, candidates: list,
                         regress_window: int = 252, mom_window: int = 63,
                         k: int = 5, sleeve_pct: float = 0.10,
                         rebal_freq: str = "ME") -> pd.DataFrame:
-    """
-    For each name in `candidates`, run rolling 252d regression of daily return
-    on FF5 + Mom factors.  Compute residual (idiosyncratic) returns.  Each
-    rebalance, rank names by trailing `mom_window` cumulative residual; long
-    top-K equal-weight.  This is "alpha momentum" — return after stripping
-    market/size/value/quality/investment/momentum factor exposure.
-    """
+    """Rolling 252d FF5+Mom regression -> residual returns; long top-K by mom_window cum residual."""
     if not FF_PATH.exists():
         return pd.DataFrame(0.0, index=rets.index, columns=rets.columns)
     ff = pd.read_parquet(FF_PATH)
-    # FF data is in % daily returns; convert to decimal
+    # FF in % -> decimal, aligned to rets
     ff = ff / 100.0
-    # Align to portfolio daily index
     ff = ff.reindex(rets.index).ffill()
     factor_cols = ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "Mom"]
     F = ff[factor_cols].fillna(0.0).values  # T x 6
@@ -255,17 +211,15 @@ def ff_residual_sleeve(rets: pd.DataFrame, capital: float, candidates: list,
                 continue
             X_m, y_m = X[mask], y[mask]
             try:
-                # OLS: beta = (X'X)^-1 X'y
+                # OLS beta = (X'X)^-1 X'y
                 XtX = X_m.T @ X_m
                 Xty = X_m.T @ y_m
                 beta = np.linalg.solve(XtX + 1e-8 * np.eye(6), Xty)
             except Exception:
                 continue
-            # Today's residual = today's excess return - factor exposure
             res[end] = y_full[end] - F[end] @ beta
         residuals[t] = res
 
-    # Rank by trailing mom_window cumulative residual at each rebal
     cum_res = residuals.rolling(mom_window, min_periods=int(mom_window * 0.6)).sum()
     sizes = pd.DataFrame(0.0, index=rets.index, columns=rets.columns)
     eom = rets.index.to_series().groupby(pd.Grouper(freq=rebal_freq)).max()
@@ -282,9 +236,7 @@ def ff_residual_sleeve(rets: pd.DataFrame, capital: float, candidates: list,
     return sizes.replace(0.0, np.nan).ffill().fillna(0.0)
 
 
-# ============================================================================
-# DRIVER
-# ============================================================================
+# ── DRIVER ──
 def add_sleeve_to_v3(sizes_v3: pd.DataFrame, sleeve: pd.DataFrame,
                       sleeve_pct: float, capital: float = CAPITAL) -> pd.DataFrame:
     """V3 reduced by sleeve_pct; sleeve added; final zero-lev clip."""
@@ -302,7 +254,6 @@ def main():
     sector_etfs = [t for t, c in TICKERS.items() if c == "sector_etf" and t in rets.columns]
     universe = stocks + sector_etfs
 
-    # V3 baseline
     sizer_v3 = make_v3_sizer()
     sizes_v3 = sizer_v3(sig, feats, rets, macro)
     pr_v3 = portfolio_returns(sizes_v3, rets).dropna()
@@ -317,7 +268,7 @@ def main():
           f"{m_v3['calmar']:>5.2f} {m_v3['vol']*100:>5.1f}%")
     print("-" * 92)
 
-    # ---- 1. Trend-quality filter ----
+    # 1. Trend-quality filter
     print("\n[1] TREND-QUALITY FILTER (drop/halve names with concentrated trend)")
     for floor, punish in [(0.40, 0.5), (0.50, 0.5), (0.60, 0.5),
                            (0.50, 0.0), (0.40, 0.0)]:
@@ -330,7 +281,7 @@ def main():
               f"{m['ann']*100:>6.2f}% {m['mdd']*100:>6.2f}% "
               f"{m['calmar']:>5.2f} {m['vol']*100:>5.1f}%")
 
-    # ---- 2. Vol-carry overlay ----
+    # 2. Vol-carry overlay
     print("\n[2] VOL-CARRY OVERLAY (scale gross down in high VIX-z)")
     for cz, fz, cm, fm in [(-0.5, 1.5, 1.0, 0.7),
                             (-0.5, 1.5, 1.0, 0.5),
@@ -345,7 +296,7 @@ def main():
               f"{m['ann']*100:>6.2f}% {m['mdd']*100:>6.2f}% "
               f"{m['calmar']:>5.2f} {m['vol']*100:>5.1f}%")
 
-    # ---- 3. Earnings event filter ----
+    # 3. Earnings event filter
     print("\n[3] EARNINGS EVENT FILTER (flatten positions ±N days of earnings)")
     for w in [1, 2, 3, 5]:
         s = earnings_event_filter(sizes_v3, window=w)
@@ -356,7 +307,7 @@ def main():
               f"{m['ann']*100:>6.2f}% {m['mdd']*100:>6.2f}% "
               f"{m['calmar']:>5.2f} {m['vol']*100:>5.1f}%")
 
-    # ---- 4. Mean-reversion sleeve ----
+    # 4. Mean-reversion sleeve
     print("\n[4] MEAN-REV SLEEVE (gap-down buy, 2-day hold)")
     for sp, zt, hd in [(0.05, -2.0, 2), (0.05, -2.5, 2),
                         (0.10, -2.0, 2), (0.10, -2.5, 3),
@@ -371,7 +322,7 @@ def main():
               f"{m['ann']*100:>6.2f}% {m['mdd']*100:>6.2f}% "
               f"{m['calmar']:>5.2f} {m['vol']*100:>5.1f}%")
 
-    # ---- 5. FF-residual sleeve ----
+    # 5. FF-residual sleeve
     print("\n[5] FF5+Mom RESIDUAL ALPHA SLEEVE (long top-K by 63d residual)")
     for sp, k, mw in [(0.05, 5, 63), (0.10, 5, 63), (0.15, 5, 63),
                        (0.10, 5, 126), (0.10, 7, 63)]:

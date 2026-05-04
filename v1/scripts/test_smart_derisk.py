@@ -1,24 +1,9 @@
 """
-Non-ML smart-de-risking sweep.  Goal: capture V4B-like Calmar / DD lift
-without ML and without bleeding AnnRet (plain vol-carry costs ~2pp Ann).
-
-Overlays tested on top of V3 (top11_adx22_momt_ac55_cap1 + 12% sleeve):
-
-  1. CONDITIONAL VOL-CARRY — scale down only when VIX-z is BOTH high AND
-     rising 5d.  Avoids cutting after the storm.
-  2. BACKWARDATION OVERLAY — scale down when vol_backwardation flag is on
-     (vix9d > vix, ~23% of days).  Hard regime signal.
-  3. YIELD-CURVE OVERLAY — scale down when curve_inverted (recession bias).
-  4. PORTFOLIO-DD DE-RISK — track running DD; cut gross to X% if DD exceeds
-     trigger; restore on recovery.
-  5. ADAPTIVE SLEEVE — sleeve_pct grows in fear regime (more defensive).
-  6. CALM-REGIME CAP BOOST — raise per-name cap from 0.12 to 0.14 in calm
-     regimes only (push AnnRet on safe days).
-  7. LOWER GROSS_FLOOR — test 0.85, 0.90 (smaller risk budget; cleaner DD).
-  8. PROFIT-TAKING — scale individual position 0.7x when up >2σ over 20d.
-
-For each overlay we report OOS Sh/Ann/MaxDD/Calmar.  Zero-leverage cap
-enforced after every overlay.
+Non-ML smart-de-risking sweep on V3: aim for V4B-like Calmar/DD lift without
+ML and without bleeding AnnRet (plain vol-carry costs ~2pp). Tests 8 overlays:
+conditional vol-carry, backwardation, yield-curve, portfolio-DD de-risk,
+adaptive sleeve, calm-regime cap boost, lower gross_floor, profit-taking.
+Reports OOS Sh/Ann/DD/Calmar; zero-lev enforced.
 """
 
 from __future__ import annotations
@@ -118,9 +103,7 @@ def zero_lev_clip(sizes, capital=CAPITAL):
     return sizes.multiply(sc, axis=0)
 
 
-# -----------------------------------------------------------------------
-# Overlays
-# -----------------------------------------------------------------------
+# ── Overlays ──
 def cond_vol_carry(sizes, macro, fear_z=1.5, roc_days=5,
                     fear_mult=0.5):
     """Scale down only when vix_zscore >= fear_z AND VIX rising over roc_days."""
@@ -156,13 +139,7 @@ def curve_overlay(sizes, macro, mult=0.7):
 
 def dd_derisk(sizes, rets, dd_trigger=-0.04, derisk_mult=0.6,
                restore_dd=-0.02, capital=CAPITAL):
-    """
-    Walk forward through the strategy's equity curve.  Each day:
-      - compute current strategy DD from running peak
-      - if DD <= dd_trigger : scale tomorrow's sizes by derisk_mult
-      - stay derisked until DD recovers above restore_dd
-    Avoids look-ahead by computing DD with cumulative T-1 returns.
-    """
+    """Cut gross by derisk_mult when running DD <= dd_trigger; restore at restore_dd. T-1 lag avoids look-ahead."""
     pr = portfolio_returns(sizes, rets).dropna()
     eq = (1 + pr).cumprod()
     peak = eq.cummax()
@@ -175,18 +152,14 @@ def dd_derisk(sizes, rets, dd_trigger=-0.04, derisk_mult=0.6,
         elif derisked and ddv >= restore_dd:
             derisked = False
         state.loc[d] = derisk_mult if derisked else 1.0
-    # Apply state to NEXT day's sizes (no look-ahead)
+    # Lag state by 1 day (no look-ahead)
     state_lag = state.shift(1).reindex(sizes.index).fillna(1.0)
     return sizes.multiply(state_lag, axis=0)
 
 
 def adaptive_sleeve(sig, feats, rets, macro, base_pct=0.10, fear_pct=0.20,
                      fear_z=1.0, capital=CAPITAL):
-    """
-    Build V3 with daily-varying sleeve: base_pct in calm, fear_pct in fear
-    (vix_zscore >= fear_z).  Implementation: build two V3s with different
-    sleeve sizes, blend per-day by regime mask.
-    """
+    """V3 with sleeve_pct = base_pct (calm) / fear_pct (vix_z >= fear_z); blend two V3s by regime mask."""
     sizer_calm = make_v3_sizer(sleeve_pct=base_pct)
     sizer_fear = make_v3_sizer(sleeve_pct=fear_pct)
     sc = sizer_calm(sig, feats, rets, macro)
@@ -200,11 +173,7 @@ def adaptive_sleeve(sig, feats, rets, macro, base_pct=0.10, fear_pct=0.20,
 
 def calm_cap_boost(sig, feats, rets, macro, calm_z=-0.5,
                     calm_cap=0.14, normal_cap=0.12):
-    """
-    Use calm_cap when vix_zscore <= calm_z, else normal_cap.  Build two V3s
-    with different caps and blend.  In calm regimes higher cap may capture
-    more upside without breaching zero-lev.
-    """
+    """Per-name cap = calm_cap when vix_z <= calm_z else normal_cap; blend two V3s by mask."""
     sizer_normal = make_v3_sizer(cap_pct=normal_cap)
     sizer_calm   = make_v3_sizer(cap_pct=calm_cap)
     sn = sizer_normal(sig, feats, rets, macro)
@@ -217,11 +186,7 @@ def calm_cap_boost(sig, feats, rets, macro, calm_z=-0.5,
 
 
 def profit_take(sizes, rets, lookback=20, sigma_thresh=2.0, scale=0.7):
-    """
-    For each long position, if the name's 20d cum log-return divided by 20d
-    rolling std exceeds sigma_thresh, scale that day's position by `scale`
-    (take half off the table on parabolic moves).
-    """
+    """Scale long by `scale` when 20d cum-ret / 20d std >= sigma_thresh (trim parabolic moves)."""
     out = sizes.copy()
     for t in sizes.columns:
         if t not in rets.columns:
@@ -236,9 +201,7 @@ def profit_take(sizes, rets, lookback=20, sigma_thresh=2.0, scale=0.7):
     return zero_lev_clip(out)
 
 
-# -----------------------------------------------------------------------
-# Driver
-# -----------------------------------------------------------------------
+# ── Driver ──
 def main():
     t0 = time.time()
     sig, feats, rets, macro = load_inputs()

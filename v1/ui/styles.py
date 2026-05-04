@@ -1,11 +1,11 @@
 # ui/styles.py
-# CSS constant, Plotly layout helper, shared colour palette and display labels.
+# CSS, Plotly layout helper, palette and labels.
 
 import plotly.graph_objects as go  # noqa: F401 — available for callers
 
 from v1.config.params import V1_PRODUCTION_METHOD
 
-# ── Fine-grained CSS tweaks (dark grey tone-on-tone) ──────────────────────────
+# ── CSS (dark tone-on-tone) ──────────────────────────
 CSS = """
 <style>
   /* Tighten top padding */
@@ -54,7 +54,7 @@ CSS = """
 </style>
 """
 
-# ── Shared Plotly layout defaults ─────────────────────────────────────────────
+# ── Plotly layout defaults ─────────────────────────────────────────────
 _LAYOUT = dict(
     paper_bgcolor="#1c1c1c",
     plot_bgcolor ="#1c1c1c",
@@ -68,7 +68,7 @@ _LAYOUT = dict(
 )
 
 def _layout(**overrides) -> dict:
-    """Merge _LAYOUT with per-chart overrides, deep-merging dict values."""
+    """Merge _LAYOUT with overrides; deep-merges dict values."""
     base = dict(_LAYOUT)
     for k, v in overrides.items():
         if k in base and isinstance(base[k], dict) and isinstance(v, dict):
@@ -77,10 +77,9 @@ def _layout(**overrides) -> dict:
             base[k] = v
     return base
 
-# ── Chart colour palette and display labels ───────────────────────────────────
-# PALETTE maps sizing-method keys to hex colours used consistently across all
-# chart traces so each method always appears in the same colour.
-# "pos"/"neg" are generic green/red used for bar charts, P&L cells, etc.
+# ── Palette and labels ───────────────────────────────────
+# PALETTE: sizing-method key → hex colour (consistent across charts).
+# "pos"/"neg" are generic green/red for bars and P&L cells.
 PALETTE = {
     "equal_weight"          : "#4a9eff",
     "atr_sized"             : "#50fa7b",
@@ -130,7 +129,7 @@ PALETTE = {
     "top11_vt14sm25_x1.5_cap1": "#22c55e", # green-500 — prior zero-lev candidate
     "top11_adx22_momt_ac55_cap1": "#16a34a", # green-600 — production (zero-leverage)
 }
-# LABELS maps the same keys to human-readable legend/table strings.
+# LABELS: keys → legend/table strings.
 LABELS = {
     "equal_weight"          : "Equal Weight",
     "atr_sized"             : "ATR Sized",
@@ -177,20 +176,15 @@ LABELS = {
     "top11_adx22_momt_ac55_cap1": "Top-11 ADX+Momt+AC (Zero-Lev) ★",
 }
 
-# ── Dashboard display tiers ───────────────────────────────────────────────────
-# TIER_SHOW: Shown by default on all charts. These are the production candidates
-#            and the benchmark. Maximum 8 lines for readability.
-# TIER_AVAILABLE: Hidden by default but selectable via multiselect dropdown.
-#                 Useful research variants the user might want to compare.
-# Everything else: hidden from dashboard entirely (still computed by portfolio.py
-#                  for research purposes).
+# ── Display tiers ───────────────────────────────────────────────────
+# TIER_SHOW: shown by default (max 8 for readability).
+# TIER_AVAILABLE: hidden, selectable via multiselect.
+# Else: hidden from dashboard (still computed in portfolio.py).
 
 TIER_SHOW = {
-    # Production = V1_PRODUCTION_METHOD (pinned 2026-04-28 to
-    # top11_adx22_momt_ac55_cap1) — zero-leverage top-N + ADX22 filter +
-    # 63d momentum tilt + 55% asset-class quota.  OOS 21.00% / 2.324 Sh
-    # / -6.33 DD across 2022-2025.  All other rows are zero-leverage
-    # legacy candidates kept for comparison.
+    # Production (pinned 2026-04-28): top11_adx22_momt_ac55_cap1 — zero-lev top-N
+    # + ADX22 + 63d momentum tilt + 55% asset-class quota. OOS 21.00% / 2.324 Sh
+    # / -6.33 DD across 2022-2025. Others are zero-lev legacy candidates.
     V1_PRODUCTION_METHOD,       # PRODUCTION ★ — OOS Sh 2.32
     "top11_vt14sm25_x1.5_cap1", # Prior zero-lev candidate — OOS Sh 2.22
     "multi_mom_tilt",           # OOS Sh 1.56 — momentum tilt
@@ -201,15 +195,10 @@ TIER_SHOW = {
     "buy_hold",                 # Benchmark
 }
 
-TIER_AVAILABLE = set()   # All non-top-5 hidden; add back via set if needed for research
+TIER_AVAILABLE = set()   # all non-top-5 hidden; add back via set for research
 
-# Everything NOT in TIER_SHOW or TIER_AVAILABLE is hidden from the dashboard.
-# This includes: half_kelly, ir_optimized, composite_vol_target, vol_target,
-# signal_gated_mv_regime, ensemble_atr_pca_macro, atr_sized, atr_pca,
-# atr_pca_macro, eq_dd_control, fast_atr, multi_fast_atr, multi_fast_mom_tilt,
-# multi_fast_atr_vol, multi_fast_mom_vol, pair_atr, multi_pair_atr, rp_macro,
-# risk_parity, rp_regime_vix, rp_regime_vix_dw, multi_atr_macro, hrp,
-# multi_hrp, multi_hrp_mom, and any other method not listed above.
+# Anything not in TIER_SHOW/TIER_AVAILABLE is hidden from the dashboard
+# (half_kelly, ir_optimized, vol_target, atr_*, hrp, etc.).
 
 
 def get_color(method_key: str) -> str:

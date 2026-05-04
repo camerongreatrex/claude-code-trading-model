@@ -1,46 +1,10 @@
 """
-sensitivity.py
---------------
-Parameter sensitivity sweep for the MA crossover strategy.
-
-For each parameter, sweeps a range while holding all others at their
-default values, runs walk-forward validation (3yr train / 1yr test,
-equal-weight), and reports OOS Sharpe per value.
-
-Parameters swept
-────────────────
-  ma_fast    — MA crossover fast window  [30, 40, 50, 60, 70]
-  ma_slow    — MA crossover slow window  [150, 175, 200, 225, 250]
-  rsi_thresh — RSI entry gate            [60, 65, 70, 75, 80]
-  atr_mult   — ATR trailing stop mult    [2.0, 2.5, 3.0, 3.5, 4.0]
-  min_hold   — Min hold days             [3, 5, 7, 10]
-
-Method
-──────
-MA window parameters are applied directly inside the signal generation
-logic (MA crossover) in this module's _gen_signals() function.
-
-Constant parameters (rsi_thresh, atr_mult, min_hold) are implemented as
-module-level attributes in signal_generation.py.  They are temporarily
-patched on the module object — e.g. sg.ATR_TRAILING_MULT = 2.0 — before
-each sweep iteration, then restored.  No pipeline files are modified.
-
-Fragility flag
-──────────────
-If a ±1 step change from the default value causes OOS Sharpe to drop
-more than FRAGILITY_THRESHOLD (0.2), the parameter is flagged as fragile.
-A fragile parameter has likely been implicitly fitted to the data; its
-real-world behaviour is not reliable.
-
-Output
-──────
-  data/research/sensitivity.parquet   columns: parameter, value,
-                                                oos_sharpe, oos_std, n_periods
-
-Usage
-─────
-  python -m v1.pipeline.sensitivity
-  python pipeline/sensitivity.py
+Parameter sensitivity sweep for MA crossover strategy. Sweeps each param
+(ma_fast, ma_slow, rsi_thresh, atr_mult, min_hold) holding others at default,
+runs walk-forward (3yr/1yr equal-weight), reports OOS Sharpe per value.
+Constant params patched on signal_generation module then restored.
+Fragility: >0.2 OOS Sharpe drop on +/-1 step flags overfit.
+Output: data/research/sensitivity.parquet.
 """
 
 import sys
@@ -100,14 +64,7 @@ FRAGILITY_THRESHOLD = 0.2
 # ── Data loading ───────────────────────────────────────────────────────────────
 
 def _load_data():
-    """
-    Load all feature DataFrames and macro data.
-
-    Returns:
-        features : dict {ticker -> feature DataFrame} for tickers that have data
-        macro    : macro DataFrame (vix, vix_zscore, ...)
-        returns  : aligned (T x N) DataFrame of daily log returns
-    """
+    """Load feature DFs, macro, and aligned (T x N) log-return DataFrame."""
     macro    = sg.load_macro()
     features = {}
     for ticker in TICKER_LIST:
@@ -132,22 +89,8 @@ def _gen_signals(
 ) -> pd.DataFrame:
     """
     Generate signal_regime for all tickers with configurable MA windows.
-
-    Non-bond assets (equity_index, sector_etf, stock, commodity):
-        Long-only MA crossover: signal = 1 when Close.rolling(ma_fast) >
-        Close.rolling(ma_slow), else 0.  VIX gate, RSI entry filter,
-        min-hold filter, and ATR trailing stop are then applied.  Those
-        three filters read their thresholds from the sg module at call
-        time, so patching sg.RSI_ENTRY_THRESH etc. before calling this
-        function affects the sweep correctly.
-
-    Bond assets (TLT, HYG, TIP):
-        Two-sided momentum (bond_regime always returns 1, so momentum rule
-        always active).  MA windows don't apply to bonds; they trend in
-        both directions and mean-reverting them is dangerous.
-
-    Returns:
-        DataFrame (T x N) of integer signal values, dropna-aligned.
+    Non-bonds: long-only MA crossover + VIX gate + RSI/min-hold/ATR filters.
+    Bonds: two-sided momentum (no MA windows).
     """
     all_sigs = {}
     for ticker, df in features.items():
@@ -155,14 +98,12 @@ def _gen_signals(
         gate        = sg.vix_gate(macro, df.index)
 
         if asset_class == "bond":
-            # bond_regime() always returns 1 (momentum always active for bonds).
-            # np.where(1, mom, rev) = mom, so simplify to just momentum * gate.
+            # bond_regime always 1 -> simplify to momentum * gate.
             mom      = sg.momentum_rule(df)
             signal_r = mom * gate
 
         else:
-            # Long-only MA crossover with sweep MA windows.
-            # All three post-processors read from sg module (may be patched).
+            # MA crossover; post-processors read from (possibly patched) sg module.
             ma_f     = df["Close"].rolling(ma_fast).mean()
             ma_s     = df["Close"].rolling(ma_slow).mean()
             signal_r = (ma_f > ma_s).astype(int) * gate
@@ -180,18 +121,11 @@ def _gen_signals(
 
 def _walk_forward_oos(signals: pd.DataFrame, returns: pd.DataFrame) -> list:
     """
-    Equal-weight walk-forward: 3yr train / 1yr test.
-
-    For each non-overlapping 1-year test window, computes equal-weight
-    average of strategy returns across all tickers, then annualised Sharpe.
-
-    Strategy return on day t: position(t-1) * log_return(t).
-    Positions are taken at the close on day t-1 (the signal date) and the
-    return accrues the next day — no look-ahead.
-
-    Returns list of annualised OOS Sharpe ratios (one per test period).
+    Equal-weight walk-forward (3yr/1yr): per non-overlapping test window,
+    equal-weight avg strat return -> annualised Sharpe. Returns list per period.
+    Strat[t] = pos[t-1] * ret[t] (no look-ahead).
     """
-    # Align returns to signals index (signals may be shorter due to MA warm-up)
+    # Align returns to signals index (MA warm-up may shorten signals)
     common_idx = signals.index.intersection(returns.index)
     sig_aligned = signals.reindex(common_idx)
     ret_aligned = returns.reindex(common_idx)
@@ -200,8 +134,7 @@ def _walk_forward_oos(signals: pd.DataFrame, returns: pd.DataFrame) -> list:
     if not tickers or len(common_idx) < TRAIN_DAYS + TEST_DAYS:
         return []
 
-    # Pre-compute strategy returns for all tickers once
-    # strat[t] = ret[t] * sig[t-1]  (position on t-1 earns return on t)
+    # Pre-compute strat[t] = ret[t] * sig[t-1]
     strat_all = ret_aligned[tickers].multiply(
         sig_aligned[tickers].shift(1).fillna(0),
     )
@@ -231,15 +164,8 @@ def _sweep_one(
     value,
 ) -> dict:
     """
-    Run one sweep iteration for a single parameter value.
-
-    MA window parameters: calls _gen_signals() with the modified MA windows.
-
-    Constant parameters: temporarily patches the sg module attribute, calls
-    _gen_signals() with default MA windows, then restores the original value
-    regardless of whether _gen_signals() succeeds or raises.
-
-    Returns dict with: parameter, value, oos_sharpe, oos_std, n_periods.
+    One sweep iteration. MA params -> direct args; constants -> patch sg attr
+    and restore in finally. Returns parameter, value, oos_sharpe, oos_std, n_periods.
     """
     ma_fast = DEFAULTS["ma_fast"]
     ma_slow = DEFAULTS["ma_slow"]
@@ -280,14 +206,8 @@ def _sweep_one(
 
 def _print_summary(results: pd.DataFrame) -> None:
     """
-    Print formatted sensitivity table with fragility flags.
-
-    Fragility rules:
-      1. Any value more than FRAGILITY_THRESHOLD below the default OOS Sharpe
-         is flagged per-row as [FRAGILE].
-      2. Any adjacent pair (adjacent in the sweep list) where the drop exceeds
-         FRAGILITY_THRESHOLD is flagged as a step-drop warning.
-      3. Parameters with at least one fragile value are listed in the summary.
+    Print sensitivity table. Flags [FRAGILE] when value drops > FRAGILITY_THRESHOLD
+    below default; also warns on any adjacent step drop > threshold.
     """
     W = 72
     print("\n" + "=" * W)
