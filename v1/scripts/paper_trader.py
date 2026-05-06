@@ -427,7 +427,7 @@ def compute_live_signals() -> dict:
             latest_atr    = float(feat["atr_14"].iloc[-1])
             latest_close  = float(feat["Close"].iloc[-1])
             latest_rsi    = float(feat["rsi_14"].iloc[-1])
-            latest_adx    = float(feat["adx_14"].iloc[-1]) if "adx_14" in feat.columns else 0.0
+            latest_adx    = float(feat["adx"].iloc[-1]) if "adx" in feat.columns else 0.0
 
             # Active signal from the chosen strategy
             latest_active = int(sig[sig_col].iloc[-1]) if sig_col in sig.columns else latest_regime
@@ -438,6 +438,13 @@ def compute_live_signals() -> dict:
                 latest_ret63 = float(_closes.iloc[-1] / _closes.iloc[-63] - 1)
             else:
                 latest_ret63 = 0.0
+
+            # Trailing log-returns for V4N-B profit-take overlay (live, no parquet
+            # dependency).  Last 11 values cover the lookback=10 window plus the
+            # current bar so std/sum can be computed in-memory.
+            _logret = (
+                np.log(_closes / _closes.shift(1)).dropna().tail(11).tolist()
+            )
 
             # Donchian breakout detection
             try:
@@ -473,6 +480,7 @@ def compute_live_signals() -> dict:
                 "rsi"           : latest_rsi,
                 "adx"           : latest_adx,
                 "ret_63d"       : latest_ret63,
+                "log_returns"   : _logret,
                 "breakout"      : latest_breakout,
                 "squeeze"       : latest_squeeze,
                 "asset_class"   : asset_cls,
@@ -997,10 +1005,22 @@ def _compute_topn_v2_targets(
 
     # V4N-B overlays (wired 2026-05-01) — mirrors portfolio.profit_take_overlay
     # + cond_vol_carry_overlay so live = backtest.
-    out = _apply_profit_take_live(out, lookback=10, sigma_thresh=1.5, scale=0.7)
+    out = _apply_profit_take_live(out, signals=signals,
+                                   lookback=10, sigma_thresh=1.5, scale=0.7)
     vc_mult = _get_cond_vol_carry_multiplier(fear_z=1.5, roc_days=5, fear_mult=0.5)
     if vc_mult < 1.0:
         out = {t: v * vc_mult for t, v in out.items()}
+
+    # V4N-D overlays (wired 2026-05-05) — Family-O asym vol boost +
+    # Family-S4 top-RS concentration.  Walk-forward: +4.13pp OOS AnnRet over O,
+    # DD held at -4.20%, beats O in 6 of 7 calendar windows.
+    # Mirrors portfolio.asym_vol_boost_overlay + fear_topRS_concentration_overlay.
+    out = _apply_asym_vol_boost_live(
+        out, calm_boost=1.15, calm_z=-0.5, fear_cut=0.9, fear_z=1.0,
+    )
+    out = _apply_fear_topRS_live(
+        out, signals=signals, top_k=3, fear_z=1.0,
+    )
 
     gross2 = sum(out.values())
     if gross2 > max_gross * pv and gross2 > 0:
@@ -1009,42 +1029,76 @@ def _compute_topn_v2_targets(
     return out
 
 
-def _apply_profit_take_live(positions: dict, lookback: int = 10,
+def _apply_profit_take_live(positions: dict, signals: dict | None = None,
+                              lookback: int = 10,
                               sigma_thresh: float = 1.5,
                               scale: float = 0.7) -> dict:
     """
     V4N-B profit-take overlay (live).  For each long position, reads the last
-    `lookback`+1 days of log-returns from the on-disk feature parquet, computes
-    z = cum / (std × sqrt(lookback)).  If z >= sigma_thresh, scale by `scale`.
+    ``lookback`` log-returns from the in-memory signal dict (populated by
+    ``compute_live_signals`` with no parquet dependency), computes
+    z = cum / (std × sqrt(lookback)).  If z >= sigma_thresh, scale by ``scale``.
 
     Mirrors portfolio.profit_take_overlay for live = backtest invariance.
     """
-    if not positions:
-        return positions
-    feat_dir = Path("data/v1/features")
-    if not feat_dir.exists():
+    if not positions or not signals:
         return positions
     out = dict(positions)
     for t in list(out.keys()):
         if out[t] <= 0:
             continue
-        fp = feat_dir / f"{t}.parquet"
-        if not fp.exists():
+        s = signals.get(t)
+        if not s:
             continue
-        try:
-            r = pd.read_parquet(fp)["log_return"].dropna().tail(lookback)
-            if len(r) < lookback:
-                continue
-            cum = float(r.sum())
-            std = float(r.std() * np.sqrt(lookback))
-            if std <= 0:
-                continue
-            z = cum / std
-            if z >= sigma_thresh:
-                out[t] = out[t] * scale
-        except Exception:
+        rets = s.get("log_returns") or []
+        if len(rets) < lookback:
             continue
+        r = np.asarray(rets[-lookback:], dtype=float)
+        cum = float(r.sum())
+        std = float(r.std() * np.sqrt(lookback))
+        if std <= 0:
+            continue
+        z = cum / std
+        if z >= sigma_thresh:
+            out[t] = out[t] * scale
     return out
+
+
+_VIX_STATE_CACHE: dict | None = None
+
+
+def _get_live_vix_state(roc_days: int = 5) -> dict:
+    """
+    Fetch live ^VIX, compute 60-day rolling z-score and ROC.  Cached at
+    module level so overlays in the same run share one network fetch.
+
+    Returns dict with keys: z (float, NaN on failure), roc (float, 0 on failure),
+    ok (bool).
+    """
+    global _VIX_STATE_CACHE
+    if _VIX_STATE_CACHE is not None:
+        return _VIX_STATE_CACHE
+    state = {"z": float("nan"), "roc": 0.0, "ok": False}
+    try:
+        vix = yf.download("^VIX", period="120d", interval="1d",
+                          auto_adjust=True, progress=False)["Close"]
+        if isinstance(vix, pd.DataFrame):
+            vix = vix.iloc[:, 0]
+        vix = vix.dropna()
+        if len(vix) < 60 + roc_days + 1:
+            _VIX_STATE_CACHE = state
+            return state
+        roll = vix.rolling(60)
+        z_series = (vix - roll.mean()) / roll.std()
+        state = {
+            "z":   float(z_series.iloc[-1]),
+            "roc": float(vix.iloc[-1] - vix.iloc[-1 - roc_days]),
+            "ok":  True,
+        }
+    except Exception as _e:
+        print(f"  [vix_state] fetch failed ({_e}) — assuming calm")
+    _VIX_STATE_CACHE = state
+    return state
 
 
 def _get_cond_vol_carry_multiplier(fear_z: float = 1.5, roc_days: int = 5,
@@ -1056,20 +1110,88 @@ def _get_cond_vol_carry_multiplier(fear_z: float = 1.5, roc_days: int = 5,
 
     Mirrors portfolio.cond_vol_carry_overlay for live = backtest invariance.
     """
-    macro_path = Path("data/shared/macro/macro_features.parquet")
-    if not macro_path.exists():
+    state = _get_live_vix_state(roc_days=roc_days)
+    if not state["ok"]:
         return 1.0
-    try:
-        m = pd.read_parquet(macro_path)
-        if "vix_zscore" not in m.columns or "vix" not in m.columns:
-            return 1.0
-        z   = float(m["vix_zscore"].iloc[-1])
-        roc = float(m["vix"].iloc[-1] - m["vix"].iloc[-1 - roc_days])
-        if z >= fear_z and roc > 0:
-            return float(fear_mult)
-        return 1.0
-    except Exception:
-        return 1.0
+    if state["z"] >= fear_z and state["roc"] > 0:
+        return float(fear_mult)
+    return 1.0
+
+
+def _apply_asym_vol_boost_live(positions: dict,
+                                 calm_boost: float = 1.15, calm_z: float = -0.5,
+                                 fear_cut: float = 0.9, fear_z: float = 1.0) -> dict:
+    """
+    V4N-D Family-O overlay (live).  Scale all positions UP in calm regime
+    (vix_z <= calm_z) by calm_boost, DOWN in fear (vix_z >= fear_z) by fear_cut.
+
+    Mirrors portfolio.asym_vol_boost_overlay for live = backtest invariance.
+    Final gross cap is enforced by the caller.
+    """
+    if not positions:
+        return positions
+    state = _get_live_vix_state()
+    if not state["ok"]:
+        return positions
+    z = state["z"]
+    if z <= calm_z:
+        scale = calm_boost
+    elif z >= fear_z:
+        scale = fear_cut
+    else:
+        return positions
+    return {t: v * scale for t, v in positions.items()}
+
+
+def _apply_fear_topRS_live(positions: dict, signals: dict,
+                             top_k: int = 3, fear_z: float = 1.0) -> dict:
+    """
+    V4N-D Family-S4 overlay (live).  In fear regime (vix_z >= fear_z),
+    concentrate longs into top_k by 63-day relative strength (ret_63d).
+    Drop the bottom names and redistribute their notional equally across
+    survivors (gross preserved).
+
+    Mirrors portfolio.fear_topRS_concentration_overlay for live = backtest
+    invariance.  Sleeve / non-long names (e.g. negative sizes if added later)
+    are preserved.
+    """
+    if not positions:
+        return positions
+    state = _get_live_vix_state()
+    if not state["ok"] or state["z"] < fear_z:
+        return positions
+
+    # Identify long names with valid ret_63d for ranking.
+    longs = {t: v for t, v in positions.items() if v > 0}
+    if len(longs) < top_k:
+        return positions
+
+    rs = {}
+    for t in longs:
+        s = signals.get(t)
+        if not s:
+            continue
+        r = s.get("ret_63d")
+        if r is None or (isinstance(r, float) and np.isnan(r)):
+            continue
+        rs[t] = float(r)
+    if len(rs) < top_k:
+        return positions
+
+    keep = set(sorted(rs, key=lambda t: -rs[t])[:top_k])
+    drop = [t for t in longs if t not in keep]
+    dropped_notional = sum(longs[t] for t in drop)
+    each = dropped_notional / top_k
+
+    out = dict(positions)
+    for t in keep:
+        out[t] = out[t] + each
+    # Remove dropped names entirely so _rebalance_to_targets closes them.
+    # Setting to 0.0 would make them present-with-zero-target which the
+    # rebalancer skips (`if tgt <= 0: continue`), leaving stale positions open.
+    for t in drop:
+        out.pop(t, None)
+    return out
 
 
 def _compute_position_size(
@@ -1264,6 +1386,107 @@ def _sell(state: dict, ticker: str, price: float,
     pnl_s = f"+${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
     print(f"  SELL {ticker:<6}  {pos['shares']:.3f} sh @ ${price:.2f}"
           f"  P&L {pnl_s}  [{reason}]")
+    return state
+
+
+def _rebalance_to_targets(state: dict, targets: dict, prices: dict,
+                           today_str: str, dead_band_pct: float = 0.015) -> dict:
+    """
+    Drive state to match the sizer's target dollar dict (mirrors backtest's
+    daily target portfolio for portfolio-level sizers like topn_v2 / topn_vt).
+
+    Steps:
+      1. Close any held position absent from targets and not protected by the
+         safe-haven floor (the sizer's filters dropped it).
+      2. For each target: trim (partial sell) if held > target by > dead_band,
+         top-up (add shares to existing or open new) if held < target by > dead_band.
+
+    The dead band (default 1.5% of pv per name) prevents micro-trades while
+    keeping live drift from the daily target small.  Any non-floor position
+    excluded by the sizer is closed regardless of dead band.
+    """
+    pv = _portfolio_value(state, prices)
+    if pv <= 0:
+        return state
+    floor_set = set(_get_current_safe_haven_floor().keys())
+    band      = pv * dead_band_pct
+
+    # Step 1: drop names the sizer excluded
+    for ticker in list(state["positions"]):
+        if ticker == "_SPY_HEDGE":
+            continue
+        if ticker in targets or ticker in floor_set:
+            continue
+        px = prices.get(ticker)
+        if not px or float(px) <= 0:
+            continue
+        state = _sell(state, ticker, float(px),
+                      reason="rebalance_drop", trade_date=today_str)
+
+    # Step 2: resize / open positions in targets (largest first to use cash well)
+    for ticker, tgt in sorted(targets.items(), key=lambda x: -x[1]):
+        if tgt <= 0:
+            continue
+        px = prices.get(ticker)
+        if not px or float(px) <= 0:
+            continue
+        px = float(px)
+        pos = state["positions"].get(ticker)
+        cur_val = pos["shares"] * px if pos else 0.0
+        delta = tgt - cur_val
+        if abs(delta) < band:
+            continue
+
+        if delta > 0:
+            if pos is None:
+                if state["cash"] >= delta * 1.01:
+                    state = _buy(state, ticker, px, delta,
+                                 reason="rebalance_open", trade_date=today_str)
+            else:
+                add_dollars = min(delta, state["cash"] * 0.97)
+                if add_dollars < 200:
+                    continue
+                commission = add_dollars * COMMISSION_PCT
+                if state["cash"] < (add_dollars + commission) * 1.01:
+                    continue
+                add_shares = add_dollars / px
+                state["cash"] -= add_dollars + commission
+                pos["shares"]    += add_shares
+                pos["cost_basis"] = pos.get("cost_basis", cur_val) + add_dollars
+                pos["last_close"] = px
+                _append_csv(TRADES_FILE, {
+                    "date": today_str, "ticker": ticker, "action": "BUY",
+                    "shares": round(add_shares, 6), "price": round(px, 4),
+                    "value": round(add_dollars, 2), "commission": round(commission, 2),
+                    "pnl": "", "reason": "rebalance_topup",
+                })
+                print(f"  BUY  {ticker:<6}  {add_shares:.3f} sh @ ${px:.2f}"
+                      f"  (${add_dollars:,.0f})  [rebalance_topup]")
+        else:
+            trim_dollars = -delta
+            if trim_dollars < 200:
+                continue
+            sell_shares = min(trim_dollars / px, pos["shares"])
+            proceeds    = sell_shares * px
+            commission  = proceeds * COMMISSION_PCT
+            net         = proceeds - commission
+            cb_share    = pos.get("cost_basis", cur_val) * (sell_shares / pos["shares"])
+            pnl         = net - cb_share
+            state["cash"] += net
+            pos["shares"]    -= sell_shares
+            pos["cost_basis"] = max(0.0, pos.get("cost_basis", cur_val) - cb_share)
+            pos["last_close"] = px
+            if pos["shares"] < 1e-6:
+                state["positions"].pop(ticker, None)
+            _append_csv(TRADES_FILE, {
+                "date": today_str, "ticker": ticker, "action": "SELL",
+                "shares": round(sell_shares, 6), "price": round(px, 4),
+                "value": round(proceeds, 2), "commission": round(commission, 2),
+                "pnl": round(pnl, 2), "reason": "rebalance_trim",
+            })
+            pnl_s = f"+${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
+            print(f"  SELL {ticker:<6}  {sell_shares:.3f} sh @ ${px:.2f}"
+                  f"  P&L {pnl_s}  [rebalance_trim]")
     return state
 
 
@@ -1678,19 +1901,27 @@ def end_of_day_update():
         print(f"  Top-N V2 (ADX22+momt+AC55): {len(topn_v2_targets)} names selected, "
               f"target gross ${sum(topn_v2_targets.values()):,.0f}")
 
-    for ticker in entry_candidates:
-        sig = signals[ticker]
-        size = _compute_position_size(
-            pv, ticker, sig, strat_cfg,
-            rp_weights, mom_rank, pca_s, dd_s, macro_m,
-            topn_vt_targets=topn_vt_targets,
-            topn_v2_targets=topn_v2_targets,
-        )
-        if size <= 0:
-            continue
-        if state["cash"] >= size * 1.01:
-            state = _buy(state, ticker, sig["close"], size,
-                         reason="signal_entry", trade_date=today_str)
+    # Portfolio-level sizers (topn_v2 / topn_vt) compute a complete daily target
+    # dict — drive the live book to those targets to mirror backtest rebalance.
+    # Per-ticker sizers (atr/rp/equal/...) keep the legacy add-only behaviour
+    # since they don't produce a coherent portfolio target.
+    if topn_v2_targets is not None or topn_vt_targets is not None:
+        pf_targets = topn_v2_targets if topn_v2_targets is not None else topn_vt_targets
+        state = _rebalance_to_targets(state, pf_targets, prices, today_str)
+    else:
+        for ticker in entry_candidates:
+            sig = signals[ticker]
+            size = _compute_position_size(
+                pv, ticker, sig, strat_cfg,
+                rp_weights, mom_rank, pca_s, dd_s, macro_m,
+                topn_vt_targets=topn_vt_targets,
+                topn_v2_targets=topn_v2_targets,
+            )
+            if size <= 0:
+                continue
+            if state["cash"] >= size * 1.01:
+                state = _buy(state, ticker, sig["close"], size,
+                             reason="signal_entry", trade_date=today_str)
 
     # ── Safe-haven floor positions ─────────────────────────────────────────────
     # After normal signal-driven entries: ensure SAFE_HAVEN_FLOOR tickers maintain
@@ -1853,6 +2084,7 @@ def _compute_signals_as_of(as_of: date) -> dict:
 
             _closes = feat["Close"]
             _ret63 = float(_closes.iloc[-1] / _closes.iloc[-63] - 1) if len(_closes) >= 63 else 0.0
+            _logret = np.log(_closes / _closes.shift(1)).dropna().tail(11).tolist()
             _active = int(sig[_sig_col].iloc[-1]) if _sig_col in sig.columns else int(sig["signal_regime"].iloc[-1])
             _regime = int(sig["signal_regime"].iloc[-1])
             _ac = ASSET_CLASS.get(ticker, "")
@@ -1867,8 +2099,9 @@ def _compute_signals_as_of(as_of: date) -> dict:
                 "close"         : float(_closes.iloc[-1]),
                 "atr"           : float(feat["atr_14"].iloc[-1]),
                 "rsi"           : float(feat["rsi_14"].iloc[-1]),
-                "adx"           : float(feat["adx_14"].iloc[-1]) if "adx_14" in feat.columns else 0.0,
+                "adx"           : float(feat["adx"].iloc[-1]) if "adx" in feat.columns else 0.0,
                 "ret_63d"       : _ret63,
+                "log_returns"   : _logret,
                 "date"          : str(as_of),
             }
         except Exception as e:
@@ -1949,15 +2182,21 @@ def _end_of_day_update_for_date(as_of: date) -> None:
         _n = len(_sorted)
         _mrank = {t: i / max(_n - 1, 1) for i, (t, _) in enumerate(_sorted)}
     _dd_s = _drawdown_scale(state) if _scfg.get("dd_control") else 1.0
+    _topn_vt = _compute_topn_vt_targets(pv, signals) if _scfg.get("sizing") == "topn_vt" else None
+    _topn_v2 = _compute_topn_v2_targets(pv, signals) if _scfg.get("sizing") == "topn_v2" else None
 
-    for ticker in entry_cands:
-        size = _compute_position_size(
-            pv, ticker, signals[ticker], _scfg,
-            _rp_w, _mrank, 1.0, _dd_s, 1.0,  # skip PCA/macro in catchup
-        )
-        if state["cash"] >= size * 1.01:
-            state = _buy(state, ticker, signals[ticker]["close"], size,
-                         reason="catchup_signal_entry", trade_date=as_of_str)
+    if _topn_v2 is not None or _topn_vt is not None:
+        _pf_tgt = _topn_v2 if _topn_v2 is not None else _topn_vt
+        state = _rebalance_to_targets(state, _pf_tgt, prices, as_of_str)
+    else:
+        for ticker in entry_cands:
+            size = _compute_position_size(
+                pv, ticker, signals[ticker], _scfg,
+                _rp_w, _mrank, 1.0, _dd_s, 1.0,  # skip PCA/macro in catchup
+            )
+            if state["cash"] >= size * 1.01:
+                state = _buy(state, ticker, signals[ticker]["close"], size,
+                             reason="catchup_signal_entry", trade_date=as_of_str)
 
     # ── Safe-haven floor positions (catchup) ──────────────────────────────────
     pv = _portfolio_value(state, prices)

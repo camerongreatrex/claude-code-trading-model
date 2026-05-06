@@ -173,7 +173,7 @@ LABELS = {
     "multi_mom_carry"       : "Momentum + Carry",
     "portable_carry"        : "Portable Carry",
     "top11_vt14sm25_x1.5_cap1": "Top-11 VT (Zero-Lev)",
-    "top11_adx22_momt_ac55_cap1": "Top-11 ADX+Momt+AC (Zero-Lev) ★",
+    "top11_adx22_momt_ac55_cap1": "V4N-D · Top-11 + Asym Vol + Fear Top-RS (Zero-Lev) ★",
 }
 
 # ── Display tiers ───────────────────────────────────────────────────

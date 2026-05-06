@@ -16,7 +16,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from datetime import datetime
-from v1.config.params import V1_PRODUCTION_METHOD
+from v1.config.params import V1_PRODUCTION_METHOD, V1_PRODUCTION_LABEL
 from v1.scripts.live_signals import get_live_signals
 from v1.scripts.paper_trader import (
     load_state, load_trades, load_history, catchup,
@@ -114,7 +114,8 @@ def main():
         if not _hdr_m.empty:
             _hdr_oos_info = f" · OOS Sharpe: {float(_hdr_m['oos_sharpe'].iloc[0]):.3f}"
     _hdr_strat_display = (
-        _hdr_strat_k.replace("_", " ").title() if _hdr_strat_k else "Not initialised"
+        f"{V1_PRODUCTION_LABEL} · {_hdr_strat_k.replace('_', ' ').title()}"
+        if _hdr_strat_k else "Not initialised"
     )
 
     col_h1, col_h2 = st.columns([3, 1])
