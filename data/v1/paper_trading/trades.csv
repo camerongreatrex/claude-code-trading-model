@@ -90,3 +90,9 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-05-07,VWO,BUY,143.117641,60.21,8617.11,4.31,,rebalance_open
 2026-05-07,NVDA,SELL,8.187919,211.5,1731.74,0.87,275.98,rebalance_trim
 2026-05-07,TLT,BUY,43.62547,85.65,3736.52,1.87,,rebalance_open
+2026-05-08,DBA,SELL,473.11354,27.97,13232.99,6.62,-64.08,signal_exit
+2026-05-08,TLT,SELL,43.62547,86.08,3755.28,1.88,16.88,signal_exit
+2026-05-08,WTMF,BUY,99.048424,40.85,4046.13,2.02,,rebalance_topup
+2026-05-08,DBC,BUY,58.405984,30.3,1769.7,0.88,,rebalance_topup
+2026-05-08,XOM,BUY,33.279161,144.57,4811.17,2.41,,rebalance_open
+2026-05-08,TLT,BUY,43.68679,86.08,3760.56,1.88,,rebalance_open
