@@ -486,3 +486,15 @@ tornado.websocket.WebSocketClosedError
 2026-05-05 17:50:01  ERROR    
 1 Failed download:
 2026-05-05 17:50:01  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-09 11:29:09  ERROR    
+1 Failed download:
+2026-05-09 11:29:09  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-09 20:48:04  ERROR    
+1 Failed download:
+2026-05-09 20:48:04  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-11 20:42:46  ERROR    
+1 Failed download:
+2026-05-11 20:42:46  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-11 21:11:36  ERROR    
+1 Failed download:
+2026-05-11 21:11:36  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")

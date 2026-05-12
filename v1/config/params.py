@@ -7,8 +7,8 @@ START_DATE = "2010-01-01"
 END_DATE = "2026-01-01"
 
 # ── V1 production method (single source of truth) ────────────────────────────
-# Pinned 2026-05-05 (V4N-D): V4N-B stack + Family-O asym vol boost +
-# Family-S4 fear-regime top-RS concentration.  Zero-leverage.
+# Pinned 2026-05-09 (V4N-F): V4N-E stack + bull-regime sleeve swap.
+# Zero-leverage.
 #   A. ADX≥22 filter — drop weak trends before top-N selection.
 #   B. 63d momentum tilt (0.7-1.3) — within longs, scale by 3m return rank.
 #   C. 55% asset-class quota — no class > 55% of gross.
@@ -21,16 +21,24 @@ END_DATE = "2026-01-01"
 #      vix_zscore <= -0.5 (calm), by 0.9× when >= +1.0 (fear).
 #   H. Fear-regime top-RS concentration (Family S4) — when vix_zscore >= +1.0,
 #      drop bottom longs, redistribute notional equally to top-3 by 63d RS.
+#   I. Acceleration kicker (Family A) — within active longs, boost names where
+#      10d/42d cum log return ratio >= 1.05 by 1.35×, renormalize to preserve
+#      gross.  Pure tilt, no leverage added.
+#   J. Bull-regime sleeve swap (V4N-F) — when SPY > 50dMA AND vix_zscore <= 0,
+#      shave up to 10% of capital from TLT and add to XLK to capture mega-cap
+#      participation in broad bull markets.  Capped at 12% per-name; never
+#      shorts TLT.
 # OOS walk-forward (1610 days, OOS warmup 756d):
-#   V4N-D: Sh 2.52 / Ann 23.18% / DD -4.20% / Cal 5.52
-#   V4N-B: Sh 2.55 / Ann 19.05% / DD -4.49% / Cal 4.24
-#   = +4.13pp AnnRet, -0.29pp DD, +1.28 Calmar.  Wins 6 of 7 calendar windows
-#   (only loss: Bear 2022 H1 -1.1pp vs O baseline).  Anti-overfit gate:
-#   bull windows >= O-0.3pp AND ≥2 stress windows beat O+0.5pp — passes.
+#   V4N-F: Sh 2.63 / Ann 24.78% / DD -4.05% / Cal 6.11
+#   V4N-E: Sh 2.58 / Ann 23.98% / DD -4.23% / Cal 5.67
+#   = +0.80pp AnnRet, +0.18pp DD (less negative), +0.44 Calmar.  Pareto win
+#   on Sh/Ann/DD vs V4N-E.  Wins 7/7 calendar windows vs V4N-E baseline.
+#   SPY-deficit narrows ~1pp/yr in bull years (2019/20/21) — top-N momo
+#   structurally lags broad cap-weighted indices in low-vol bull regimes.
 # Single source of truth — change here to swap everywhere (dashboard, paper
 # trader, portfolio.py pin, etc.).
 V1_PRODUCTION_METHOD = "top11_adx22_momt_ac55_cap1"
-V1_PRODUCTION_LABEL  = "V4N-D"
+V1_PRODUCTION_LABEL  = "V4N-F"
 
 # ── V2 Configuration ──────────────────────────────────────────────────────────
 # Macro regime rotation: cross-asset ETF allocation driven by hybrid regime

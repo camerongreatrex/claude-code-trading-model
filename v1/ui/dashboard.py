@@ -227,13 +227,14 @@ def main():
     )
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab_port, tab_sig, tab_sp, tab_bt, tab_val, tab_risk = st.tabs([
+    tab_port, tab_sig, tab_sp, tab_bt, tab_val, tab_risk, tab_v4nf = st.tabs([
         "  📈  Portfolio",
         "  📡  Signals",
         "  📊  vs S&P 500",
         "  🔬  Backtest",
         "  🔍  Validation",
         "  ⚠️  Risk",
+        "  🧪  V4N-F 3mo Test",
     ])
 
     # Sub-tabs defined before content so Streamlit preserves display order.
@@ -1764,6 +1765,162 @@ def main():
                     )
 
         _vs_sp_section()
+
+    # ── V4N-F 3-Month Test (separate paper trading instance) ─────────────────
+    with tab_v4nf:
+        _v4nf_test_section()
+
+
+def _v4nf_test_section():
+    """
+    Render the V4N-F 3-month live test instance.
+
+    Reads directly from data/v1/paper_trading_v4nf_3mo/ (independent of
+    the main paper_trader module state) so this tab tracks a fresh
+    $100k portfolio from 2026-05-11 → 2026-08-11 with no V4N-E history.
+    """
+    import json
+    from datetime import date as _date
+
+    V4NF_DIR     = _REPO_ROOT / "data" / "v1" / "paper_trading_v4nf_3mo"
+    STATE_FP     = V4NF_DIR / "state.json"
+    HISTORY_FP   = V4NF_DIR / "history.csv"
+    TRADES_FP    = V4NF_DIR / "trades.csv"
+    START_DATE   = pd.Timestamp("2026-05-11")
+    END_DATE     = pd.Timestamp("2026-08-11")
+
+    st.markdown("### 🧪 V4N-F · 3-Month Live Test")
+    st.markdown(
+        f"<span style='color:#666;font-size:.85rem'>"
+        f"Independent paper trading instance · $100,000 fresh start · "
+        f"{START_DATE.date()} → {END_DATE.date()} · "
+        f"<b>{V1_PRODUCTION_LABEL}</b> = V4N-E + bull-regime TLT→XLK swap"
+        f"</span>",
+        unsafe_allow_html=True,
+    )
+
+    if not STATE_FP.exists():
+        st.warning(
+            f"V4N-F test instance not initialised. Expected state at: `{STATE_FP}`."
+        )
+        return
+
+    with open(STATE_FP, encoding="utf-8") as _f:
+        state = json.load(_f)
+
+    today      = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
+    days_in    = max(0, (today - START_DATE).days)
+    days_total = (END_DATE - START_DATE).days
+    days_left  = max(0, (END_DATE - today).days)
+    pct_done   = min(100.0, days_in / days_total * 100) if days_total else 0.0
+
+    pv          = float(state.get("portfolio_value", 100_000))
+    cash        = float(state.get("cash", 100_000))
+    n_pos       = len(state.get("positions", {}))
+    last_eod    = state.get("last_eod_date", "—")
+    init_date   = state.get("initialized_date", "—")
+
+    if today < START_DATE:
+        st.info(
+            f"Test starts {START_DATE.date()} — "
+            f"first EOD update will fire that evening. "
+            f"Current state: $100,000 cash, 0 positions (waiting)."
+        )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1: st.metric("Portfolio Value", f"${pv:,.0f}",
+                       delta=f"{(pv/100_000-1)*100:+.2f}%")
+    with c2: st.metric("Cash", f"${cash:,.0f}")
+    with c3: st.metric("Open Positions", n_pos)
+    with c4: st.metric("Days Elapsed", f"{days_in} / {days_total}",
+                       delta=f"{pct_done:.0f}% complete")
+    with c5: st.metric("Days Remaining", days_left)
+
+    st.markdown(f"<span style='color:#888;font-size:.78rem'>"
+                f"Initialised {init_date} · last EOD {last_eod}"
+                f"</span>", unsafe_allow_html=True)
+
+    # ── Equity curve ─────────────────────────────────────────────────
+    if HISTORY_FP.exists():
+        try:
+            hist = pd.read_csv(HISTORY_FP, parse_dates=["date"]).sort_values("date")
+            if not hist.empty:
+                st.markdown("#### Equity Curve")
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=hist["date"], y=hist["portfolio_value"],
+                    mode="lines+markers", name="V4N-F",
+                    line=dict(color="#16a34a", width=2),
+                ))
+                fig.add_hline(y=100_000, line=dict(dash="dash", color="#888"),
+                              annotation_text="$100k start")
+                fig.update_layout(
+                    height=320, margin=dict(t=10, b=10, l=10, r=10),
+                    template="plotly_dark", showlegend=False,
+                    yaxis_tickprefix="$", yaxis_tickformat=",",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                if len(hist) >= 2:
+                    daily_rets = hist["portfolio_value"].pct_change().dropna()
+                    cum_ret    = pv / 100_000 - 1
+                    ann_ret    = (1 + cum_ret) ** (252 / max(len(daily_rets), 1)) - 1 \
+                                 if len(daily_rets) >= 5 else float("nan")
+                    sh         = (daily_rets.mean() / daily_rets.std() * np.sqrt(252)) \
+                                 if daily_rets.std() > 0 else float("nan")
+                    peak       = hist["portfolio_value"].cummax()
+                    dd         = ((hist["portfolio_value"] - peak) / peak).min()
+                    mc1, mc2, mc3, mc4 = st.columns(4)
+                    with mc1: st.metric("Total Return", f"{cum_ret*100:+.2f}%")
+                    with mc2: st.metric("Ann Return (est)",
+                                        "—" if pd.isna(ann_ret) else f"{ann_ret*100:+.2f}%")
+                    with mc3: st.metric("Sharpe (est)",
+                                        "—" if pd.isna(sh) else f"{sh:.2f}")
+                    with mc4: st.metric("Max DD", f"{dd*100:.2f}%")
+        except Exception as _e:
+            st.warning(f"Could not load history.csv: {_e}")
+    else:
+        st.info("No EOD history yet — equity curve will appear after the first EOD update.")
+
+    # ── Open positions ──────────────────────────────────────────────
+    positions = state.get("positions", {})
+    if positions:
+        st.markdown("#### Open Positions")
+        rows = []
+        for t, p in positions.items():
+            if t == "_SPY_HEDGE":
+                continue
+            shares = float(p.get("shares", 0))
+            entry  = float(p.get("entry_price", 0))
+            last   = float(p.get("last_close", entry))
+            cur_v  = shares * last
+            pnl    = (last - entry) * shares
+            pnl_p  = (last / entry - 1) * 100 if entry else 0.0
+            rows.append({
+                "Ticker": t, "Shares": round(shares, 3),
+                "Entry": f"${entry:.2f}", "Last": f"${last:.2f}",
+                "Value": f"${cur_v:,.0f}", "P&L $": f"${pnl:+,.0f}",
+                "P&L %": f"{pnl_p:+.2f}%",
+            })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ── Recent trades ───────────────────────────────────────────────
+    if TRADES_FP.exists():
+        try:
+            trades = pd.read_csv(TRADES_FP)
+            if not trades.empty:
+                st.markdown("#### Recent Trades (last 25)")
+                st.dataframe(trades.tail(25).iloc[::-1],
+                             use_container_width=True, hide_index=True)
+        except Exception:
+            pass
+
+    st.caption(
+        "Hands-off 3-month test of V4N-F (the new production model). "
+        "Trades fire automatically when the V4N-F scheduler is running: "
+        "`PT_INSTANCE=v4nf_3mo python v1/scripts/scheduler.py`"
+    )
 
 
 if __name__ == "__main__":

@@ -31,6 +31,11 @@ from v1.portfolio.portfolio import (
     diversifier_sleeve_overlay,
     portfolio_returns,
     defensive_tilt_overlay,
+    profit_take_overlay,
+    cond_vol_carry_overlay,
+    asym_vol_boost_overlay,
+    fear_topRS_concentration_overlay,
+    accel_kicker_overlay,
     _get_macro,
     SIGNAL_DIR, FEATURE_DIR, CAPITAL,
 )
@@ -134,7 +139,8 @@ def build_conditional_short_sizes(
     return sizes
 
 
-def make_v3_sizer():
+def make_v4ne_sizer():
+    """Full V4N-E production stack — same as paper trading."""
     base_kw = dict(
         top_n=11, target_vol=0.14, scale_max=2.5, vt_window=63,
         lev_x=1.5, max_gross=1.0,
@@ -150,6 +156,17 @@ def make_v3_sizer():
             sleeve_tickers=("TLT", "GLD", "DBMF", "VGSH"),
             sleeve_pct=0.12,
         )
+        s = profit_take_overlay(s, rets, lookback=10, sigma_thresh=1.5,
+                                  scale=0.7, max_gross=1.0, capital=CAPITAL)
+        s = cond_vol_carry_overlay(s, macro, fear_z=1.5, roc_days=5, fear_mult=0.5)
+        s = asym_vol_boost_overlay(s, macro,
+                                      calm_boost=1.15, calm_z=-0.5,
+                                      fear_cut=0.9, fear_z=1.0)
+        s = fear_topRS_concentration_overlay(s, feats, macro,
+                                                top_k=3, fear_z=1.0, rs_window=63)
+        s = accel_kicker_overlay(s, feats,
+                                    accel_thresh=1.05, accel_boost=1.35,
+                                    short_w=10, long_w=42)
         return s
 
     return sizer
@@ -165,11 +182,11 @@ def main():
     print(f"Sector universe ({len(sectors)}): {sectors}\n")
 
     # V3 baseline (production sizer)
-    sizer_v3 = make_v3_sizer()
+    sizer_v3 = make_v4ne_sizer()
     sizes_v3 = sizer_v3(sig, feats, rets, macro)
     pr_v3 = portfolio_returns(sizes_v3, rets).dropna()
     m_v3 = metrics(pr_v3.iloc[OOS_WARMUP:])
-    print(f"{'V3 baseline (no short overlay)':<58}"
+    print(f"{'V4N-E baseline (no short overlay)':<58}"
           f" {m_v3['sharpe']:>5.2f} {m_v3['ann']*100:>6.2f}% "
           f"{m_v3['mdd']*100:>6.2f}% {m_v3['calmar']:>5.2f} {m_v3['vol']*100:>5.1f}%")
 
@@ -211,8 +228,8 @@ def main():
     for sh, ann, dd, cal, vol, name in results[:15]:
         print(f"{name:<58} {sh:>5.2f} {ann*100:>6.2f}% {dd*100:>6.2f}% {cal:>5.2f} {vol*100:>5.1f}%")
 
-    # Top-15 by AnnRet (with DD < V3 baseline)
-    print(f"\nTop 15 by AnnRet (DD <= V3 baseline {m_v3['mdd']*100:.2f}%):")
+    # Top-15 by AnnRet (with DD < V4N-E baseline)
+    print(f"\nTop 15 by AnnRet (DD <= V4N-E baseline {m_v3['mdd']*100:.2f}%):")
     safe = [r for r in results if r[2] >= m_v3["mdd"]]   # DD less negative
     safe.sort(key=lambda x: -x[1])
     for sh, ann, dd, cal, vol, name in safe[:15]:

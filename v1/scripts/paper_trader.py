@@ -205,7 +205,12 @@ def _is_trading_day(d: date = None) -> bool:
         d = datetime.now(ET_ZONE).date()
     return d.weekday() < 5  # 5=Sat, 6=Sun
 
-PT_DIR       = Path("data/v1/paper_trading")
+# Multi-instance support: PT_INSTANCE env var selects which paper trading
+# folder to use.  Default = "" (legacy single instance at data/v1/paper_trading).
+# A non-empty value (e.g. "v4nf_3mo") routes to data/v1/paper_trading_<value>.
+_PT_INSTANCE = os.environ.get("PT_INSTANCE", "").strip()
+PT_DIR = (Path("data/v1/paper_trading") if not _PT_INSTANCE
+          else Path(f"data/v1/paper_trading_{_PT_INSTANCE}"))
 STATE_FILE   = PT_DIR / "state.json"
 TRADES_FILE  = PT_DIR / "trades.csv"
 HISTORY_FILE = PT_DIR / "history.csv"
@@ -439,11 +444,12 @@ def compute_live_signals() -> dict:
             else:
                 latest_ret63 = 0.0
 
-            # Trailing log-returns for V4N-B profit-take overlay (live, no parquet
-            # dependency).  Last 11 values cover the lookback=10 window plus the
-            # current bar so std/sum can be computed in-memory.
+            # Trailing log-returns for live overlays. Last 43 values cover:
+            #   profit_take (lookback=10), accel_kicker (long_w=42 + 1 for shift),
+            #   so the 42d cum sum can be computed via tail(43)[:-1] to exclude
+            #   today's return (matching backtest's rs.shift(1) anti-look-ahead).
             _logret = (
-                np.log(_closes / _closes.shift(1)).dropna().tail(11).tolist()
+                np.log(_closes / _closes.shift(1)).dropna().tail(43).tolist()
             )
 
             # Donchian breakout detection
@@ -892,7 +898,21 @@ def _compute_topn_v2_targets(
     onto the top11_vt zero-lev base.
 
     Used by V1_PRODUCTION_METHOD = top11_adx22_momt_ac55_cap1 (pinned 2026-04-28).
+
+    PT_INSTANCE=v4nf_3mo routes to the FROZEN V4N-F snapshot in
+    paper_trader_v4nf.compute_v4nf_targets so the 3-month live test cannot
+    drift if overlay logic in this file is later edited.
     """
+    if _PT_INSTANCE == "v4nf_3mo":
+        from v1.scripts.paper_trader_v4nf import compute_v4nf_targets
+        return compute_v4nf_targets(
+            pv, signals, load_history_fn=load_history,
+            top_n=top_n, target_vol=target_vol, scale_max=scale_max,
+            vt_window=vt_window, lev_x=lev_x, max_gross=max_gross,
+            adx_threshold=adx_threshold, mom_lo=mom_lo, mom_hi=mom_hi,
+            ac_quota=ac_quota, gross_floor=gross_floor,
+        )
+
     longs = {t: s for t, s in signals.items() if s.get("signal") == 1}
     if not longs:
         return {}
@@ -1022,10 +1042,89 @@ def _compute_topn_v2_targets(
         out, signals=signals, top_k=3, fear_z=1.0,
     )
 
+    # V4N-E overlay (wired 2026-05-05) — Family-A acceleration kicker.
+    # Within active longs, boost names where 10d/42d cum log return ratio
+    # >= 1.05 by 1.35x and renormalize.  +0.80pp OOS AnnRet, basically free.
+    # Mirrors portfolio.accel_kicker_overlay for live = backtest invariance.
+    out = _apply_accel_kicker_live(
+        out, signals=signals,
+        accel_thresh=1.05, accel_boost=1.35, short_w=10, long_w=42,
+    )
+
+    # V4N-F overlay (wired 2026-05-09) — Bull-regime sleeve swap.  When SPY >
+    # 50dMA AND vix_z <= 0, shave up to swap_pct*pv from TLT and add to XLK.
+    # Mirrors portfolio.bull_sleeve_swap_overlay for live = backtest invariance.
+    out = _apply_bull_sleeve_swap_live(
+        out, pv=pv, signals=signals,
+        src="TLT", dst="XLK", swap_pct=0.10,
+        spy_ma=50, vix_z_thresh=0.0,
+    )
+
     gross2 = sum(out.values())
     if gross2 > max_gross * pv and gross2 > 0:
         s = (max_gross * pv) / gross2
         out = {t: v * s for t, v in out.items()}
+    return out
+
+
+def _is_bull_regime_today(spy_ma: int = 50, vix_z_thresh: float = 0.0) -> bool:
+    """
+    V4N-F bull-regime probe.  True when SPY > spy_ma-day MA AND live VIX
+    z-score <= vix_z_thresh.  Reads SPY from local feature parquet (no
+    extra fetch); reuses _get_live_vix_state's cached VIX z-score.
+    """
+    try:
+        spy_path = Path("data/v1/features/SPY.parquet")
+        if not spy_path.exists():
+            return False
+        spy_close = pd.read_parquet(spy_path)["Close"].dropna()
+        if len(spy_close) < spy_ma + 1:
+            return False
+        spy_avg = float(spy_close.rolling(spy_ma).mean().iloc[-1])
+        spy_now = float(spy_close.iloc[-1])
+        if not (spy_now > spy_avg):
+            return False
+        vix_state = _get_live_vix_state()
+        if not vix_state["ok"]:
+            return False
+        return float(vix_state["z"]) <= vix_z_thresh
+    except Exception as _e:
+        print(f"  [bull_regime] probe failed ({_e}) — assuming non-bull")
+        return False
+
+
+def _apply_bull_sleeve_swap_live(positions: dict, pv: float,
+                                   signals: dict | None = None,
+                                   src: str = "TLT", dst: str = "XLK",
+                                   swap_pct: float = 0.10,
+                                   spy_ma: int = 50,
+                                   vix_z_thresh: float = 0.0) -> dict:
+    """
+    V4N-F bull-regime sleeve swap (live).  When in bull regime, shave up to
+    swap_pct*pv from `src` (TLT) and add to `dst` (XLK).  Shave never exceeds
+    the current src position (no shorts).  Destination capped at MAX_POSITION_PCT.
+
+    Mirrors portfolio.bull_sleeve_swap_overlay for live = backtest invariance.
+    """
+    if not positions or swap_pct <= 0:
+        return positions
+    if not _is_bull_regime_today(spy_ma=spy_ma, vix_z_thresh=vix_z_thresh):
+        return positions
+
+    out = dict(positions)
+    src_now = float(out.get(src, 0.0))
+    if src_now <= 0:
+        return out
+    shave = min(swap_pct * pv, src_now)
+    if shave <= 0:
+        return out
+    out[src] = src_now - shave
+    if out[src] <= 1.0:
+        out.pop(src, None)
+
+    dst_cap = pv * MAX_POSITION_PCT
+    dst_now = float(out.get(dst, 0.0))
+    out[dst] = min(dst_now + shave, dst_cap)
     return out
 
 
@@ -1079,24 +1178,37 @@ def _get_live_vix_state(roc_days: int = 5) -> dict:
     if _VIX_STATE_CACHE is not None:
         return _VIX_STATE_CACHE
     state = {"z": float("nan"), "roc": 0.0, "ok": False}
+    vix = None
+    # Primary: yf.Ticker(...).history — more reliable than yf.download for ^VIX
     try:
-        vix = yf.download("^VIX", period="120d", interval="1d",
-                          auto_adjust=True, progress=False)["Close"]
-        if isinstance(vix, pd.DataFrame):
-            vix = vix.iloc[:, 0]
-        vix = vix.dropna()
-        if len(vix) < 60 + roc_days + 1:
-            _VIX_STATE_CACHE = state
-            return state
-        roll = vix.rolling(60)
-        z_series = (vix - roll.mean()) / roll.std()
-        state = {
-            "z":   float(z_series.iloc[-1]),
-            "roc": float(vix.iloc[-1] - vix.iloc[-1 - roc_days]),
-            "ok":  True,
-        }
+        h = yf.Ticker("^VIX").history(period="120d", auto_adjust=True)
+        if h is not None and not h.empty and "Close" in h.columns:
+            vix = h["Close"].dropna()
     except Exception as _e:
-        print(f"  [vix_state] fetch failed ({_e}) — assuming calm")
+        print(f"  [vix_state] Ticker.history failed ({_e}) — trying download")
+    # Fallback: yf.download
+    if vix is None or vix.empty:
+        try:
+            d = yf.download("^VIX", period="120d", interval="1d",
+                            auto_adjust=True, progress=False)
+            if d is not None and not d.empty and "Close" in d.columns:
+                col = d["Close"]
+                if isinstance(col, pd.DataFrame):
+                    col = col.iloc[:, 0]
+                vix = col.dropna()
+        except Exception as _e:
+            print(f"  [vix_state] download failed ({_e})")
+    if vix is None or len(vix) < 60 + roc_days + 1:
+        print(f"  [vix_state] insufficient VIX history — assuming calm")
+        _VIX_STATE_CACHE = state
+        return state
+    roll = vix.rolling(60)
+    z_series = (vix - roll.mean()) / roll.std()
+    state = {
+        "z":   float(z_series.iloc[-1]),
+        "roc": float(vix.iloc[-1] - vix.iloc[-1 - roc_days]),
+        "ok":  True,
+    }
     _VIX_STATE_CACHE = state
     return state
 
@@ -1191,6 +1303,59 @@ def _apply_fear_topRS_live(positions: dict, signals: dict,
     # rebalancer skips (`if tgt <= 0: continue`), leaving stale positions open.
     for t in drop:
         out.pop(t, None)
+    return out
+
+
+def _apply_accel_kicker_live(positions: dict, signals: dict,
+                               accel_thresh: float = 1.05,
+                               accel_boost: float = 1.35,
+                               short_w: int = 10,
+                               long_w: int = 42) -> dict:
+    """
+    V4N-E Family-A overlay (live).  Within active longs, boost names where
+    short_w/long_w cum log return ratio >= accel_thresh by accel_boost and
+    renormalize the long sleeve to preserve daily gross.
+
+    Mirrors portfolio.accel_kicker_overlay for live = backtest invariance.
+    Excludes today's return from both windows (matches backtest's rs.shift(1)
+    anti-look-ahead pattern).
+    """
+    if not positions:
+        return positions
+    longs = {t: v for t, v in positions.items() if v > 0}
+    if not longs:
+        return positions
+
+    ratios: dict[str, float] = {}
+    for t in longs:
+        s = signals.get(t)
+        if not s:
+            continue
+        rets = s.get("log_returns") or []
+        # Need long_w + 1 values so we can drop today's return (the [-1] entry)
+        # and still have long_w returns for the long-window sum.
+        if len(rets) < long_w + 1:
+            continue
+        prior = rets[:-1]
+        s_sum = float(np.sum(prior[-short_w:]))
+        l_sum = float(np.sum(prior[-long_w:]))
+        ratios[t] = (1.0 + s_sum) / (1.0 + l_sum) if (1.0 + l_sum) != 0 else 1.0
+
+    if not ratios:
+        return positions
+
+    accel = [t for t, r in ratios.items() if r >= accel_thresh]
+    if not accel:
+        return positions
+
+    out = dict(positions)
+    gross_before = sum(longs.values())
+    for t in accel:
+        out[t] = out[t] * accel_boost
+    new_long_sum = sum(out[t] for t in longs)
+    scale = gross_before / new_long_sum if new_long_sum > 0 else 1.0
+    for t in longs:
+        out[t] = out[t] * scale
     return out
 
 
@@ -1848,17 +2013,26 @@ def end_of_day_update():
             print(f"  [warn] fresh close fetch failed ({_e}), using pipeline prices")
 
     # ── Exits: sell anything where active signal flipped to 0 ────────────────
-    for ticker in list(state["positions"]):
-        if ticker not in signals:
-            continue
-        if signals[ticker]["signal"] == 0:
-            # Floor tickers maintain minimum allocation when signal is flat (raw == 0).
-            # Only exit if the underlying raw signal is negative (short override).
-            _raw = signals[ticker].get("raw_signal", signals[ticker]["signal"])
-            if ticker in SAFE_HAVEN_FLOOR and _raw == 0:
-                continue   # floor maintenance — do not exit on flat signal
-            state = _sell(state, ticker, prices[ticker],
-                          reason="signal_exit", trade_date=today_str)
+    # Portfolio-level sizers (topn_v2 / topn_vt) build a complete daily target
+    # dict that includes the diversifier sleeve (TLT/GLD/DBMF/VGSH) regardless
+    # of their MA signal. Running the legacy exit loop here would sell those
+    # names on signal==0 and the rebalancer would re-buy them on the same day,
+    # producing wash trades. Defer all exits to _rebalance_to_targets in that
+    # case — it correctly closes positions absent from targets via rebalance_drop.
+    _live_sizing = strat_cfg.get("sizing", "atr")
+    _defer_exits = _live_sizing in ("topn_v2", "topn_vt")
+    if not _defer_exits:
+        for ticker in list(state["positions"]):
+            if ticker not in signals:
+                continue
+            if signals[ticker]["signal"] == 0:
+                # Floor tickers maintain minimum allocation when signal is flat (raw == 0).
+                # Only exit if the underlying raw signal is negative (short override).
+                _raw = signals[ticker].get("raw_signal", signals[ticker]["signal"])
+                if ticker in SAFE_HAVEN_FLOOR and _raw == 0:
+                    continue   # floor maintenance — do not exit on flat signal
+                state = _sell(state, ticker, prices[ticker],
+                              reason="signal_exit", trade_date=today_str)
 
     # ── Entries: buy anything where active signal is 1 and not already long ──
     current_longs = set(state["positions"])
@@ -2084,7 +2258,7 @@ def _compute_signals_as_of(as_of: date) -> dict:
 
             _closes = feat["Close"]
             _ret63 = float(_closes.iloc[-1] / _closes.iloc[-63] - 1) if len(_closes) >= 63 else 0.0
-            _logret = np.log(_closes / _closes.shift(1)).dropna().tail(11).tolist()
+            _logret = np.log(_closes / _closes.shift(1)).dropna().tail(43).tolist()
             _active = int(sig[_sig_col].iloc[-1]) if _sig_col in sig.columns else int(sig["signal_regime"].iloc[-1])
             _regime = int(sig["signal_regime"].iloc[-1])
             _ac = ASSET_CLASS.get(ticker, "")
@@ -2148,24 +2322,28 @@ def _end_of_day_update_for_date(as_of: date) -> None:
 
     prices = {t: s["close"] for t, s in signals.items()}
 
-    # Exits
-    for ticker in list(state["positions"]):
-        if ticker not in signals:
-            continue
-        if signals[ticker]["signal"] == 0:
-            # Floor tickers: skip exit on flat signal unless raw signal is negative.
-            _raw = signals[ticker].get("raw_signal", signals[ticker]["signal"])
-            if ticker in SAFE_HAVEN_FLOOR and _raw == 0:
-                continue   # maintain floor allocation
-            state = _sell(state, ticker, prices[ticker],
-                          reason="catchup_signal_exit", trade_date=as_of_str)
-
-    # Entries (strategy-aware sizing)
+    # Resolve strategy config first so the exit branch can detect portfolio sizing
     _skey = state.get("strategy", "")
     _scfg = STRATEGIES.get(_skey)
     if not _scfg:
         _skey = _best_oos_strategy()
         _scfg = STRATEGIES[_skey]
+
+    # Exits — defer to _rebalance_to_targets for portfolio-level sizers so the
+    # diversifier sleeve (TLT/GLD/DBMF/VGSH) doesn't get sold-then-rebought
+    # on the same day (wash trade). See live flow for the same guard.
+    _catchup_sizing = _scfg.get("sizing", "atr")
+    if _catchup_sizing not in ("topn_v2", "topn_vt"):
+        for ticker in list(state["positions"]):
+            if ticker not in signals:
+                continue
+            if signals[ticker]["signal"] == 0:
+                # Floor tickers: skip exit on flat signal unless raw signal is negative.
+                _raw = signals[ticker].get("raw_signal", signals[ticker]["signal"])
+                if ticker in SAFE_HAVEN_FLOOR and _raw == 0:
+                    continue   # maintain floor allocation
+                state = _sell(state, ticker, prices[ticker],
+                              reason="catchup_signal_exit", trade_date=as_of_str)
 
     current_longs = set(state["positions"])
     pv = _portfolio_value(state, prices)
