@@ -83,15 +83,17 @@ for t, dollar_target in sorted(targets.items(), key=lambda x: -x[1]):
     state["positions"][t] = {
         "shares"      : shares,
         "entry_price" : open_px,
+        "cost_basis"  : cost,
         "last_close"  : ohlc[t]["close"],
         "entry_date"  : today,
     }
     _append_csv(TRADES_FP, {
-        "date"  : today, "ticker": t, "action": "BUY",
-        "shares": round(shares, 6), "price": round(open_px, 2),
-        "value" : round(cost, 2),
-        "pnl"   : 0.0,
-        "reason": "init_v4nf_at_open",
+        "date"      : today, "ticker": t, "action": "BUY",
+        "shares"    : round(shares, 6), "price": round(open_px, 2),
+        "value"     : round(cost, 2),
+        "commission": 0.0,
+        "pnl"       : 0.0,
+        "reason"    : "init_v4nf_at_open",
     })
     print(f"  BUY  {t:<6} {shares:>10.4f} sh @ ${open_px:>7.2f}  (${cost:>9,.0f})")
 

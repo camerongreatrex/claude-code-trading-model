@@ -2,3 +2,137 @@
 2026-05-11 21:13:48  INFO     Kill-switch threshold: 15% rolling 20-day loss
 2026-05-11 21:13:48  INFO     Log file: data/v1/paper_trading_v4nf_3mo/scheduler.log
 2026-05-11 21:13:48  INFO     Catch-up: portfolio is up to date.
+2026-05-12 11:30:08  INFO     Heartbeat  |  ET 11:30  |  Portfolio $100,427  (+0.43%)  |  Next EOD: 16:45
+2026-05-12 16:48:26  INFO     ============================================================
+2026-05-12 16:48:26  INFO     EOD pipeline starting
+2026-05-12 16:48:26  INFO     Running EOD position update...
+
+End-of-day update  (2026-05-12)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  738.18  LONG  (regime=LONG  multi=LONG)
+  IWM    2026-05-12 16:52:42  ERROR    
+1 Failed download:
+2026-05-12 16:52:42  ERROR    ['IWM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EEM    $   65.82  LONG  (regime=LONG  multi=LONG)
+  EFA    $  103.14  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.39  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.99  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.87  FLAT  (regime=FLAT  multi=FLAT)
+  TIP    $  111.12  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  432.93  LONG  (regime=LONG  multi=LONG)
+  DBC    $   31.69  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.45  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.57  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   45.19  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.58  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   96.69  LONG  (regime=LONG  multi=LONG)
+  XLK    $  175.20  LONG  (regime=LONG  multi=LONG)
+  XLV    $  145.85  LONG  (regime=LONG  multi=LONG)
+  XLI    $  174.35  LONG  (regime=LONG  multi=LONG)
+  XLC    $  115.86  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.44  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  304.88  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  224.26  FLAT  (regime=LONG  multi=FLAT)
+  XOM    2026-05-12 17:09:52  ERROR    
+1 Failed download:
+2026-05-12 17:09:52  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  AMZN   $  265.82  LONG  (regime=LONG  multi=LONG)
+  NEE    $   94.59  FLAT  (regime=LONG  multi=FLAT)
+  BRK-B  $  484.96  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  945.90  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1021.88  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  407.77  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  220.78  LONG  (regime=LONG  multi=LONG)
+  GE     $  297.45  LONG  (regime=LONG  multi=LONG)
+  INTC   $  120.61  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   47.93  LONG  (regime=LONG  multi=LONG)
+  BWX    $   22.14  FLAT  (regime=FLAT  multi=FLAT)
+  DBA    $   28.57  LONG  (regime=LONG  multi=LONG)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  108.34  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   58.27  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.02  LONG  (regime=LONG  multi=LONG)
+  WTMF   2026-05-12 17:10:38  ERROR    
+1 Failed download:
+2026-05-12 17:10:38  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.26  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.72  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   55.42  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 14 names selected, target gross $92,126
+  BUY  XLU     53.135 sh @ $45.19  ($2,401)  [rebalance_topup]
+  BUY  JPM     17.831 sh @ $304.88  ($5,436)  [rebalance_open]
+  SELL VGSH    57.773 sh @ $58.26  P&L -$6  [floor_short_override]
+
+====================================================
+  Portfolio value : $100,139.60
+  Cash            : $  6,956.24
+  Positions       : 14
+  Daily return    :    -0.29%
+  Total return    :    +0.14%
+====================================================
+2026-05-12 17:10:39  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  738.18  LONG  (regime=LONG  multi=LONG)
+  IWM    $  282.57  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   65.82  LONG  (regime=LONG  multi=LONG)
+  EFA    $  103.14  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.39  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.99  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.87  FLAT  (regime=FLAT  multi=FLAT)
+  TIP    $  111.12  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  432.93  LONG  (regime=LONG  multi=LONG)
+  DBC    $   31.69  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.45  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.57  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   45.19  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.58  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   96.69  LONG  (regime=LONG  multi=LONG)
+  XLK    $  175.20  LONG  (regime=LONG  multi=LONG)
+  XLV    $  145.85  LONG  (regime=LONG  multi=LONG)
+  XLI    $  174.35  LONG  (regime=LONG  multi=LONG)
+  XLC    $  115.86  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.44  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  304.88  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  224.26  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  150.63  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  265.82  LONG  (regime=LONG  multi=LONG)
+  NEE    $   94.59  FLAT  (regime=LONG  multi=FLAT)
+  BRK-B  $  484.96  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  945.90  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1021.88  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  407.77  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  220.78  LONG  (regime=LONG  multi=LONG)
+  GE     $  297.45  LONG  (regime=LONG  multi=LONG)
+  INTC   $  120.61  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   47.93  LONG  (regime=LONG  multi=LONG)
+  BWX    $   22.14  FLAT  (regime=FLAT  multi=FLAT)
+  DBA    $   28.57  LONG  (regime=LONG  multi=LONG)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  108.34  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   58.27  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.02  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.27  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.26  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.72  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   55.42  FLAT  (regime=FLAT  multi=FLAT)
+2026-05-12 17:26:53  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  0 SELL  14 HOLD)
+2026-05-12 17:26:53  INFO     EOD pipeline complete
+2026-05-12 17:26:53  INFO     ============================================================
+2026-05-12 18:00:04  INFO     Heartbeat  |  ET 18:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
+2026-05-12 22:00:28  INFO     Heartbeat  |  ET 22:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45

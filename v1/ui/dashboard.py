@@ -15,15 +15,51 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from contextlib import contextmanager
+from pathlib import Path as _Path
 from datetime import datetime
+import v1.scripts.paper_trader as _pt_module
 from v1.config.params import V1_PRODUCTION_METHOD, V1_PRODUCTION_LABEL
 from v1.scripts.live_signals import get_live_signals
 from v1.scripts.paper_trader import (
     load_state, load_trades, load_history, catchup,
     get_intraday_curve, end_of_day_update, INITIAL_CAPITAL as PT_INITIAL_CAPITAL,
     compute_live_portfolio_metrics, get_production_method, correct_history_baseline,
+    fetch_intraday_batch,
     STRATEGIES,
 )
+
+
+@contextmanager
+def _use_pt_instance(instance: str):
+    """
+    Temporarily repoint paper_trader's module-level state/history/trades paths
+    to a different PT instance dir (e.g. "v4nf_3mo" → data/v1/paper_trading_v4nf_3mo).
+
+    Lets the V4N-F dashboard section call the SAME compute_live_portfolio_metrics()
+    / get_intraday_curve() / load_state() functions the production tabs use, so
+    live-price logic and ^GSPC-vs-yesterday-close pct stay identical across both.
+    """
+    new_dir = (_Path("data/v1/paper_trading") if not instance
+               else _Path(f"data/v1/paper_trading_{instance}"))
+    new_dir.mkdir(parents=True, exist_ok=True)
+    old = {
+        "_PT_INSTANCE": _pt_module._PT_INSTANCE,
+        "PT_DIR":       _pt_module.PT_DIR,
+        "STATE_FILE":   _pt_module.STATE_FILE,
+        "HISTORY_FILE": _pt_module.HISTORY_FILE,
+        "TRADES_FILE":  _pt_module.TRADES_FILE,
+    }
+    _pt_module._PT_INSTANCE = instance
+    _pt_module.PT_DIR       = new_dir
+    _pt_module.STATE_FILE   = new_dir / "state.json"
+    _pt_module.HISTORY_FILE = new_dir / "history.csv"
+    _pt_module.TRADES_FILE  = new_dir / "trades.csv"
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            setattr(_pt_module, k, v)
 from v1.pipeline.data_pipeline import ASSET_CLASS, TICKER_LIST
 from v1.pipeline.signal_generation import RSI_ENTRY_THRESH, ATR_TRAILING_MULT, MIN_HOLD_DAYS
 from v1.scripts.scheduler import check_kill_switch, ORDERS_FILE, KILL_SWITCH_DD
@@ -1434,29 +1470,6 @@ def main():
     # ── vs S&P 500 ───────────────────────────────────────────────────────────
     with tab_sp:
 
-        @st.cache_data(ttl=300, show_spinner=False)
-        def _spy_history(start_date: str):
-            """Fetch daily ^GSPC closing prices from inception to today."""
-            import yfinance as yf
-            try:
-                raw = yf.download("^GSPC", start=start_date, auto_adjust=True,
-                                  progress=False)
-                if isinstance(raw.columns, pd.MultiIndex):
-                    raw.columns = raw.columns.droplevel(1)
-                raw.index = pd.to_datetime(raw.index).tz_localize(None)
-                if "Close" in raw.columns and not raw.empty:
-                    return raw["Close"].dropna()
-            except Exception:
-                pass
-            try:
-                raw = yf.Ticker("^GSPC").history(start=start_date, auto_adjust=True)
-                raw.index = pd.to_datetime(raw.index).tz_localize(None)
-                if "Close" in raw.columns and not raw.empty:
-                    return raw["Close"].dropna()
-            except Exception:
-                pass
-            return pd.Series(dtype=float)
-
         @st.fragment(run_every=30)
         def _vs_sp_section():
             """
@@ -1768,19 +1781,213 @@ def main():
 
     # ── V4N-F 3-Month Test (separate paper trading instance) ─────────────────
     with tab_v4nf:
-        _v4nf_test_section()
+        v4nf_port_tab, v4nf_vs_sp_tab = st.tabs([
+            "  📈  Portfolio", "  📊  vs S&P 500",
+        ])
+        with v4nf_port_tab:
+            _v4nf_test_section()
+        with v4nf_vs_sp_tab:
+            _v4nf_vs_sp_section()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _spy_history(start_date: str):
+    """Fetch daily ^GSPC closing prices from `start_date` to today.
+
+    Module-level so both the production vs-S&P tab and the V4N-F vs-S&P
+    sub-tab share the same cached result (one yfinance call per session).
+    """
+    import yfinance as yf
+    try:
+        raw = yf.download("^GSPC", start=start_date, auto_adjust=True,
+                          progress=False)
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.droplevel(1)
+        raw.index = pd.to_datetime(raw.index).tz_localize(None)
+        if "Close" in raw.columns and not raw.empty:
+            return raw["Close"].dropna()
+    except Exception:
+        pass
+    try:
+        raw = yf.Ticker("^GSPC").history(start=start_date, auto_adjust=True)
+        raw.index = pd.to_datetime(raw.index).tz_localize(None)
+        if "Close" in raw.columns and not raw.empty:
+            return raw["Close"].dropna()
+    except Exception:
+        pass
+    return pd.Series(dtype=float)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _v4nf_intraday_curve(positions_tuple: tuple, cash: float) -> dict:
+    """
+    Build a live intraday equity curve for the V4N-F instance.  Mirrors
+    paper_trader.get_intraday_curve() but reads from the v4nf_3mo state
+    (passed in via positions_tuple/cash since this dashboard runs without
+    PT_INSTANCE).  Caches for 60s so re-renders don't refetch yfinance.
+
+    Returns dict with keys:
+      curve      — DataFrame[index=ET-naive datetime, open/high/low/close]
+      last_px    — Dict[ticker -> latest 5-min close]
+      spy_curve  — Series of ^GSPC values rebased so its FIRST bar equals the
+                   portfolio's FIRST intraday bar (today-only relative compare)
+      spy_pct    — Float ^GSPC % change vs yesterday's close (None on fail)
+    """
+    out = {"curve": pd.DataFrame(), "last_px": {},
+           "spy_curve": pd.Series(dtype=float), "spy_pct": None}
+    if not positions_tuple:
+        return out
+
+    positions = {t: shares for t, shares in positions_tuple if not t.startswith("_")}
+    if not positions:
+        return out
+
+    intraday = fetch_intraday_batch(list(set(list(positions) + ["^GSPC"])))
+    if not intraday:
+        return out
+
+    col_map = {"open": "Open", "high": "High", "low": "Low", "close": "Close"}
+    series  = {k: {} for k in col_map}
+    last_px = {}
+    for t, shares in positions.items():
+        if t not in intraday:
+            continue
+        df = intraday[t]
+        for k, yc in col_map.items():
+            col = df[yc] if yc in df.columns else None
+            if col is None:
+                continue
+            if isinstance(col, pd.DataFrame):
+                col = col.iloc[:, 0]
+            series[k][t] = col * shares
+        cc = df["Close"] if "Close" in df.columns else df.iloc[:, 3]
+        if isinstance(cc, pd.DataFrame):
+            cc = cc.iloc[:, 0]
+        if not cc.empty:
+            last_px[t] = float(cc.iloc[-1])
+
+    if not series["close"]:
+        return out
+
+    ohlc = {}
+    for k, tser in series.items():
+        if not tser:
+            continue
+        comb = pd.concat(list(tser.values()), axis=1).ffill()
+        ohlc[k] = comb.sum(axis=1)
+    if "close" not in ohlc:
+        return out
+
+    curve = pd.DataFrame({k: v + cash for k, v in ohlc.items()})
+    curve.index = pd.to_datetime(curve.index)
+    if curve.index.tz is not None:
+        curve.index = pd.DatetimeIndex(
+            curve.index.tz_convert("America/New_York").strftime("%Y-%m-%d %H:%M:%S"))
+    curve = curve.dropna(how="all")
+
+    # Restrict the intraday curve to TODAY's session only — fetch_intraday_batch
+    # returns 5 days of bars by default, which made the chart show 5 days of
+    # 5-min data anchored to an old baseline (mirrors paper_trader.get_intraday_curve).
+    today_str = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+    today_ts  = pd.Timestamp(today_str)
+    curve = curve[curve.index.normalize() == today_ts]
+    out["curve"]   = curve
+    out["last_px"] = last_px
+
+    # ^GSPC benchmark — rebase so first bar matches portfolio's first bar value
+    # for direct intraday comparison; absolute % change computed off yesterday's
+    # close so the chart shows true gap-included daily move.
+    if "^GSPC" in intraday and not curve.empty:
+        gspc = intraday["^GSPC"]
+        gspc_close = gspc["Close"] if "Close" in gspc.columns else gspc.iloc[:, 3]
+        if isinstance(gspc_close, pd.DataFrame):
+            gspc_close = gspc_close.iloc[:, 0]
+        gspc_close = gspc_close.dropna()
+        # Filter ^GSPC bars to today's session only (same as the main intraday curve)
+        gspc_close.index = pd.to_datetime(gspc_close.index)
+        gspc_close = gspc_close[gspc_close.index.normalize() == today_ts]
+        if not gspc_close.empty:
+            try:
+                daily_gspc = yf.Ticker("^GSPC").history(period="5d", interval="1d")
+                daily_close = daily_gspc["Close"].dropna()
+                prev = daily_close[daily_close.index.strftime("%Y-%m-%d") < today_str]
+                if not prev.empty:
+                    prev_close = float(prev.iloc[-1])
+                    today_last = float(gspc_close.iloc[-1])
+                    out["spy_pct"] = (today_last / prev_close - 1) * 100
+            except Exception:
+                pass
+
+            # Rebase ^GSPC curve to portfolio's first-bar value
+            base_port = float(curve["close"].iloc[0])
+            base_gspc = float(gspc_close.iloc[0])
+            scaled = gspc_close / base_gspc * base_port
+            scaled.index = pd.to_datetime(scaled.index)
+            if scaled.index.tz is not None:
+                scaled.index = pd.DatetimeIndex(
+                    scaled.index.tz_convert("America/New_York")
+                                .strftime("%Y-%m-%d %H:%M:%S"))
+            out["spy_curve"] = scaled
+    return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _v4nf_spy_benchmark(start_date: str, current_pv: float) -> dict:
+    """
+    Compute a $100k SPY buy-and-hold benchmark from V4N-F start (2026-05-11
+    market OPEN) to today's close.  Cached 5min so dashboard renders fast.
+
+    Returns dict:
+      dates     — list of trading dates
+      spy_eq    — list of SPY-only portfolio values (starting at $100k)
+      spy_total — total return % since inception
+      alpha     — V4N-F return - SPY return (pp)
+    """
+    import yfinance as yf
+    out = {"dates": [], "spy_eq": [], "spy_total": None, "alpha": None}
+    try:
+        hist = yf.Ticker("SPY").history(
+            start=start_date, auto_adjust=False, interval="1d")
+        if hist.empty:
+            return out
+        # Force-filter to >= start_date — yfinance occasionally returns a few
+        # pre-start bars depending on how `start=` is parsed, which made the
+        # SPY benchmark appear to start before V4N-F inception.
+        hist.index = pd.to_datetime(hist.index).tz_localize(None)
+        start_ts = pd.Timestamp(start_date)
+        hist = hist[hist.index >= start_ts]
+        if hist.empty:
+            return out
+        # Use OPEN of inception as entry (matches V4N-F init at market open),
+        # mark to CLOSE thereafter.
+        open0 = float(hist["Open"].iloc[0])
+        shares = 100_000.0 / open0
+        eq = [shares * float(hist["Close"].iloc[i]) for i in range(len(hist))]
+        out["dates"]     = [str(d.date()) for d in hist.index]
+        out["spy_eq"]    = eq
+        spy_total        = eq[-1] / 100_000 - 1
+        v4nf_total       = current_pv / 100_000 - 1
+        out["spy_total"] = spy_total
+        out["alpha"]     = v4nf_total - spy_total
+    except Exception:
+        pass
+    return out
 
 
 def _v4nf_test_section():
     """
-    Render the V4N-F 3-month live test instance.
+    Render the V4N-F 3-month live test instance using the same dark/colour-
+    coded styling as the rest of the dashboard (PALETTE, _layout, section-head).
 
-    Reads directly from data/v1/paper_trading_v4nf_3mo/ (independent of
-    the main paper_trader module state) so this tab tracks a fresh
-    $100k portfolio from 2026-05-11 → 2026-08-11 with no V4N-E history.
+    Reads directly from data/v1/paper_trading_v4nf_3mo/ so this tab tracks a
+    fresh $100k portfolio from 2026-05-11 → 2026-08-11 independent of the
+    legacy V4N-E paper trader.
+
+    Mirrors the main Portfolio tab's behaviour: live intraday curve, live
+    portfolio value (mark-to-market via yfinance), SPY comparison.
     """
     import json
-    from datetime import date as _date
+    import yfinance as yf  # noqa: F401 — used inside cached helpers
 
     V4NF_DIR     = _REPO_ROOT / "data" / "v1" / "paper_trading_v4nf_3mo"
     STATE_FP     = V4NF_DIR / "state.json"
@@ -1788,13 +1995,20 @@ def _v4nf_test_section():
     TRADES_FP    = V4NF_DIR / "trades.csv"
     START_DATE   = pd.Timestamp("2026-05-11")
     END_DATE     = pd.Timestamp("2026-08-11")
+    V4NF_COLOR   = get_color(V1_PRODUCTION_METHOD)   # palette-consistent tint
 
-    st.markdown("### 🧪 V4N-F · 3-Month Live Test")
+    # ── Header ───────────────────────────────────────────────────────────────
     st.markdown(
-        f"<span style='color:#666;font-size:.85rem'>"
-        f"Independent paper trading instance · $100,000 fresh start · "
-        f"{START_DATE.date()} → {END_DATE.date()} · "
-        f"<b>{V1_PRODUCTION_LABEL}</b> = V4N-E + bull-regime TLT→XLK swap"
+        f'<div class="section-head">{V1_PRODUCTION_LABEL} — 3-month live test '
+        f'(hands-off, frozen sizer)</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<span style='color:#888;font-size:.82rem'>"
+        f"Independent paper-trading instance · $100,000 fresh start · "
+        f"<b style='color:{V4NF_COLOR}'>{START_DATE.date()} → {END_DATE.date()}</b>"
+        f" · sizer pinned via <code>paper_trader_v4nf.py</code> "
+        f"(safe to keep iterating on production code)"
         f"</span>",
         unsafe_allow_html=True,
     )
@@ -1809,12 +2023,17 @@ def _v4nf_test_section():
         state = json.load(_f)
 
     today      = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
-    days_in    = max(0, (today - START_DATE).days)
-    days_total = (END_DATE - START_DATE).days
-    days_left  = max(0, (END_DATE - today).days)
+    # Inclusive day count: May 11 = day 1, May 12 = day 2, etc.  Matches how
+    # the EOD scheduler counts trading days (one history.csv row per session).
+    days_in    = max(0, (today - START_DATE).days + 1) if today >= START_DATE else 0
+    days_total = (END_DATE - START_DATE).days + 1
+    days_left  = max(0, days_total - days_in)
     pct_done   = min(100.0, days_in / days_total * 100) if days_total else 0.0
+    # Pin daily-chart x-axis range so Plotly doesn't auto-pad before inception
+    # when there are only a handful of data points.
+    _xaxis_range = [START_DATE, max(today, START_DATE + pd.Timedelta(days=1))]
 
-    pv          = float(state.get("portfolio_value", 100_000))
+    eod_pv      = float(state.get("portfolio_value", 100_000))
     cash        = float(state.get("cash", 100_000))
     n_pos       = len(state.get("positions", {}))
     last_eod    = state.get("last_eod_date", "—")
@@ -1822,104 +2041,701 @@ def _v4nf_test_section():
 
     if today < START_DATE:
         st.info(
-            f"Test starts {START_DATE.date()} — "
-            f"first EOD update will fire that evening. "
-            f"Current state: $100,000 cash, 0 positions (waiting)."
+            f"Test starts {START_DATE.date()} — first EOD update fires that evening."
         )
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: st.metric("Portfolio Value", f"${pv:,.0f}",
-                       delta=f"{(pv/100_000-1)*100:+.2f}%")
-    with c2: st.metric("Cash", f"${cash:,.0f}")
-    with c3: st.metric("Open Positions", n_pos)
-    with c4: st.metric("Days Elapsed", f"{days_in} / {days_total}",
-                       delta=f"{pct_done:.0f}% complete")
-    with c5: st.metric("Days Remaining", days_left)
+    # ── Same code path as production Portfolio + vs-S&P tabs ───────────────
+    # Swap paper_trader's I/O paths to v4nf_3mo for this section's duration,
+    # then call the IDENTICAL compute_live_portfolio_metrics() / load_*() the
+    # original tabs use.  This guarantees the V4N-F live PV, live prices, and
+    # ^GSPC-vs-yesterday-close pct exactly match the production tab logic.
+    with _use_pt_instance("v4nf_3mo"):
+        _pm        = compute_live_portfolio_metrics()
+        pt_state   = load_state()
+        pt_history = load_history()
+        pt_trades  = load_trades()
 
-    st.markdown(f"<span style='color:#888;font-size:.78rem'>"
-                f"Initialised {init_date} · last EOD {last_eod}"
-                f"</span>", unsafe_allow_html=True)
+    if not _pm:
+        st.warning("V4N-F live metrics unavailable (state may be incomplete).")
+        return
 
-    # ── Equity curve ─────────────────────────────────────────────────
-    if HISTORY_FP.exists():
-        try:
-            hist = pd.read_csv(HISTORY_FP, parse_dates=["date"]).sort_values("date")
-            if not hist.empty:
-                st.markdown("#### Equity Curve")
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=hist["date"], y=hist["portfolio_value"],
-                    mode="lines+markers", name="V4N-F",
-                    line=dict(color="#16a34a", width=2),
-                ))
-                fig.add_hline(y=100_000, line=dict(dash="dash", color="#888"),
-                              annotation_text="$100k start")
-                fig.update_layout(
-                    height=320, margin=dict(t=10, b=10, l=10, r=10),
-                    template="plotly_dark", showlegend=False,
-                    yaxis_tickprefix="$", yaxis_tickformat=",",
-                )
-                st.plotly_chart(fig, use_container_width=True)
+    live_pv         = _pm["pv"]
+    cash            = _pm["cash"]
+    n_pos           = _pm["n_positions"]
+    prev_pv         = _pm["prev_pv"]
+    daily_ret_pct   = _pm["daily_ret_pct"]
+    daily_pnl_usd   = _pm["daily_pnl_usd"]
+    tot_invested    = _pm["tot_invested"]
+    tot_cur_val     = _pm["tot_cur_val"]
+    tot_unreal      = _pm["tot_unreal"]
+    tot_chg_pct     = _pm["tot_chg_pct"]
+    today_unreal    = _pm["today_unrealized"]
+    today_unreal_p  = _pm["today_unrealized_pct"]
+    intraday_df     = _pm["intraday_df"]
+    live_prices     = _pm["live_prices"]
+    spy_curve_intra = _pm["spy_curve"]
+    spy_pct_from_prev = _pm["spy_pct_from_prev"]
+    spy_today_pct   = _pm["spy_today_pct"]
+    alpha_today     = _pm["alpha_today"]
 
-                if len(hist) >= 2:
-                    daily_rets = hist["portfolio_value"].pct_change().dropna()
-                    cum_ret    = pv / 100_000 - 1
-                    ann_ret    = (1 + cum_ret) ** (252 / max(len(daily_rets), 1)) - 1 \
-                                 if len(daily_rets) >= 5 else float("nan")
-                    sh         = (daily_rets.mean() / daily_rets.std() * np.sqrt(252)) \
-                                 if daily_rets.std() > 0 else float("nan")
-                    peak       = hist["portfolio_value"].cummax()
-                    dd         = ((hist["portfolio_value"] - peak) / peak).min()
-                    mc1, mc2, mc3, mc4 = st.columns(4)
-                    with mc1: st.metric("Total Return", f"{cum_ret*100:+.2f}%")
-                    with mc2: st.metric("Ann Return (est)",
-                                        "—" if pd.isna(ann_ret) else f"{ann_ret*100:+.2f}%")
-                    with mc3: st.metric("Sharpe (est)",
-                                        "—" if pd.isna(sh) else f"{sh:.2f}")
-                    with mc4: st.metric("Max DD", f"{dd*100:.2f}%")
-        except Exception as _e:
-            st.warning(f"Could not load history.csv: {_e}")
+    invested = live_pv - cash
+    cum_ret  = live_pv / 100_000 - 1
+
+    # ── Section A: status row (live, same logic as Portfolio tab) ───────────
+    st.markdown('<div class="section-head">Status (live)</div>', unsafe_allow_html=True)
+    s1, s2, s3, s4, s5 = st.columns(5)
+    with s1: st.metric("Portfolio Value", f"${live_pv:,.0f}",
+                       delta=f"{cum_ret*100:+.2f}%",
+                       help="Live mark-to-market via compute_live_portfolio_metrics() "
+                            "(same function the production Portfolio tab uses).")
+    with s2: st.metric("Cash", f"${cash:,.0f}",
+                       help="Uninvested cash balance.")
+    with s3: st.metric("Invested", f"${invested:,.0f}",
+                       help="Sum of all open position market values at latest price.")
+    with s4: st.metric("Open Positions", n_pos)
+    with s5: st.metric("Days Elapsed", f"{days_in} / {days_total}",
+                       delta=f"{pct_done:.0f}% complete",
+                       help=f"{days_left} trading days remaining until {END_DATE.date()}.")
+
+    # ── Section A1: today vs S&P 500 (same as vs-S&P tab Overall row) ───────
+    st.markdown('<div class="section-head">Today vs S&P 500</div>',
+                unsafe_allow_html=True)
+    _last_bar_str = ""
+    if hasattr(spy_curve_intra, "empty") and not spy_curve_intra.empty:
+        _last_bar = spy_curve_intra.index[-1]
+        _last_bar_str = (pd.Timestamp(_last_bar).strftime("%H:%M")
+                         if hasattr(_last_bar, "strftime") else str(_last_bar)[-5:])
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.metric(f"{V1_PRODUCTION_LABEL} Today", f"{daily_ret_pct:+.2f}%",
+                        help="V4N-F's intraday % change vs yesterday's close.")
+    with c2:
+        _spy_help = (
+            "^GSPC (S&P 500 index) % change from yesterday's close — "
+            "matches Yahoo Finance and TradingView exactly. "
+            f"Last bar: {_last_bar_str} ET. Data: Yahoo Finance free tier "
+            "(≈15 min delay).")
+        st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%", help=_spy_help)
+    with c3: st.metric("Alpha (today)", f"{alpha_today:+.2f}%",
+                        help="V4N-F return minus S&P return today. Positive = beating index.")
+    with c4: st.metric("Daily P&L", f"${daily_pnl_usd:+,.0f}",
+                        help="Live $ change vs yesterday's close.")
+
+    st.markdown(
+        f"<span style='color:#666;font-size:.78rem'>"
+        f"Initialised {init_date} · last EOD {last_eod} · "
+        f"sizer = <code>{V1_PRODUCTION_METHOD}</code> (frozen) · "
+        f"refreshes every 60s while market is open"
+        f"</span>", unsafe_allow_html=True,
+    )
+
+    # ── Section A2: intraday equity vs ^GSPC ────────────────────────────────
+    if not intraday_df.empty:
+        st.markdown('<div class="section-head">Intraday equity vs S&P 500</div>',
+                    unsafe_allow_html=True)
+        intraday_fig = go.Figure()
+        intraday_fig.add_trace(go.Scatter(
+            x=intraday_df.index, y=intraday_df["close"],
+            mode="lines", name=V1_PRODUCTION_LABEL,
+            line=dict(color=V4NF_COLOR, width=2.2),
+            hovertemplate="<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
+        ))
+        if hasattr(spy_curve_intra, "empty") and not spy_curve_intra.empty:
+            intraday_fig.add_trace(go.Scatter(
+                x=spy_curve_intra.index, y=spy_curve_intra.values,
+                mode="lines", name="^GSPC (rebased)",
+                line=dict(color=PALETTE["buy_hold"], width=1.6, dash="dot"),
+                hovertemplate="<b>%{x}</b><br>S&P $%{y:,.0f}<extra></extra>",
+            ))
+        intraday_fig.update_layout(**_layout(
+            height=280,
+            yaxis=dict(tickprefix="$", tickformat=",", title=None),
+            xaxis=dict(title=None),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        ))
+        st.plotly_chart(intraday_fig, theme=None, use_container_width=True,
+                        config={"scrollZoom": True, "displayModeBar": True})
+
+    # Use loaded history (already from v4nf_3mo via the context manager above)
+    hist = pt_history.copy() if not pt_history.empty else pd.DataFrame()
+
+    # ── Section B: full-period metrics row (9 metrics, matches portfolio tab) ─
+    st.markdown('<div class="section-head">Performance metrics (full test-to-date)</div>',
+                unsafe_allow_html=True)
+
+    if hist.empty or len(hist) < 2:
+        st.info("Performance metrics will populate after the first full EOD update.")
+        m_v4nf = {}
     else:
-        st.info("No EOD history yet — equity curve will appear after the first EOD update.")
+        daily_rets = hist["portfolio_value"].pct_change().dropna()
+        m_v4nf     = metrics(daily_rets) if not daily_rets.empty else {}
 
-    # ── Open positions ──────────────────────────────────────────────
-    positions = state.get("positions", {})
+    def _fmt_pct(v, decimals=2):
+        return "—" if v is None or (isinstance(v, float) and pd.isna(v)) \
+                   else f"{v*100:+.{decimals}f}%"
+    def _fmt_num(v, decimals=2):
+        return "—" if v is None or (isinstance(v, float) and pd.isna(v)) \
+                   else f"{v:.{decimals}f}"
+
+    p1, p2, p3, p4, p5, p6, p7, p8, p9 = st.columns(9)
+    with p1: st.metric("Total Return", _fmt_pct(cum_ret),
+                        help="Cumulative return since 2026-05-11 inception.")
+    with p2: st.metric("Ann. Return", _fmt_pct(m_v4nf.get("ann_r")),
+                        help="Annualised CAGR — early-test estimate, noisy until ≥30 days.")
+    with p3: st.metric("Sharpe", _fmt_num(m_v4nf.get("sharpe")),
+                        help="Annualised Sharpe of daily returns. Target ≥ 2.0 (V4N-F OOS = 2.63).")
+    with p4: st.metric("Volatility", _fmt_pct(m_v4nf.get("vol"), decimals=1),
+                        help="Annualised σ of daily returns.")
+    with p5: st.metric("Max Drawdown", _fmt_pct(m_v4nf.get("max_dd")),
+                        delta_color="inverse",
+                        help="Largest peak-to-trough loss since inception.")
+    with p6: st.metric("Calmar", _fmt_num(m_v4nf.get("calmar")),
+                        help="Ann. return ÷ |max DD|. Higher = shallower drawdowns.")
+    with p7: st.metric("Win Rate", _fmt_pct(m_v4nf.get("win_rate"), decimals=0),
+                        help="% of active trading days with positive return.")
+    with p8: st.metric("VaR 95% (1d)", _fmt_pct(m_v4nf.get("var_95"), decimals=2),
+                        delta_color="inverse",
+                        help="1-day 95% VaR — daily loss exceeded only 5% of days.")
+    with p9: st.metric("Days Live", f"{len(hist)}",
+                        help="Number of EOD snapshots recorded so far.")
+
+    # ── Section B2: S&P 500 benchmark callout (alpha since inception) ───────
+    spy_bench = _v4nf_spy_benchmark(str(START_DATE.date()), live_pv)
+    if spy_bench.get("spy_total") is not None:
+        spy_total = spy_bench["spy_total"]
+        alpha     = spy_bench["alpha"]
+        b1, b2, b3 = st.columns(3)
+        with b1: st.metric(f"{V1_PRODUCTION_LABEL} Total",
+                            _fmt_pct(cum_ret),
+                            help="V4N-F cumulative return since inception (live mark).")
+        with b2: st.metric("S&P 500 Total",
+                            _fmt_pct(spy_total),
+                            help="SPY buy-and-hold from 2026-05-11 open — same $100k start.")
+        with b3: st.metric("Alpha vs S&P 500",
+                            _fmt_pct(alpha),
+                            delta=f"{alpha*100:+.2f}pp",
+                            help="V4N-F total return − SPY total return (percentage points).")
+
+    # ── Section C: equity + drawdown charts (palette-styled) ────────────────
+    if not hist.empty:
+        st.markdown('<div class="section-head">Equity curve vs S&P 500</div>',
+                    unsafe_allow_html=True)
+        eq_fig = go.Figure()
+        eq_fig.add_trace(go.Scatter(
+            x=hist["date"], y=hist["portfolio_value"],
+            mode="lines+markers", name=V1_PRODUCTION_LABEL,
+            line=dict(color=V4NF_COLOR, width=2.2),
+            marker=dict(size=5, color=V4NF_COLOR),
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>$%{y:,.0f}<extra></extra>",
+        ))
+        if spy_bench.get("spy_eq"):
+            eq_fig.add_trace(go.Scatter(
+                x=pd.to_datetime(spy_bench["dates"]),
+                y=spy_bench["spy_eq"],
+                mode="lines", name="S&P 500 ($100k start)",
+                line=dict(color=PALETTE["buy_hold"], width=1.8, dash="dot"),
+                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>SPY $%{y:,.0f}<extra></extra>",
+            ))
+        eq_fig.add_hline(y=100_000,
+                         line=dict(dash="dash", color="#666", width=1),
+                         annotation_text="$100k baseline",
+                         annotation_position="bottom right",
+                         annotation=dict(font=dict(color="#888", size=10)))
+        eq_fig.update_layout(**_layout(
+            height=340,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
+            yaxis=dict(tickprefix="$", tickformat=",", title=None),
+            xaxis=dict(title=None, range=_xaxis_range, type="date"),
+        ))
+        st.plotly_chart(eq_fig, theme=None, use_container_width=True,
+                        config={"scrollZoom": True, "displayModeBar": True})
+
+        # Drawdown
+        if len(hist) >= 2:
+            peak    = hist["portfolio_value"].cummax()
+            dd_pct  = (hist["portfolio_value"] / peak - 1) * 100
+            dd_fig  = go.Figure()
+            dd_fig.add_trace(go.Scatter(
+                x=hist["date"], y=dd_pct,
+                mode="lines", name="Drawdown",
+                line=dict(color=PALETTE["neg"], width=1.6),
+                fill="tozeroy", fillcolor="rgba(255,85,85,0.18)",
+                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>%{y:.2f}%<extra></extra>",
+            ))
+            dd_fig.update_layout(**_layout(
+                height=200, showlegend=False,
+                yaxis=dict(ticksuffix="%", title="Drawdown"),
+                xaxis=dict(title=None, range=_xaxis_range, type="date"),
+            ))
+            st.plotly_chart(dd_fig, theme=None, use_container_width=True,
+                            config={"scrollZoom": True, "displayModeBar": True})
+
+    # ── Section D: rolling metrics (Sharpe / vol / cumulative return) ───────
+    if not hist.empty and len(hist) >= 5:
+        st.markdown('<div class="section-head">Rolling metrics</div>',
+                    unsafe_allow_html=True)
+        # Adaptive window: as much as 21d, but never more than data we have
+        window = min(21, max(5, len(hist) - 1))
+        daily  = hist.set_index("date")["portfolio_value"].pct_change()
+
+        roll_sharpe = (daily.rolling(window).mean()
+                       / daily.rolling(window).std()) * np.sqrt(252)
+        roll_vol    = daily.rolling(window).std() * np.sqrt(252) * 100
+        cum_ret_pct = ((1 + daily.fillna(0)).cumprod() - 1) * 100
+
+        rcol1, rcol2 = st.columns(2)
+        with rcol1:
+            f1 = go.Figure()
+            f1.add_trace(go.Scatter(
+                x=roll_sharpe.index, y=roll_sharpe.values,
+                mode="lines", name=f"Rolling Sharpe ({window}d)",
+                line=dict(color=V4NF_COLOR, width=2),
+                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Sharpe %{y:.2f}<extra></extra>",
+            ))
+            f1.add_hline(y=2.0, line=dict(dash="dash", color="#50fa7b", width=1),
+                         annotation_text="OOS target 2.0",
+                         annotation=dict(font=dict(color="#50fa7b", size=10)))
+            f1.add_hline(y=0.0, line=dict(color="#444", width=1))
+            f1.update_layout(**_layout(
+                height=260, showlegend=False, title=f"Rolling Sharpe ({window}-day)",
+                yaxis=dict(title="Sharpe"),
+                xaxis=dict(title=None, range=_xaxis_range, type="date"),
+            ))
+            st.plotly_chart(f1, theme=None, use_container_width=True,
+                            config={"displayModeBar": False})
+
+        with rcol2:
+            f2 = go.Figure()
+            f2.add_trace(go.Scatter(
+                x=roll_vol.index, y=roll_vol.values,
+                mode="lines", name=f"Rolling Vol ({window}d)",
+                line=dict(color=PALETTE["vol_target"], width=2),
+                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Ann vol %{y:.1f}%<extra></extra>",
+            ))
+            f2.update_layout(**_layout(
+                height=260, showlegend=False, title=f"Rolling Volatility ({window}-day, ann.)",
+                yaxis=dict(ticksuffix="%", title=None),
+                xaxis=dict(title=None, range=_xaxis_range, type="date"),
+            ))
+            st.plotly_chart(f2, theme=None, use_container_width=True,
+                            config={"displayModeBar": False})
+
+        # Daily-return bar chart (green/red coded)
+        st.markdown('<div class="section-head">Daily returns</div>',
+                    unsafe_allow_html=True)
+        bar_fig = go.Figure()
+        bar_fig.add_trace(go.Bar(
+            x=hist["date"],
+            y=hist["daily_return"] if "daily_return" in hist.columns else (daily * 100).values,
+            marker=dict(color=[PALETTE["pos"] if v >= 0 else PALETTE["neg"]
+                               for v in (hist["daily_return"]
+                                         if "daily_return" in hist.columns
+                                         else (daily * 100).values)]),
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>%{y:+.2f}%<extra></extra>",
+            name="Daily %",
+        ))
+        bar_fig.add_hline(y=0, line=dict(color="#444", width=1))
+        bar_fig.update_layout(**_layout(
+            height=220, showlegend=False,
+            yaxis=dict(ticksuffix="%", title=None),
+            xaxis=dict(title=None, range=_xaxis_range, type="date"),
+        ))
+        st.plotly_chart(bar_fig, theme=None, use_container_width=True,
+                        config={"displayModeBar": False})
+    elif not hist.empty:
+        st.caption(f"Rolling metrics activate after ≥5 EOD snapshots "
+                   f"(currently {len(hist)}).")
+
+    # ── Section E: open positions (LIVE prices, same logic as Portfolio tab) ─
+    # Uses live_prices from compute_live_portfolio_metrics() — identical to the
+    # production Portfolio tab's positions table.  Σ(shares × current price) +
+    # cash exactly ties out to the live PV shown in the status row above.
+    positions = pt_state.get("positions", {})
     if positions:
-        st.markdown("#### Open Positions")
+        px_source = "live (5-min)" if live_prices else "last EOD close"
+        st.markdown(
+            f'<div class="section-head">Open positions · prices = {px_source}</div>',
+            unsafe_allow_html=True,
+        )
         rows = []
         for t, p in positions.items():
             if t == "_SPY_HEDGE":
                 continue
             shares = float(p.get("shares", 0))
             entry  = float(p.get("entry_price", 0))
-            last   = float(p.get("last_close", entry))
+            last   = float(live_prices.get(t) or p.get("last_close") or entry)
             cur_v  = shares * last
             pnl    = (last - entry) * shares
             pnl_p  = (last / entry - 1) * 100 if entry else 0.0
             rows.append({
-                "Ticker": t, "Shares": round(shares, 3),
-                "Entry": f"${entry:.2f}", "Last": f"${last:.2f}",
-                "Value": f"${cur_v:,.0f}", "P&L $": f"${pnl:+,.0f}",
-                "P&L %": f"{pnl_p:+.2f}%",
+                "Ticker": t,
+                "Class" : ASSET_CLASS.get(t, "—"),
+                "Shares": f"{shares:.3f}",
+                "Entry" : f"${entry:.2f}",
+                "Last"  : f"${last:.2f}",
+                "Value" : f"${cur_v:,.0f}",
+                "P&L $" : f"${pnl:+,.0f}",
+                "P&L %" : f"{pnl_p:+.2f}%",
             })
         if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            df_pos = pd.DataFrame(rows).sort_values(
+                "P&L %", key=lambda s: s.str.replace("%", "").astype(float),
+                ascending=False,
+            )
+            st.dataframe(
+                df_pos.style.map(
+                    lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
+                              "color:#ff5555" if (isinstance(v, str) and v.startswith("-")) else "",
+                    subset=["P&L $", "P&L %"],
+                ),
+                use_container_width=True, hide_index=True,
+            )
 
-    # ── Recent trades ───────────────────────────────────────────────
-    if TRADES_FP.exists():
+    # ── Section F: recent trades ────────────────────────────────────────────
+    if not pt_trades.empty:
         try:
-            trades = pd.read_csv(TRADES_FP)
+            trades = pt_trades
             if not trades.empty:
-                st.markdown("#### Recent Trades (last 25)")
-                st.dataframe(trades.tail(25).iloc[::-1],
-                             use_container_width=True, hide_index=True)
+                st.markdown('<div class="section-head">Recent trades (last 25)</div>',
+                            unsafe_allow_html=True)
+                _t = trades.tail(25).iloc[::-1].copy()
+                # Format numeric columns for readability + colour coding
+                if "value" in _t.columns:
+                    _t["value"] = _t["value"].apply(lambda v: f"${float(v):,.0f}")
+                if "price" in _t.columns:
+                    _t["price"] = _t["price"].apply(lambda v: f"${float(v):.2f}")
+                if "shares" in _t.columns:
+                    _t["shares"] = _t["shares"].apply(lambda v: f"{float(v):.3f}")
+                if "pnl" in _t.columns:
+                    _t["pnl"] = _t["pnl"].apply(
+                        lambda v: f"${float(v):+,.2f}" if pd.notna(v) and float(v) != 0 else "—")
+                # Colour BUY green, SELL red
+                def _action_color(v):
+                    if not isinstance(v, str):
+                        return ""
+                    return "color:#50fa7b" if v.upper() == "BUY" else \
+                           "color:#ff5555" if v.upper() == "SELL" else ""
+                styled = _t.style.map(_action_color, subset=["action"])
+                if "pnl" in _t.columns:
+                    styled = styled.map(
+                        lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("$+")) else
+                                  "color:#ff5555" if (isinstance(v, str) and v.startswith("$-")) else "",
+                        subset=["pnl"],
+                    )
+                st.dataframe(styled, use_container_width=True, hide_index=True)
         except Exception:
             pass
 
     st.caption(
-        "Hands-off 3-month test of V4N-F (the new production model). "
-        "Trades fire automatically when the V4N-F scheduler is running: "
-        "`PT_INSTANCE=v4nf_3mo python v1/scripts/scheduler.py`"
+        f"Hands-off 3-month test of {V1_PRODUCTION_LABEL} (frozen sizer at "
+        f"`paper_trader_v4nf.py`). Trades fire automatically when the V4N-F "
+        f"scheduler is running:  "
+        f"`PT_INSTANCE=v4nf_3mo PYTHONPATH=. python v1/scripts/scheduler.py`"
+    )
+
+
+@st.fragment(run_every=30)
+def _v4nf_vs_sp_section():
+    """
+    V4N-F 3-month vs S&P 500 — exact replica of the production `_vs_sp_section`
+    fragment, just pointed at the v4nf_3mo paper-trading instance via
+    `_use_pt_instance`.  Two sections:
+
+      1. Live — Today vs S&P 500 (Portfolio % / SPY % / Alpha / PV)
+         + daily-alpha bar chart since inception
+      2. Historical Record vs S&P 500 (cumulative line chart + daily breakdown
+         table with colour-coded P&L / S&P / Alpha / "Beating S&P" indicators)
+
+    uirevision and chart `key` strings are prefixed `vs_spy_v4nf_*` so they
+    don't collide with the production tab's identically-named chart state.
+    """
+    with _use_pt_instance("v4nf_3mo"):
+        _pm_sp     = compute_live_portfolio_metrics()
+        pt_history = load_history()
+
+    # Pin x-axis to the V4N-F test window so Plotly doesn't pad the axis
+    # back before inception when only a handful of bars exist.
+    START_DATE   = pd.Timestamp("2026-05-11")
+    END_DATE     = pd.Timestamp("2026-08-11")
+    _today_now   = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
+    _xaxis_range = [START_DATE, max(_today_now, START_DATE + pd.Timedelta(days=1))]
+
+    if not _pm_sp:
+        st.info(
+            "V4N-F paper trading not initialised — run "
+            "`PT_INSTANCE=v4nf_3mo PYTHONPATH=. python v1/scripts/_init_v4nf_at_open.py` first."
+        )
+        return
+
+    now_et         = _pm_sp["now"]
+    pv             = _pm_sp["pv"]
+    port_today_pct = _pm_sp["daily_ret_pct"]
+    spy_today_pct  = _pm_sp["spy_today_pct"]
+    alpha_today    = _pm_sp["alpha_today"]
+    spy_intraday   = _pm_sp["spy_curve"]
+
+    _last_bar_str = ""
+    if hasattr(spy_intraday, "empty") and not spy_intraday.empty:
+        _last_bar = spy_intraday.index[-1]
+        _last_bar_str = (pd.Timestamp(_last_bar).strftime("%H:%M")
+                         if hasattr(_last_bar, "strftime") else str(_last_bar)[-5:])
+
+    # ── Intraday (live) comparison ────────────────────────────────────
+    st.markdown('<div class="section-head">Overall vs S&P 500</div>',
+                unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric(f"{V1_PRODUCTION_LABEL} Today", f"{port_today_pct:+.2f}%",
+                  help="V4N-F's intraday % change vs yesterday's close.")
+    with c2:
+        _spy_help = (
+            "^GSPC (S&P 500 index) % change from yesterday's close — "
+            "matches Yahoo Finance and TradingView exactly. "
+            f"Last bar: {_last_bar_str} ET. "
+            "Data source: Yahoo Finance free tier (≈15 min delay)."
+        )
+        st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%", help=_spy_help)
+    with c3:
+        st.metric("Alpha (today)", f"{alpha_today:+.2f}%",
+                  help="V4N-F return minus S&P return today. Positive = beating the index.")
+    with c4:
+        st.metric("Portfolio Value", f"${pv:,.0f}",
+                  help="Live V4N-F portfolio value (cash + open position market value).")
+
+    # Daily alpha bar chart — all trading days including today
+    _alpha_chart_shown = False
+    if not pt_history.empty and len(pt_history) >= 2:
+        _bar_start = str(pt_history["date"].min().date())
+        _bar_spy = _spy_history(_bar_start)
+        if not _bar_spy.empty:
+            _bar_hist = pt_history.set_index("date")["portfolio_value"].copy()
+            _bar_hist.index = pd.to_datetime(_bar_hist.index)
+            _bar_hist = _bar_hist[~_bar_hist.index.duplicated(keep='last')]
+            _bar_today = pd.Timestamp(now_et.date())
+            if pv > 0:
+                _bar_hist[_bar_today] = pv
+            _bar_dates = _bar_spy.index.intersection(
+                pd.date_range(_bar_hist.index.min(), _bar_hist.index.max(), freq="B")
+            )
+            _bar_hf = _bar_hist.reindex(_bar_dates).ffill()
+            _bar_sa = _bar_spy.reindex(_bar_dates).ffill()
+            _bar_valid = _bar_hf.notna() & _bar_sa.notna()
+            _bar_hf = _bar_hf[_bar_valid]
+            _bar_sa = _bar_sa[_bar_valid]
+            if len(_bar_hf) >= 2:
+                _bar_pr = _bar_hf.pct_change().dropna() * 100
+                _bar_sr = _bar_sa.pct_change().dropna() * 100
+                _bar_common = _bar_pr.index.intersection(_bar_sr.index)
+                _bar_alpha = _bar_pr[_bar_common] - _bar_sr[_bar_common]
+                if len(_bar_alpha) > 0:
+                    fig_alpha = go.Figure()
+                    _bar_colors = ['#50fa7b' if a >= 0 else '#ff5555'
+                                   for a in _bar_alpha.values]
+                    fig_alpha.add_trace(go.Bar(
+                        x=_bar_alpha.index, y=_bar_alpha.values.astype(float),
+                        marker_color=_bar_colors,
+                        hovertemplate=(
+                            "<b>%{x|%b %d}</b><br>"
+                            "Alpha: %{y:+.2f}%<extra></extra>"
+                        ),
+                    ))
+                    fig_alpha.add_hline(y=0, line_color="#555", line_width=1)
+                    _avg_alpha = float(_bar_alpha.mean())
+                    fig_alpha.add_hline(
+                        y=_avg_alpha, line_color="#4a9eff", line_dash="dash",
+                        line_width=1,
+                        annotation_text=f"  avg {_avg_alpha:+.2f}%",
+                        annotation_font_color="#4a9eff",
+                    )
+                    fig_alpha.update_layout(**_layout(
+                        height=300, uirevision="vs_spy_v4nf_daily_alpha",
+                        dragmode="pan",
+                        hovermode="closest",
+                        title=dict(
+                            text=f"Daily Alpha vs S&P 500 ({V1_PRODUCTION_LABEL} − Index)",
+                            font=dict(size=12),
+                        ),
+                        yaxis=dict(title="Alpha %", gridcolor="#2a2a2a",
+                                   zeroline=True, zerolinecolor="#555"),
+                        xaxis=dict(type="date", tickformat="%b %d",
+                                   gridcolor="#2a2a2a",
+                                   range=_xaxis_range),
+                        margin=dict(l=60, r=20, t=35, b=30),
+                        showlegend=False, bargap=0.15,
+                    ))
+                    st.plotly_chart(
+                        fig_alpha, theme=None, use_container_width=True,
+                        config={"scrollZoom": True, "displayModeBar": True},
+                        key="vs_spy_v4nf_daily_alpha",
+                    )
+                    _alpha_chart_shown = True
+    if not _alpha_chart_shown:
+        st.info("Need at least 2 trading days to show the daily alpha chart.")
+
+    # ── Historical comparison (daily) ─────────────────────────────────
+    st.markdown('<div class="section-head">Historical Record vs S&P 500</div>',
+                unsafe_allow_html=True)
+
+    if pt_history.empty or len(pt_history) < 2:
+        st.info(
+            "Only one day of history so far — historical comparison will appear "
+            "after the scheduler runs the first EOD update tonight. "
+            "Check back after 4:45 PM ET."
+        )
+        return
+
+    start_date = str(pt_history["date"].min().date())
+    with st.spinner("Fetching S&P 500 history…"):
+        spy_closes = _spy_history(start_date)
+
+    if spy_closes.empty:
+        st.error("Could not fetch ^GSPC data.")
+        return
+
+    hist = pt_history.set_index("date")["portfolio_value"].copy()
+    hist.index = pd.to_datetime(hist.index)
+    hist = hist[~hist.index.duplicated(keep='last')]
+    _today_ts = pd.Timestamp(now_et.date())
+    if pv > 0:
+        hist[_today_ts] = pv
+
+    all_dates = spy_closes.index.intersection(
+        pd.date_range(hist.index.min(), hist.index.max(), freq="B")
+    )
+    hist_full = hist.reindex(all_dates).ffill()
+    spy_close_aligned = spy_closes.reindex(all_dates).ffill()
+
+    _valid = hist_full.notna() & spy_close_aligned.notna()
+    hist_full = hist_full[_valid]
+    spy_close_aligned = spy_close_aligned[_valid]
+
+    if hist_full.empty or spy_close_aligned.empty:
+        st.warning("No aligned portfolio/market data available for this period.")
+        return
+
+    _inception_date = hist_full.index[0]
+
+    _port_scale = PT_INITIAL_CAPITAL / hist_full.iloc[0] if hist_full.iloc[0] else 1
+    port_norm   = hist_full * _port_scale
+
+    _spy_scale = PT_INITIAL_CAPITAL / spy_close_aligned.iloc[0] if spy_close_aligned.iloc[0] else 1
+    spy_norm   = spy_close_aligned * _spy_scale
+
+    port_ret = hist_full.pct_change().dropna() * 100
+    spy_ret  = spy_close_aligned.pct_change().dropna() * 100
+    common   = port_ret.index.intersection(spy_ret.index)
+
+    port_total  = (hist_full.iloc[-1] / hist_full.iloc[0] - 1) * 100
+    spy_total   = (spy_close_aligned.iloc[-1] / spy_close_aligned.iloc[0] - 1) * 100
+    total_alpha = port_total - spy_total
+    if len(common):
+        win_days   = int((port_ret.reindex(common).values > spy_ret.reindex(common).values).sum())
+        total_days = len(common)
+    else:
+        win_days, total_days = 0, 0
+
+    if len(common) >= 5:
+        beta = float(np.cov(port_ret[common], spy_ret[common])[0, 1] /
+                     np.var(spy_ret[common])) if np.var(spy_ret[common]) > 0 else 1.0
+    else:
+        beta = None
+
+    h1, h2, h3, h4, h5 = st.columns(5)
+    with h1: st.metric(f"{V1_PRODUCTION_LABEL} Return", f"{port_total:+.2f}%",
+                       help="Total return since V4N-F test inception.")
+    with h2: st.metric("S&P 500 Return",  f"{spy_total:+.2f}%",
+                       help="^GSPC (S&P 500 index) return over the same period.")
+    with h3: st.metric("Total Alpha",     f"{total_alpha:+.2f}%",
+                       help="V4N-F return minus ^GSPC return.")
+    with h4: st.metric("Beta", f"{beta:.2f}" if beta is not None else "N/A",
+                       help="Requires 5+ trading days of data."
+                            if beta is None else
+                            "Portfolio sensitivity to S&P moves. "
+                            "1.0 = moves with the market.")
+    with h5: st.metric("Days Beating S&P", f"{win_days}/{total_days}",
+                       help="Trading days where V4N-F daily return exceeded ^GSPC.")
+
+    fig_hist = go.Figure()
+    fig_hist.add_trace(go.Scatter(
+        x=port_norm.index, y=port_norm.values,
+        name=V1_PRODUCTION_LABEL,
+        mode="lines+markers",
+        line=dict(color="#4a9eff", width=2.5),
+        marker=dict(size=7, color="#4a9eff"),
+        hovertemplate="<b>V4N-F</b><br>%{x|%b %d}  $%{y:,.0f}<extra></extra>",
+    ))
+    fig_hist.add_trace(go.Scatter(
+        x=spy_norm.index, y=spy_norm.values,
+        name="S&P 500 (^GSPC)",
+        mode="lines+markers",
+        line=dict(color="#ffb86c", width=2),
+        marker=dict(size=6, color="#ffb86c"),
+        hovertemplate="<b>S&P 500</b><br>%{x|%b %d}  $%{y:,.0f}<extra></extra>",
+    ))
+    fig_hist.add_hline(y=PT_INITIAL_CAPITAL, line_color="#444", line_dash="dot",
+                       line_width=1, annotation_text="  $100k start",
+                       annotation_font_color="#555")
+    fig_hist.update_layout(**_layout(
+        height=350, uirevision="vs_spy_v4nf_hist",
+        dragmode="pan",
+        title=dict(text=f"{V1_PRODUCTION_LABEL} vs S&P 500 — both normalized to $100k at inception",
+                   font=dict(size=12)),
+        yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
+        xaxis=dict(type="date", tickformat="%b %d",
+                   rangeslider=dict(visible=False),
+                   range=_xaxis_range),
+        margin=dict(l=70),
+    ))
+    st.plotly_chart(fig_hist, theme=None, use_container_width=True,
+                   config={"scrollZoom": True, "displayModeBar": True},
+                   key="vs_spy_v4nf_hist")
+
+    st.markdown('<div class="section-head">Daily Breakdown</div>',
+                unsafe_allow_html=True)
+    tbl_rows = []
+    for d in reversed(list(hist_full.index)):
+        pr = float(port_ret[d]) if d in port_ret.index else 0.0
+        sr = float(spy_ret[d])  if d in spy_ret.index  else 0.0
+        if d == _inception_date:
+            pr, sr = 0.0, 0.0
+        pv_d = float(port_norm[d])
+        sv_d = float(spy_norm[d]) if d in spy_norm.index else 0.0
+        tbl_rows.append({
+            "Date"         : d.strftime("%Y-%m-%d"),
+            "Portfolio $"  : round(pv_d, 0),
+            "Portfolio %"  : round(pr, 2),
+            "S&P 500 %"    : round(sr, 2),
+            "Alpha"        : round(pr - sr, 2),
+            "Beating S&P"  : "✓" if pr > sr else ("—" if pr == sr == 0 else "✗"),
+        })
+    if tbl_rows:
+        tbl = pd.DataFrame(tbl_rows)
+
+        def _color_alpha(v):
+            if isinstance(v, (int, float)):
+                if v > 0: return "color:#50fa7b"
+                if v < 0: return "color:#ff5555"
+            return ""
+        def _color_beat(v):
+            if v == "✓": return "color:#50fa7b;font-weight:600"
+            if v == "✗": return "color:#ff5555"
+            return ""
+
+        st.dataframe(
+            tbl.style
+            .map(_color_alpha, subset=["Portfolio %", "S&P 500 %", "Alpha"])
+            .map(_color_beat, subset=["Beating S&P"])
+            .format({"Portfolio $": "${:,.0f}",
+                     "Portfolio %": "{:+.2f}%", "S&P 500 %": "{:+.2f}%",
+                     "Alpha": "{:+.2f}%"}),
+            use_container_width=True, hide_index=True,
+        )
+
+    st.caption(
+        "Beta requires 5+ trading days of data. "
+        "Alpha = V4N-F daily return − ^GSPC daily return. "
+        "Both series normalized to $100k at V4N-F inception (2026-05-11)."
     )
 
 

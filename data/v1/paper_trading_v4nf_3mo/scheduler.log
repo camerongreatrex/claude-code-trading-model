@@ -11,3 +11,22 @@
 2026-05-11 21:13:48  INFO     Kill-switch threshold: 15% rolling 20-day loss
 2026-05-11 21:13:48  INFO     Log file: data/v1/paper_trading_v4nf_3mo/scheduler.log
 2026-05-11 21:13:48  INFO     Catch-up: portfolio is up to date.
+2026-05-12 11:30:08  INFO     Heartbeat  |  ET 11:30  |  Portfolio $100,427  (+0.43%)  |  Next EOD: 16:45
+2026-05-12 16:48:26  INFO     ============================================================
+2026-05-12 16:48:26  INFO     EOD pipeline starting
+2026-05-12 16:48:26  INFO     Running EOD position update...
+2026-05-12 16:52:42  ERROR    
+1 Failed download:
+2026-05-12 16:52:42  ERROR    ['IWM']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 17:09:52  ERROR    
+1 Failed download:
+2026-05-12 17:09:52  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 17:10:38  ERROR    
+1 Failed download:
+2026-05-12 17:10:38  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 17:10:39  INFO     Fetching signals for order sheet and data validation...
+2026-05-12 17:26:53  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  0 SELL  14 HOLD)
+2026-05-12 17:26:53  INFO     EOD pipeline complete
+2026-05-12 17:26:53  INFO     ============================================================
+2026-05-12 18:00:04  INFO     Heartbeat  |  ET 18:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
+2026-05-12 22:00:28  INFO     Heartbeat  |  ET 22:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45

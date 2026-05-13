@@ -498,3 +498,63 @@ tornado.websocket.WebSocketClosedError
 2026-05-11 21:11:36  ERROR    
 1 Failed download:
 2026-05-11 21:11:36  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 00:07:50  ERROR    
+1 Failed download:
+2026-05-12 00:07:50  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 00:20:38  ERROR    
+1 Failed download:
+2026-05-12 00:20:38  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 00:21:48  ERROR    
+1 Failed download:
+2026-05-12 00:21:48  ERROR    ['BRK-B']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 01:02:15  ERROR    
+1 Failed download:
+2026-05-12 01:02:15  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 01:57:36  ERROR    
+1 Failed download:
+2026-05-12 01:57:36  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 02:00:49  ERROR    
+1 Failed download:
+2026-05-12 02:00:49  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 02:16:00  ERROR    
+1 Failed download:
+2026-05-12 02:16:00  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 02:19:08  ERROR    
+1 Failed download:
+2026-05-12 02:19:08  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 02:23:48  ERROR    
+1 Failed download:
+2026-05-12 02:23:48  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 02:38:57  ERROR    
+1 Failed download:
+2026-05-12 02:38:57  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 04:11:16  ERROR    
+1 Failed download:
+2026-05-12 04:11:16  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 06:54:25  ERROR    
+1 Failed download:
+2026-05-12 06:54:25  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 07:00:09  ERROR    
+1 Failed download:
+2026-05-12 07:00:09  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-12 11:11:21  ERROR    Task exception was never retrieved
+future: <Task finished name='Task-49845' coro=<WebSocketProtocol13.write_message.<locals>.wrapper() done, defined at /opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py:1111> exception=WebSocketClosedError()>
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/streamlit/web/bootstrap.py", line 347, in run
+    if asyncio.get_running_loop().is_running():
+       ~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: no running event loop
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1113, in wrapper
+    await fut
+tornado.iostream.StreamClosedError: Stream is closed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1115, in wrapper
+    raise WebSocketClosedError()
+tornado.websocket.WebSocketClosedError
