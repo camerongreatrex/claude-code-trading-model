@@ -119,3 +119,10 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-05-13,XLU,SELL,141.76271,44.67,6332.54,3.17,-69.79,rebalance_drop
 2026-05-13,VGSH,BUY,64.126541,58.27,3736.65,1.87,,rebalance_open
 2026-05-13,VGSH,SELL,64.126541,58.27,3736.65,1.87,-1.87,floor_short_override
+2026-05-14,VWO,SELL,143.117641,59.96,8581.33,4.29,-40.07,rebalance_drop
+2026-05-14,DBMF,BUY,373.553581,31.24,11669.81,5.83,,rebalance_topup
+2026-05-14,DBA,SELL,73.210807,28.25,2068.21,1.03,-6.89,rebalance_trim
+2026-05-14,XLU,BUY,137.636217,44.9,6179.87,3.09,,rebalance_open
+2026-05-14,VGSH,BUY,64.195628,58.25,3739.4,1.87,,rebalance_open
+2026-05-14,NVDA,SELL,9.088154,235.74,2142.44,1.07,526.51,rebalance_trim
+2026-05-14,VGSH,SELL,64.195628,58.25,3739.4,1.87,-1.87,floor_short_override
