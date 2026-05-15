@@ -126,3 +126,9 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-05-14,VGSH,BUY,64.195628,58.25,3739.4,1.87,,rebalance_open
 2026-05-14,NVDA,SELL,9.088154,235.74,2142.44,1.07,526.51,rebalance_trim
 2026-05-14,VGSH,SELL,64.195628,58.25,3739.4,1.87,-1.87,floor_short_override
+2026-05-15,DBC,SELL,320.986437,31.19,10011.57,5.01,84.49,rebalance_drop
+2026-05-15,WTMF,BUY,91.157889,40.95,3732.92,1.87,,rebalance_topup
+2026-05-15,SPY,BUY,3.452783,739.17,2552.19,1.28,,rebalance_topup
+2026-05-15,VGSH,BUY,63.579051,58.18,3699.03,1.85,,rebalance_open
+2026-05-15,INTC,BUY,20.98212,108.77,2282.23,1.14,,rebalance_open
+2026-05-15,VGSH,SELL,63.579051,58.18,3699.03,1.85,-1.85,floor_short_override
