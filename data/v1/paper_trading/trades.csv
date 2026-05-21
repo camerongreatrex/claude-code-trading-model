@@ -153,3 +153,7 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-05-20,VGSH,BUY,64.540162,58.24,3758.82,1.88,,rebalance_open
 2026-05-20,NEE,BUY,38.993865,88.27,3441.99,1.72,,rebalance_open
 2026-05-20,VGSH,SELL,64.540162,58.24,3758.82,1.88,-1.88,floor_short_override
+2026-05-21,DBMF,BUY,144.947577,31.11,4509.32,2.25,,rebalance_topup
+2026-05-21,UUP,BUY,143.101369,27.73,3968.2,1.98,,rebalance_topup
+2026-05-21,VGSH,BUY,64.545823,58.23,3758.5,1.88,,rebalance_open
+2026-05-21,VGSH,SELL,64.545823,58.23,3758.5,1.88,-1.88,floor_short_override
