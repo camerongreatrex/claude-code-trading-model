@@ -1,5 +1,5 @@
 {
-  "cash": 22147.17418497482,
+  "cash": 22143.41822064822,
   "positions": {
     "NVDA": {
       "shares": 13.48507648405328,
@@ -81,7 +81,7 @@
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
-  "last_eod_date": "2026-05-22",
-  "portfolio_value": 108868.53120587658,
+  "last_eod_date": "2026-05-25",
+  "portfolio_value": 108864.77524154999,
   "strategy": "top11_adx22_momt_ac55_cap1"
 }
