@@ -164,3 +164,5 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-05-22,VGSH,SELL,64.520171,58.22,3756.36,1.88,-1.88,floor_short_override
 2026-05-25,VGSH,BUY,64.513299,58.22,3755.96,1.88,,rebalance_open
 2026-05-25,VGSH,SELL,64.513299,58.22,3755.96,1.88,-1.88,floor_short_override
+2026-05-26,VGSH,BUY,64.724953,58.28,3772.17,1.89,,rebalance_open
+2026-05-26,VGSH,SELL,64.724953,58.28,3772.17,1.89,-1.89,floor_short_override
