@@ -169,3 +169,8 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-05-27,UUP,BUY,142.877692,27.75,3964.86,1.98,,rebalance_topup
 2026-05-27,DBA,BUY,361.015017,27.47,9917.08,4.96,,rebalance_open
 2026-05-27,VGSH,BUY,64.401111,58.29,3753.94,1.88,,rebalance_open
+2026-05-28,UUP,SELL,476.175558,27.7,13190.06,6.6,-16.74,rebalance_drop
+2026-05-28,DBA,BUY,119.059596,27.58,3283.66,1.64,,rebalance_topup
+2026-05-28,GLD,BUY,5.899751,412.77,2435.24,1.22,,rebalance_topup
+2026-05-28,DBC,BUY,327.231676,29.72,9725.33,4.86,,rebalance_open
+2026-05-28,XLU,BUY,48.390596,44.63,2159.67,1.08,,rebalance_topup
