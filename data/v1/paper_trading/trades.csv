@@ -213,3 +213,8 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-06-03,DBMF,BUY,347.459884,31.42,10917.19,5.46,,rebalance_topup
 2026-06-03,VNQ,BUY,18.560998,94.41,1752.34,0.88,,rebalance_topup
 2026-06-03,XLU,BUY,57.662756,43.71,2520.44,1.26,,rebalance_topup
+2026-06-04,DBA,SELL,288.969521,26.69,7712.6,3.86,-207.63,rebalance_drop
+2026-06-04,VNQ,SELL,85.20029,96.1,8187.75,4.09,161.22,rebalance_drop
+2026-06-04,EEM,BUY,29.430449,69.1,2033.64,1.02,,rebalance_topup
+2026-06-04,JPM,BUY,19.993516,310.89,6215.78,3.11,,rebalance_open
+2026-06-04,AMZN,BUY,19.471751,253.79,4941.74,2.47,,rebalance_open
