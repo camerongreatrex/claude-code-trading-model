@@ -1,61 +1,54 @@
 {
-  "cash": 21717.94809032674,
+  "cash": 22331.606039946877,
   "positions": {
     "WTMF": {
       "shares": 275.14998672477344,
       "entry_price": 40.81999969482422,
       "entry_date": "2026-05-04",
       "cost_basis": 11239.88573986924,
-      "last_close": 40.45000076293945
+      "last_close": 40.65999984741211
     },
     "GLD": {
       "shares": 9.132462633664804,
       "entry_price": 414.7099914550781,
       "entry_date": "2026-05-04",
       "cost_basis": 3784.5373219483554,
-      "last_close": 396.239990234375
+      "last_close": 397.2699890136719
     },
     "SPY": {
       "shares": 8.127160314761854,
       "entry_price": 718.010009765625,
       "entry_date": "2026-05-04",
       "cost_basis": 5885.94493200465,
-      "last_close": 737.5499877929688
+      "last_close": 739.219970703125
     },
     "DBMF": {
       "shares": 103.12719812172406,
       "entry_price": 30.700000762939453,
       "entry_date": "2026-05-04",
       "cost_basis": 3235.6699598853284,
-      "last_close": 30.65999984741211
+      "last_close": 30.8700008392334
     },
     "XLK": {
-      "shares": 31.289550651078187,
+      "shares": 52.32221028346797,
       "entry_price": 170.02999877929688,
       "entry_date": "2026-05-06",
-      "cost_basis": 5370.249126716749,
-      "last_close": 180.3000030517578
+      "cost_basis": 9244.0442237625,
+      "last_close": 184.17999267578125
     },
     "NEE": {
       "shares": 59.591938475589636,
       "entry_price": 88.2699966430664,
       "entry_date": "2026-05-20",
       "cost_basis": 5210.126884725758,
-      "last_close": 85.83999633789062
-    },
-    "EEM": {
-      "shares": 100.22375996510075,
-      "entry_price": 70.08000183105469,
-      "entry_date": "2026-06-01",
-      "cost_basis": 6994.839342729419,
-      "last_close": 64.58999633789062
+      "last_close": 84.01000213623047
     },
     "XLU": {
       "shares": 150.31112547680416,
       "entry_price": 43.900001525878906,
       "entry_date": "2026-06-02",
       "cost_basis": 6587.7025732775655,
-      "last_close": 44.349998474121094
+      "last_close": 43.52000045776367
     },
     "VGSH": {
       "shares": 64.71904394101284,
@@ -69,47 +62,47 @@
       "entry_price": 317.7200012207031,
       "entry_date": "2026-06-02",
       "cost_basis": 4360.135717483292,
-      "last_close": 328.0
+      "last_close": 322.0400085449219
     },
     "JPM": {
       "shares": 19.993516082488508,
       "entry_price": 310.8900146484375,
       "entry_date": "2026-06-04",
       "cost_basis": 6215.7845077586235,
-      "last_close": 312.3699951171875
+      "last_close": 311.1099853515625
     },
     "AMZN": {
       "shares": 19.47175100634455,
       "entry_price": 253.7899932861328,
       "entry_date": "2026-06-04",
       "cost_basis": 4941.735557169433,
-      "last_close": 246.02999877929688
+      "last_close": 245.22000122070312
     },
     "DBA": {
       "shares": 419.82881854783994,
       "entry_price": 26.399999618530273,
       "entry_date": "2026-06-05",
       "cost_basis": 11083.48064951099,
-      "last_close": 26.399999618530273
+      "last_close": 26.329999923706055
     },
     "VZ": {
       "shares": 88.28855057801638,
       "entry_price": 45.369998931884766,
       "entry_date": "2026-06-05",
       "cost_basis": 4005.6514454222574,
-      "last_close": 45.369998931884766
+      "last_close": 45.439998626708984
     },
-    "TLT": {
-      "shares": 37.17234857076066,
-      "entry_price": 85.05999755859375,
-      "entry_date": "2026-06-05",
-      "cost_basis": 3161.8798786760976,
-      "last_close": 85.05999755859375
+    "GS": {
+      "shares": 5.012784414890838,
+      "entry_price": 1045.0,
+      "entry_date": "2026-06-08",
+      "cost_basis": 5238.359713560926,
+      "last_close": 1045.0
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
-  "last_eod_date": "2026-06-05",
-  "portfolio_value": 106977.45305694382,
+  "last_eod_date": "2026-06-08",
+  "portfolio_value": 106913.54660513598,
   "strategy": "top11_adx22_momt_ac55_cap1"
 }
