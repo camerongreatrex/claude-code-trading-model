@@ -234,3 +234,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-06-09,XLU,SELL,150.311125,43.98,6610.68,3.31,19.68,rebalance_drop
 2026-06-09,NEE,BUY,22.755647,84.83,1930.36,0.97,,rebalance_topup
 2026-06-09,EEM,BUY,96.456225,65.82,6348.75,3.17,,rebalance_open
+2026-06-10,XLK,SELL,52.32221,176.63,9241.67,4.62,-6.99,rebalance_drop
+2026-06-10,DBMF,BUY,296.872307,30.8,9143.67,4.57,,rebalance_topup
+2026-06-10,TLT,BUY,36.286478,84.88,3080.0,1.54,,rebalance_open
