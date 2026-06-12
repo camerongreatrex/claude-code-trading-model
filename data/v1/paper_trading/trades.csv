@@ -241,3 +241,7 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-06-11,TLT,SELL,36.286478,85.98,3119.91,1.56,38.36,rebalance_drop
 2026-06-11,GLD,BUY,14.991976,386.32,5791.7,2.9,,rebalance_topup
 2026-06-11,XLK,BUY,16.706036,183.21,3060.71,1.53,,rebalance_open
+2026-06-12,EEM,SELL,96.456225,67.88,6547.45,3.27,195.43,rebalance_drop
+2026-06-12,DBMF,BUY,52.530898,30.82,1619.0,0.81,,rebalance_topup
+2026-06-12,UUP,BUY,439.118001,27.95,12273.35,6.14,,rebalance_open
+2026-06-12,SPY,BUY,2.903824,741.75,2153.91,1.08,,rebalance_topup
