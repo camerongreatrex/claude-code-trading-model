@@ -245,3 +245,7 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-06-12,DBMF,BUY,52.530898,30.82,1619.0,0.81,,rebalance_topup
 2026-06-12,UUP,BUY,439.118001,27.95,12273.35,6.14,,rebalance_open
 2026-06-12,SPY,BUY,2.903824,741.75,2153.91,1.08,,rebalance_topup
+2026-06-15,VZ,SELL,88.288551,47.07,4155.74,2.08,148.01,rebalance_drop
+2026-06-15,UUP,SELL,439.118001,27.97,12282.13,6.14,2.64,rebalance_drop
+2026-06-15,XLP,BUY,80.038193,85.48,6841.66,3.42,,rebalance_open
+2026-06-15,DBC,BUY,233.908816,28.22,6600.91,3.3,,rebalance_open
