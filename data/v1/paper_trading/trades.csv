@@ -249,3 +249,5 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-06-15,UUP,SELL,439.118001,27.97,12282.13,6.14,2.64,rebalance_drop
 2026-06-15,XLP,BUY,80.038193,85.48,6841.66,3.42,,rebalance_open
 2026-06-15,DBC,BUY,233.908816,28.22,6600.91,3.3,,rebalance_open
+2026-06-16,XLF,BUY,149.475741,54.35,8124.01,4.06,,rebalance_open
+2026-06-16,GLD,SELL,11.855458,397.63,4714.09,2.36,5.68,rebalance_trim
