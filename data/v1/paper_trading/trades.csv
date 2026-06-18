@@ -260,3 +260,9 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-06-17,JPM,SELL,6.684402,333.46,2228.98,1.11,149.75,rebalance_trim
 2026-06-17,GS,BUY,3.929366,1099.14,4318.92,2.16,,rebalance_open
 2026-06-17,GE,SELL,4.78039,357.03,1706.74,0.85,157.42,rebalance_trim
+2026-06-18,SPY,SELL,11.030984,746.74,8237.28,4.12,193.3,rebalance_drop
+2026-06-18,XLF,BUY,82.128512,53.57,4399.62,2.2,,rebalance_topup
+2026-06-18,XLC,BUY,35.848506,109.45,3923.62,1.96,,rebalance_topup
+2026-06-18,JPM,BUY,7.113928,325.22,2313.59,1.16,,rebalance_topup
+2026-06-18,GE,BUY,6.863046,357.64,2454.5,1.23,,rebalance_topup
+2026-06-18,XOM,BUY,23.775176,137.81,3276.46,1.64,,rebalance_open
