@@ -6,7 +6,7 @@
       "entry_price": 40.81999969482422,
       "entry_date": "2026-05-04",
       "cost_basis": 11239.88573986924,
-      "last_close": 41.355201721191406
+      "last_close": 41.310001373291016
     },
     "GLD": {
       "shares": 12.268980562295535,
@@ -27,7 +27,7 @@
       "entry_price": 58.130001068115234,
       "entry_date": "2026-06-02",
       "cost_basis": 3762.1180934184736,
-      "last_close": 58.119998931884766
+      "last_close": 58.04999923706055
     },
     "GE": {
       "shares": 15.543117065779306,
@@ -109,7 +109,7 @@
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
-  "last_eod_date": "2026-06-18",
-  "portfolio_value": 108062.6640052023,
+  "last_eod_date": "2026-06-19",
+  "portfolio_value": 108045.69681675237,
   "strategy": "top11_adx22_momt_ac55_cap1"
 }
