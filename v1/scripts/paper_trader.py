@@ -940,23 +940,10 @@ def _compute_topn_v2_targets(
     onto the top11_vt zero-lev base.
 
     Used by V1_PRODUCTION_METHOD = top11_adx22_momt_ac55_cap1 (pinned 2026-04-28).
-
-    PT_INSTANCE=v4nf_3mo routes to the FROZEN V4N-F snapshot in
-    paper_trader_v4nf.compute_v4nf_targets so the 3-month live test cannot
-    drift if overlay logic in this file is later edited.
+    Same sizer for main and v4nf_3mo instances (rank_rotate live execution).
     """
     if top_n is None:
-        top_n = 11 if _PT_INSTANCE == "v4nf_3mo" else LIVE_TOP_N
-
-    if _PT_INSTANCE == "v4nf_3mo":
-        from v1.scripts.paper_trader_v4nf import compute_v4nf_targets
-        return compute_v4nf_targets(
-            pv, signals, load_history_fn=load_history,
-            top_n=top_n, target_vol=target_vol, scale_max=scale_max,
-            vt_window=vt_window, lev_x=lev_x, max_gross=max_gross,
-            adx_threshold=adx_threshold, mom_lo=mom_lo, mom_hi=mom_hi,
-            ac_quota=ac_quota, gross_floor=gross_floor,
-        )
+        top_n = LIVE_TOP_N
 
     longs = {t: s for t, s in signals.items() if s.get("signal") == 1}
     if not longs:

@@ -21,7 +21,7 @@ from v1.pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 from v1.scripts.paper_trader import (
     load_state, load_history, end_of_day_update,
     compute_live_signals, _fetch_daily, _atr_size,
-    catchup, catchup_all_instances, use_pt_instance,
+    catchup, catchup_all_instances, use_pt_instance, init_positions,
     INITIAL_CAPITAL, PT_DIR, ALL_PT_INSTANCES,
 )
 
@@ -245,6 +245,27 @@ def run_eod_job():
 
 # ── Scheduler loop ─────────────────────────────────────────────────────────────
 
+_V4NF_PENDING = Path("data/v1/paper_trading_v4nf_3mo/pending_init.json")
+
+
+def _try_pending_v4nf_init(today_str: str) -> None:
+    """Auto-init v4nf_3mo on/after test_start when reset left a pending marker."""
+    if not _V4NF_PENDING.exists():
+        return
+    try:
+        meta = json.loads(_V4NF_PENDING.read_text())
+    except Exception:
+        return
+    start = meta.get("test_start", "")
+    if start and today_str < start:
+        return
+    with use_pt_instance("v4nf_3mo"):
+        if load_state():
+            return
+        log.info(f"v4nf_3mo: auto-init (test window {start} → {meta.get('test_end', '?')})")
+        init_positions()
+
+
 def main():
     """Scheduler entry point. Runs indefinitely; logs a heartbeat every 30 min."""
     log.info("Scheduler started.  Will fire EOD at "
@@ -254,6 +275,7 @@ def main():
 
     # Catch up all instances on startup (main + V4N-F 3mo).
     try:
+        _try_pending_v4nf_init(str(_et_now().date()))
         caught = catchup_all_instances()
         for label, n in caught.items():
             if n:
@@ -277,6 +299,7 @@ def main():
             and last_run_date != today_str
         ):
             last_run_date = today_str
+            _try_pending_v4nf_init(today_str)
             for inst in ALL_PT_INSTANCES:
                 label = inst or "main"
                 try:

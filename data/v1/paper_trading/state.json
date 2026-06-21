@@ -1,111 +1,4 @@
 {
-<<<<<<< Updated upstream
-  "cash": 570.1412851112282,
-  "positions": {
-    "WTMF": {
-      "shares": 275.14998672477344,
-      "entry_price": 40.81999969482422,
-      "entry_date": "2026-05-04",
-      "cost_basis": 11239.88573986924,
-      "last_close": 41.310001373291016
-    },
-    "GLD": {
-      "shares": 12.268980562295535,
-      "entry_price": 414.7099914550781,
-      "entry_date": "2026-05-04",
-      "cost_basis": 4870.193035766858,
-      "last_close": 387.1199951171875
-    },
-    "DBMF": {
-      "shares": 452.5304034397917,
-      "entry_price": 30.700000762939453,
-      "entry_date": "2026-05-04",
-      "cost_basis": 13998.339059117881,
-      "last_close": 30.920000076293945
-    },
-    "VGSH": {
-      "shares": 64.71904394101284,
-      "entry_price": 58.130001068115234,
-      "entry_date": "2026-06-02",
-      "cost_basis": 3762.1180934184736,
-      "last_close": 58.04999923706055
-    },
-    "GE": {
-      "shares": 15.543117065779306,
-      "entry_price": 317.7200012207031,
-      "entry_date": "2026-06-02",
-      "cost_basis": 5266.16362990774,
-      "last_close": 357.6400146484375
-    },
-    "JPM": {
-      "shares": 20.423042691665163,
-      "entry_price": 310.8900146484375,
-      "entry_date": "2026-06-04",
-      "cost_basis": 6451.262536196414,
-      "last_close": 325.2200012207031
-    },
-    "AMZN": {
-      "shares": 19.47175100634455,
-      "entry_price": 253.7899932861328,
-      "entry_date": "2026-06-04",
-      "cost_basis": 4941.735557169433,
-      "last_close": 244.38999938964844
-    },
-    "DBA": {
-      "shares": 419.82881854783994,
-      "entry_price": 26.399999618530273,
-      "entry_date": "2026-06-05",
-      "cost_basis": 11083.48064951099,
-      "last_close": 26.6299991607666
-    },
-    "XLK": {
-      "shares": 16.706036020229543,
-      "entry_price": 183.2100067138672,
-      "entry_date": "2026-06-11",
-      "cost_basis": 3060.7129714283615,
-      "last_close": 191.44000244140625
-    },
-    "DBC": {
-      "shares": 162.048854846302,
-      "entry_price": 28.219999313354492,
-      "entry_date": "2026-06-15",
-      "cost_basis": 4573.018572492524,
-      "last_close": 27.6299991607666
-    },
-    "XLF": {
-      "shares": 186.40194956671596,
-      "entry_price": 54.349998474121094,
-      "entry_date": "2026-06-16",
-      "cost_basis": 10066.885535328289,
-      "last_close": 53.56999969482422
-    },
-    "UUP": {
-      "shares": 398.90303904209895,
-      "entry_price": 28.18000030517578,
-      "entry_date": "2026-06-17",
-      "cost_basis": 11241.087761941895,
-      "last_close": 28.299999237060547
-    },
-    "XLC": {
-      "shares": 81.63939786586025,
-      "entry_price": 109.19999694824219,
-      "entry_date": "2026-06-17",
-      "cost_basis": 8923.984124365785,
-      "last_close": 109.44999694824219
-    },
-    "GS": {
-      "shares": 3.92936606948738,
-      "entry_price": 1099.1400146484375,
-      "entry_date": "2026-06-17",
-      "cost_basis": 4318.9234791754325,
-      "last_close": 1096.56005859375
-    },
-    "XOM": {
-      "shares": 23.775175979184006,
-      "entry_price": 137.80999755859375,
-      "entry_date": "2026-06-18",
-      "cost_basis": 3276.4569436464844,
-=======
   "cash": 454.53327125358055,
   "positions": {
     "WTMF": {
@@ -204,17 +97,12 @@
       "entry_price": 137.80999755859375,
       "entry_date": "2026-06-18",
       "cost_basis": 3286.4261593149927,
->>>>>>> Stashed changes
       "last_close": 137.80999755859375
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
   "last_eod_date": "2026-06-19",
-<<<<<<< Updated upstream
-  "portfolio_value": 108045.69681675237,
-=======
   "portfolio_value": 108335.8246223783,
->>>>>>> Stashed changes
   "strategy": "top11_adx22_momt_ac55_cap1"
 }

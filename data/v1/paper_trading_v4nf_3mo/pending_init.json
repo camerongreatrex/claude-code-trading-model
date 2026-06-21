@@ -1,0 +1,7 @@
+{
+  "test_start": "2026-06-22",
+  "test_end": "2026-09-22",
+  "execution": "rank_rotate",
+  "note": "Same sizer + rank_rotate as main; no daily top-up",
+  "reset_on": "2026-06-21"
+}
