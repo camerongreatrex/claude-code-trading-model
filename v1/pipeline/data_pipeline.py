@@ -88,6 +88,17 @@ TICKERS = {
     # VXZ held only during vol backwardation (VIX9D > VIX); mid-term futures have
     # ~60% less roll decay than VIXY. Override applied in signal_generation.py.
     "VXZ" : "commodity",       # iPath VIX Mid-Term Futures ETN
+
+    # --- Phase 9: universe expansion (2026-05) — distinct macro drivers ---
+    "EWT" : "equity_index",   # Taiwan — semiconductor supply chain (TSMC)
+    "EWY" : "equity_index",   # South Korea — memory/export cycle
+    "INDA": "equity_index",   # India — domestic consumption, RBI policy
+    "HACK": "equity_index",   # Cybersecurity — secular spend, low cyclicality
+    "XBI" : "equity_index",   # Biotech — FDA/pipeline, idiosyncratic
+    "COPX": "commodity",       # Copper miners — electrification/industrial cycle
+    "IYR" : "equity_index",   # US REITs — rental income (distinct from VNQ)
+    "SLV" : "commodity",       # Silver — industrial + monetary demand
+    "URA" : "commodity",       # Uranium — nuclear power demand
 }
 
 # Equity-like assets — used for momentum + mean reversion regime switching

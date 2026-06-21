@@ -2412,6 +2412,59 @@ def portfolio_returns(sizes: pd.DataFrame, returns: pd.DataFrame) -> pd.Series:
     return (weights * returns.reindex(columns=sizes.columns)).sum(axis=1)
 
 
+def apply_live_cadence_to_sizes(
+    sizes: pd.DataFrame,
+    signals: pd.DataFrame,
+    cadence: str = "daily",
+    rebalance_every: int = 21,
+) -> pd.DataFrame:
+    """
+    Resample a daily target-size matrix to match live execution cadence.
+
+    Used to compare backtest P&L under daily rebalance vs signal-only holds
+    vs monthly full rebalance (see scripts/test_rebalance_cadence.py).
+
+    Args:
+        sizes: Daily dollar targets from top_n_adx_momt_ac_sizes (+ overlays).
+        signals: Binary signal matrix (same index/columns).
+        cadence: ``daily`` (unchanged), ``monthly``, or ``signal_only``.
+        rebalance_every: Trading days between monthly rebalances.
+    """
+    if cadence == "daily" or sizes.empty:
+        return sizes
+
+    out = pd.DataFrame(0.0, index=sizes.index, columns=sizes.columns)
+    held: dict[str, float] = {}
+
+    if cadence == "monthly":
+        days_since = rebalance_every
+        for dt in sizes.index:
+            row = sizes.loc[dt]
+            if days_since >= rebalance_every:
+                held = {t: float(v) for t, v in row.items() if v > 0}
+                days_since = 0
+            else:
+                days_since += 1
+            for t, v in held.items():
+                if t in out.columns:
+                    out.loc[dt, t] = v
+        return out
+
+    for dt in sizes.index:
+        row = sizes.loc[dt]
+        active = {t for t in row.index if row[t] > 0}
+        for t in list(held):
+            if t not in active:
+                del held[t]
+        for t in active:
+            if t not in held and t in signals.columns and float(signals.loc[dt, t]) == 1:
+                held[t] = float(row[t])
+        for t, v in held.items():
+            if t in out.columns:
+                out.loc[dt, t] = v
+    return out
+
+
 def momentum_tilt_sizes(
     signals: pd.DataFrame,
     features: dict,

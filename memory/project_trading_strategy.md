@@ -4,9 +4,11 @@ description: Strategy audit results, live strategy, cleanup decisions, and key a
 type: project
 ---
 
-## Live Strategy (as of 2026-04-08)
+## Live Strategy (as of 2026-05-22)
 
-**Active: `multi_mom_tilt`** (switched from `portable_carry`)
+**Active: `top11_adx22_momt_ac55_cap1` (V4N-F)** with **`LIVE_REBALANCE_MODE=signal_only`** in `v1/config/params.py` — no daily trim/topup; enter on top-N+signal, exit on rank drop. Universe expanded (+9 tickers in `data_pipeline.py`); `LIVE_TOP_N=14`. Compare cadences: `v1/scripts/test_rebalance_cadence.py`.
+
+**Prior (2026-04-08): `multi_mom_tilt`** (switched from `portable_carry`)
 
 - OOS Sharpe 1.473, IS Sharpe 1.164, IS-OOS gap -0.309
 - Ann return 9.5%, max drawdown -7.4%, composite score 0.706

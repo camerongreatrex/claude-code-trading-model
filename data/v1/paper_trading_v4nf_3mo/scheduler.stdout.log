@@ -136,3 +136,2466 @@ $  106.72  FLAT  (regime=LONG  multi=LONG)
 2026-05-12 17:26:53  INFO     ============================================================
 2026-05-12 18:00:04  INFO     Heartbeat  |  ET 18:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
 2026-05-12 22:00:28  INFO     Heartbeat  |  ET 22:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
+2026-05-12 22:30:28  INFO     Heartbeat  |  ET 22:30  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
+2026-05-12 23:00:28  INFO     Heartbeat  |  ET 23:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
+2026-05-13 01:30:04  INFO     Heartbeat  |  ET 01:30  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
+2026-05-13 08:00:01  INFO     Heartbeat  |  ET 08:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
+2026-05-13 11:00:05  INFO     Heartbeat  |  ET 11:00  |  Portfolio $100,140  (+0.14%)  |  Next EOD: 16:45
+2026-05-13 16:48:39  INFO     ============================================================
+2026-05-13 16:48:39  INFO     EOD pipeline starting
+2026-05-13 16:48:39  INFO     Running EOD position update...
+
+End-of-day update  (2026-05-13)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  742.31  LONG  (regime=LONG  multi=LONG)
+  IWM    $  282.67  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   67.21  LONG  (regime=LONG  multi=LONG)
+  EFA    $  103.83  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.94  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.80  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.91  FLAT  (regime=FLAT  multi=FLAT)
+  TIP    $  111.12  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  430.50  LONG  (regime=LONG  multi=LONG)
+  DBC    $   31.37  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.51  LONG  (regime=LONG  multi=LONG)
+  XLE    2026-05-13 17:06:30  ERROR    
+1 Failed download:
+2026-05-13 17:06:30  ERROR    ['XLE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLU    $   44.67  FLAT  (regime=FLAT  multi=FLAT)
+  XLF    $   50.99  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   95.89  LONG  (regime=LONG  multi=LONG)
+  XLK    $  176.85  LONG  (regime=LONG  multi=LONG)
+  XLV    $  146.71  LONG  (regime=LONG  multi=LONG)
+  XLI    $  173.62  LONG  (regime=LONG  multi=LONG)
+  XLC    $  116.76  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.72  FLAT  (regime=LONG  multi=FLAT)
+  JPM    2026-05-13 17:10:22  ERROR    
+1 Failed download:
+2026-05-13 17:10:22  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JNJ    $  230.42  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  151.57  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  270.13  LONG  (regime=LONG  multi=LONG)
+  NEE    $   94.85  FLAT  (regime=LONG  multi=FLAT)
+  BRK-B  $  485.52  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  955.42  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1033.08  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  405.21  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  225.83  LONG  (regime=LONG  multi=LONG)
+  GE     $  294.71  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  120.29  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   47.21  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   22.11  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   28.73  LONG  (regime=LONG  multi=LONG)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  108.04  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   58.17  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.12  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.28  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.27  FLAT  (regime=LONG  multi=LONG)
+  MUB    2026-05-13 17:27:53  ERROR    
+1 Failed download:
+2026-05-13 17:27:53  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    $   56.24  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 12 names selected, target gross $83,929
+  SELL XLU     179.385 sh @ $44.67  P&L -$85  [rebalance_drop]
+  SELL GE      11.416 sh @ $294.71  P&L -$17  [rebalance_drop]
+  SELL JPM     17.831 sh @ $300.25  P&L -$85  [rebalance_drop]
+  BUY  DBC     49.994 sh @ $31.37  ($1,568)  [rebalance_topup]
+  BUY  VGSH    58.606 sh @ $58.27  ($3,415)  [rebalance_open]
+  SELL VGSH    58.606 sh @ $58.27  P&L -$2  [floor_short_override]
+
+====================================================
+  Portfolio value : $100,402.18
+  Cash            : $ 22,106.79
+  Positions       : 11
+  Daily return    :    +0.26%
+  Total return    :    +0.40%
+====================================================
+2026-05-13 17:27:54  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  742.31  LONG  (regime=LONG  multi=LONG)
+  IWM    $  282.67  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   67.21  LONG  (regime=LONG  multi=LONG)
+  EFA    $  103.83  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.94  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.80  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.91  FLAT  (regime=FLAT  multi=FLAT)
+  TIP    $  111.12  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  430.50  LONG  (regime=LONG  multi=LONG)
+  DBC    $   31.37  LONG  (regime=LONG  multi=LONG)
+  UUP    2026-05-13 17:33:47  ERROR    
+1 Failed download:
+2026-05-13 17:33:47  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLE    $   57.63  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   44.67  FLAT  (regime=FLAT  multi=FLAT)
+  XLF    $   50.99  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   95.89  LONG  (regime=LONG  multi=LONG)
+  XLK    $  176.85  LONG  (regime=LONG  multi=LONG)
+  XLV    $  146.71  LONG  (regime=LONG  multi=LONG)
+  XLI    $  173.62  LONG  (regime=LONG  multi=LONG)
+  XLC    $  116.76  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.72  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  300.25  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  230.42  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  151.57  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  270.13  LONG  (regime=LONG  multi=LONG)
+  NEE    $   94.85  FLAT  (regime=LONG  multi=FLAT)
+  BRK-B  $  485.52  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  955.42  FLAT  (regime=LONG  multi=FLAT)
+  COST   2026-05-13 17:51:13  ERROR    
+1 Failed download:
+2026-05-13 17:51:13  ERROR    ['COST']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MSFT   $  405.21  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  225.83  LONG  (regime=LONG  multi=LONG)
+  GE     $  294.71  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  120.29  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   47.21  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   22.11  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   28.73  LONG  (regime=LONG  multi=LONG)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  108.04  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   58.17  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.12  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.28  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.27  FLAT  (regime=LONG  multi=LONG)
+  MUB    $  106.64  FLAT  (regime=FLAT  multi=FLAT)
+  VXZ    $   56.24  FLAT  (regime=FLAT  multi=FLAT)
+2026-05-13 17:52:27  WARNING  Data validation flagged tickers: ['COST', 'UUP']
+2026-05-13 17:52:27  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (8 BUY  0 SELL  11 HOLD)
+2026-05-13 17:52:27  INFO     EOD pipeline complete
+2026-05-13 17:52:27  INFO     ============================================================
+2026-05-13 21:30:11  INFO     Heartbeat  |  ET 21:30  |  Portfolio $100,402  (+0.40%)  |  Next EOD: 16:45
+2026-05-14 16:48:53  INFO     ============================================================
+2026-05-14 16:48:53  INFO     EOD pipeline starting
+2026-05-14 16:48:53  INFO     Running EOD position update...
+
+End-of-day update  (2026-05-14)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    2026-05-14 16:49:35  ERROR    
+1 Failed download:
+2026-05-14 16:49:35  ERROR    ['SPY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  IWM    $  284.45  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   67.38  LONG  (regime=LONG  multi=LONG)
+  EFA    $  103.46  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.96  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.92  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.85  FLAT  (regime=FLAT  multi=FLAT)
+  TIP    $  111.01  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  427.21  LONG  (regime=LONG  multi=LONG)
+  DBC    $   31.15  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.62  LONG  (regime=LONG  multi=LONG)
+  XLE    $   58.07  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   44.90  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.29  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   95.32  LONG  (regime=LONG  multi=LONG)
+  XLK    $  179.50  LONG  (regime=LONG  multi=LONG)
+  XLV    $  146.63  LONG  (regime=LONG  multi=LONG)
+  XLI    $  174.51  LONG  (regime=LONG  multi=LONG)
+  XLC    $  117.11  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.98  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  299.91  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  230.80  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  152.78  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  267.22  LONG  (regime=LONG  multi=LONG)
+  NEE    $   95.68  FLAT  (regime=LONG  multi=FLAT)
+  BRK-B  $  484.06  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  968.96  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1041.25  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  409.43  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  235.74  LONG  (regime=LONG  multi=LONG)
+  GE     $  291.54  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  115.93  FLAT  (regime=FLAT  multi=FLAT)
+  VZ     $   47.06  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   22.05  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   28.25  LONG  (regime=LONG  multi=LONG)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  107.70  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   58.00  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.24  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.31  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.25  FLAT  (regime=LONG  multi=LONG)
+  MUB    2026-05-14 16:50:47  ERROR    
+1 Failed download:
+2026-05-14 16:50:47  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    $   56.07  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 12 names selected, target gross $91,447
+  SELL VWO     130.455 sh @ $59.96  P&L -$64  [rebalance_drop]
+  SELL SPY     7.517 sh @ $748.17  P&L +$85  [rebalance_drop]
+  BUY  DBMF    328.526 sh @ $31.24  ($10,263)  [rebalance_topup]
+  BUY  XLU     152.069 sh @ $44.90  ($6,828)  [rebalance_open]
+  BUY  JPM     18.005 sh @ $299.91  ($5,400)  [rebalance_open]
+  BUY  VGSH    58.699 sh @ $58.25  ($3,419)  [rebalance_open]
+  SELL VGSH    58.699 sh @ $58.25  P&L -$2  [floor_short_override]
+
+====================================================
+  Portfolio value : $100,399.85
+  Cash            : $ 13,040.24
+  Positions       : 11
+  Daily return    :    -0.00%
+  Total return    :    +0.40%
+====================================================
+2026-05-14 16:50:48  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  748.17  LONG  (regime=LONG  multi=LONG)
+  IWM    $  284.45  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   67.38  LONG  (regime=LONG  multi=LONG)
+  EFA    $  103.46  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.96  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.92  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.85  FLAT  (regime=FLAT  multi=FLAT)
+  TIP    $  111.01  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  427.21  LONG  (regime=LONG  multi=LONG)
+  DBC    $   31.15  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.62  LONG  (regime=LONG  multi=LONG)
+  XLE    $   58.07  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   44.90  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.29  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   95.32  LONG  (regime=LONG  multi=LONG)
+  XLK    $  179.50  LONG  (regime=LONG  multi=LONG)
+  XLV    $  146.63  LONG  (regime=LONG  multi=LONG)
+  XLI    $  174.51  LONG  (regime=LONG  multi=LONG)
+  XLC    $  117.11  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.98  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  299.91  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  230.80  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  152.78  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  267.22  LONG  (regime=LONG  multi=LONG)
+  NEE    $   95.68  FLAT  (regime=LONG  multi=FLAT)
+  BRK-B  $  484.06  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  968.96  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1041.25  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  409.43  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  235.74  LONG  (regime=LONG  multi=LONG)
+  GE     $  291.54  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  115.93  FLAT  (regime=FLAT  multi=FLAT)
+  VZ     2026-05-14 17:07:50  ERROR    
+1 Failed download:
+2026-05-14 17:07:50  ERROR    ['VZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   22.05  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   28.25  LONG  (regime=LONG  multi=LONG)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  107.70  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   58.00  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.24  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.31  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.25  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.66  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   56.07  FLAT  (regime=FLAT  multi=FLAT)
+2026-05-14 17:30:47  WARNING  Data validation flagged tickers: ['VZ']
+2026-05-14 17:30:47  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (10 BUY  0 SELL  11 HOLD)
+2026-05-14 17:30:47  INFO     EOD pipeline complete
+2026-05-14 17:30:47  INFO     ============================================================
+2026-05-14 23:00:22  INFO     Heartbeat  |  ET 23:00  |  Portfolio $100,400  (+0.40%)  |  Next EOD: 16:45
+2026-05-15 15:00:25  INFO     Heartbeat  |  ET 15:00  |  Portfolio $100,400  (+0.40%)  |  Next EOD: 16:45
+2026-05-15 16:00:26  INFO     Heartbeat  |  ET 16:00  |  Portfolio $100,400  (+0.40%)  |  Next EOD: 16:45
+2026-05-15 16:48:33  INFO     ============================================================
+2026-05-15 16:48:33  INFO     EOD pipeline starting
+2026-05-15 16:48:33  INFO     Running EOD position update...
+
+End-of-day update  (2026-05-15)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  739.17  LONG  (regime=LONG  multi=LONG)
+  IWM    $  277.60  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   65.07  LONG  (regime=LONG  multi=LONG)
+  EFA    $  101.72  LONG  (regime=LONG  multi=LONG)
+  VWO    $   58.44  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   83.66  FLAT  (regime=LONG  multi=LONG)
+  HYG      [HYG] short signal on bond — keeping flat for paper trading
+$   79.46  FLAT  (regime=LONG  multi=LONG)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  110.61  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  417.29  LONG  (regime=LONG  multi=LONG)
+  DBC    $   31.19  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.77  LONG  (regime=LONG  multi=LONG)
+  XLE    $   59.44  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   43.87  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.10  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   93.91  LONG  (regime=LONG  multi=LONG)
+  XLK    $  176.26  LONG  (regime=LONG  multi=LONG)
+  XLV    $  145.10  LONG  (regime=LONG  multi=LONG)
+  XLI    2026-05-15 16:50:55  ERROR    
+1 Failed download:
+2026-05-15 16:50:55  ERROR    ['XLI']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLC    $  116.08  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.64  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  297.81  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  226.71  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  157.92  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  264.14  LONG  (regime=LONG  multi=LONG)
+  NEE    $   93.36  FLAT  (regime=LONG  multi=FLAT)
+  BRK-B  $  482.70  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  948.47  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1048.95  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  421.92  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  225.32  LONG  (regime=LONG  multi=LONG)
+  GE     $  281.53  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  108.77  LONG  (regime=LONG  multi=LONG)
+  VZ     $   46.37  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   21.81  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   27.83  LONG  (regime=LONG  multi=LONG)
+  FXE    $  107.25  FLAT  (regime=FLAT  multi=FLAT)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.85  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.23  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   40.95  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.18  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.12  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   55.94  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 13 names selected, target gross $88,389
+  SELL DBC     338.545 sh @ $31.19  P&L +$116  [rebalance_drop]
+  BUY  WTMF    88.160 sh @ $40.95  ($3,610)  [rebalance_topup]
+  BUY  SPY     10.720 sh @ $739.17  ($7,924)  [rebalance_open]
+  SELL EEM     24.899 sh @ $65.07  P&L -$70  [rebalance_trim]
+  BUY  VGSH    58.036 sh @ $58.18  ($3,377)  [rebalance_open]
+  BUY  INTC    19.153 sh @ $108.77  ($2,083)  [rebalance_open]
+  SELL VGSH    58.036 sh @ $58.18  P&L -$2  [floor_short_override]
+
+====================================================
+  Portfolio value : $ 99,180.17
+  Cash            : $ 11,586.43
+  Positions       : 12
+  Daily return    :    -1.21%
+  Total return    :    -0.82%
+====================================================
+2026-05-15 16:51:04  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  739.17  LONG  (regime=LONG  multi=LONG)
+  IWM    $  277.60  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   65.07  LONG  (regime=LONG  multi=LONG)
+  EFA    $  101.72  LONG  (regime=LONG  multi=LONG)
+  VWO    $   58.44  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   83.66  FLAT  (regime=LONG  multi=LONG)
+  HYG      [HYG] short signal on bond — keeping flat for paper trading
+$   79.46  FLAT  (regime=LONG  multi=LONG)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  110.61  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  417.29  LONG  (regime=LONG  multi=LONG)
+  DBC    $   31.19  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.77  LONG  (regime=LONG  multi=LONG)
+  XLE    $   59.44  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   43.87  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.10  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   93.91  LONG  (regime=LONG  multi=LONG)
+  XLK    $  176.26  LONG  (regime=LONG  multi=LONG)
+  XLV    $  145.10  LONG  (regime=LONG  multi=LONG)
+  XLI    $  171.40  LONG  (regime=LONG  multi=LONG)
+  XLC    $  116.08  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.64  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  297.81  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  226.71  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  157.92  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  264.14  LONG  (regime=LONG  multi=LONG)
+  NEE    $   93.36  FLAT  (regime=LONG  multi=FLAT)
+  BRK-B  $  482.70  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  948.47  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1048.95  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  421.92  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  225.32  LONG  (regime=LONG  multi=LONG)
+  GE     $  281.53  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  108.77  LONG  (regime=LONG  multi=LONG)
+  VZ     $   46.37  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   21.81  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   27.83  LONG  (regime=LONG  multi=LONG)
+  FXE    $  107.25  FLAT  (regime=FLAT  multi=FLAT)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.85  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.23  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   40.95  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.18  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.12  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   55.94  FLAT  (regime=FLAT  multi=FLAT)
+2026-05-15 16:51:29  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  0 SELL  12 HOLD)
+2026-05-15 16:51:29  INFO     EOD pipeline complete
+2026-05-15 16:51:29  INFO     ============================================================
+2026-05-15 21:00:01  INFO     Heartbeat  |  ET 21:00  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-16 01:00:08  INFO     Heartbeat  |  ET 01:00  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-16 16:30:09  INFO     Heartbeat  |  ET 16:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-16 21:30:16  INFO     Heartbeat  |  ET 21:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-17 11:30:01  INFO     Heartbeat  |  ET 11:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-18 02:30:01  INFO     Heartbeat  |  ET 02:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-18 17:30:06  INFO     Heartbeat  |  ET 17:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-18 19:30:16  INFO     Heartbeat  |  ET 19:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-18 20:30:01  INFO     Heartbeat  |  ET 20:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-18 22:30:14  INFO     Heartbeat  |  ET 22:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-18 23:00:27  INFO     Heartbeat  |  ET 23:00  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-19 17:30:13  INFO     Heartbeat  |  ET 17:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-20 08:30:28  INFO     Heartbeat  |  ET 08:30  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-20 22:00:18  INFO     Heartbeat  |  ET 22:00  |  Portfolio $99,180  (-0.82%)  |  Next EOD: 16:45
+2026-05-21 16:45:40  INFO     ============================================================
+2026-05-21 16:45:40  INFO     EOD pipeline starting
+2026-05-21 16:45:40  INFO     Running EOD position update...
+
+End-of-day update  (2026-05-21)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  742.72  LONG  (regime=LONG  multi=LONG)
+  IWM    $  282.49  FLAT  (regime=LONG  multi=FLAT)
+  EEM    2026-05-21 16:48:03  ERROR    
+1 Failed download:
+2026-05-21 16:48:03  ERROR    ['EEM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EFA    $  104.19  LONG  (regime=LONG  multi=LONG)
+  VWO    $   58.70  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.22  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.90  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  110.37  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  416.99  LONG  (regime=LONG  multi=LONG)
+  DBC    $   30.70  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.73  LONG  (regime=LONG  multi=LONG)
+  XLE    $   59.13  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   45.00  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.73  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   96.67  LONG  (regime=LONG  multi=LONG)
+  XLK    $  178.60  LONG  (regime=LONG  multi=LONG)
+  XLV    $  148.15  FLAT  (regime=FLAT  multi=FLAT)
+  XLI    $  170.53  LONG  (regime=LONG  multi=LONG)
+  XLC    $  116.10  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.66  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  303.00  FLAT  (regime=FLAT  multi=FLAT)
+  JNJ    $  231.73  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  155.29  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  268.46  LONG  (regime=LONG  multi=LONG)
+  NEE    $   89.69  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  479.98  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  988.17  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1050.45  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  419.09  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  219.51  LONG  (regime=LONG  multi=LONG)
+  GE     $  301.76  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  118.50  LONG  (regime=LONG  multi=LONG)
+  VZ     $   48.27  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   21.94  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   27.61  FLAT  (regime=FLAT  multi=FLAT)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  107.23  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.77  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.11  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.10  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.23  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.08  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   55.05  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 12 names selected, target gross $87,583
+  SELL DBA     420.494 sh @ $27.61  P&L -$258  [rebalance_drop]
+  SELL EEM     83.212 sh @ $66.03  P&L -$153  [rebalance_drop]
+  SELL AMZN    21.931 sh @ $268.46  P&L -$33  [rebalance_drop]
+  SELL JPM     18.005 sh @ $303.00  P&L +$53  [rebalance_drop]
+  BUY  UUP     436.833 sh @ $27.73  ($12,113)  [rebalance_open]
+  BUY  GLD     7.669 sh @ $416.99  ($3,198)  [rebalance_topup]
+  BUY  COST    5.506 sh @ $1050.45  ($5,783)  [rebalance_open]
+  BUY  VGSH    59.098 sh @ $58.23  ($3,441)  [rebalance_open]
+  BUY  NEE     36.253 sh @ $89.69  ($3,252)  [rebalance_open]
+  SELL VGSH    59.098 sh @ $58.23  P&L -$2  [floor_short_override]
+
+====================================================
+  Portfolio value : $ 99,717.96
+  Cash            : $ 15,657.83
+  Positions       : 11
+  Daily return    :    +0.54%
+  Total return    :    -0.28%
+====================================================
+2026-05-21 16:48:19  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  742.72  LONG  (regime=LONG  multi=LONG)
+  IWM    $  282.49  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   66.03  LONG  (regime=LONG  multi=LONG)
+  EFA    $  104.19  LONG  (regime=LONG  multi=LONG)
+  VWO    $   58.70  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.22  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.90  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  110.37  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  416.99  LONG  (regime=LONG  multi=LONG)
+  DBC    $   30.70  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.73  LONG  (regime=LONG  multi=LONG)
+  XLE    $   59.13  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   45.00  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.73  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   96.67  LONG  (regime=LONG  multi=LONG)
+  XLK    $  178.60  LONG  (regime=LONG  multi=LONG)
+  XLV    $  148.15  FLAT  (regime=FLAT  multi=FLAT)
+  XLI    $  170.53  LONG  (regime=LONG  multi=LONG)
+  XLC    $  116.10  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.66  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  303.00  FLAT  (regime=FLAT  multi=FLAT)
+  JNJ    $  231.73  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  155.29  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  268.46  LONG  (regime=LONG  multi=LONG)
+  NEE    $   89.69  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  479.98  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  988.17  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1050.45  LONG  (regime=LONG  multi=LONG)
+  MSFT   $  419.09  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  219.51  LONG  (regime=LONG  multi=LONG)
+  GE     $  301.76  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  118.50  LONG  (regime=LONG  multi=LONG)
+  VZ     $   48.27  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   21.94  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   27.61  FLAT  (regime=FLAT  multi=FLAT)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  107.23  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.77  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.11  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.10  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.23  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.08  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   55.05  FLAT  (regime=FLAT  multi=FLAT)
+2026-05-21 16:48:44  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (10 BUY  0 SELL  11 HOLD)
+2026-05-21 16:48:44  INFO     EOD pipeline complete
+2026-05-21 16:48:44  INFO     ============================================================
+2026-05-21 17:30:00  INFO     Heartbeat  |  ET 17:30  |  Portfolio $99,718  (-0.28%)  |  Next EOD: 16:45
+2026-05-21 17:30:30  INFO     Heartbeat  |  ET 17:30  |  Portfolio $99,718  (-0.28%)  |  Next EOD: 16:45
+2026-05-22 07:00:27  INFO     Heartbeat  |  ET 07:00  |  Portfolio $99,718  (-0.28%)  |  Next EOD: 16:45
+2026-05-22 11:00:20  INFO     Heartbeat  |  ET 11:00  |  Portfolio $117,286  (+17.29%)  |  Next EOD: 16:45
+2026-05-22 23:00:28  INFO     Heartbeat  |  ET 23:00  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-23 10:00:29  INFO     Heartbeat  |  ET 10:00  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-23 11:30:22  INFO     Heartbeat  |  ET 11:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-23 12:30:06  INFO     Heartbeat  |  ET 12:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-23 15:30:24  INFO     Heartbeat  |  ET 15:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-23 22:00:16  INFO     Heartbeat  |  ET 22:00  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-23 22:30:26  INFO     Heartbeat  |  ET 22:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 13:00:07  INFO     Heartbeat  |  ET 13:00  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 13:30:07  INFO     Heartbeat  |  ET 13:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 14:00:08  INFO     Heartbeat  |  ET 14:00  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 14:30:08  INFO     Heartbeat  |  ET 14:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 15:00:08  INFO     Heartbeat  |  ET 15:00  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 15:30:09  INFO     Heartbeat  |  ET 15:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 16:00:09  INFO     Heartbeat  |  ET 16:00  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 16:30:26  INFO     Heartbeat  |  ET 16:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-24 21:30:28  INFO     Heartbeat  |  ET 21:30  |  Portfolio $99,440  (-0.56%)  |  Next EOD: 16:45
+2026-05-25 16:45:34  INFO     ============================================================
+2026-05-25 16:45:34  INFO     EOD pipeline starting
+2026-05-25 16:45:34  INFO     Running EOD position update...
+
+End-of-day update  (2026-05-25)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  745.64  LONG  (regime=LONG  multi=LONG)
+  IWM    $  285.12  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   65.88  LONG  (regime=LONG  multi=LONG)
+  EFA    $  103.98  LONG  (regime=LONG  multi=LONG)
+  VWO    $   58.98  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.68  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.91  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  110.38  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  413.82  LONG  (regime=LONG  multi=LONG)
+  DBC    $   30.54  LONG  (regime=LONG  multi=LONG)
+  UUP    2026-05-25 16:45:48  ERROR    
+1 Failed download:
+2026-05-25 16:45:48  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLE    $   59.49  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   45.35  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.94  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   96.77  LONG  (regime=LONG  multi=LONG)
+  XLK    $  180.39  LONG  (regime=LONG  multi=LONG)
+  XLV    $  149.89  FLAT  (regime=FLAT  multi=FLAT)
+  XLI    $  171.77  LONG  (regime=LONG  multi=LONG)
+  XLC    $  115.46  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.80  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  306.38  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  234.34  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  154.92  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  266.32  LONG  (regime=LONG  multi=LONG)
+  NEE    $   88.55  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  486.38  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  996.73  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1028.24  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  418.57  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  215.33  LONG  (regime=LONG  multi=LONG)
+  GE     $  302.84  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  119.84  LONG  (regime=LONG  multi=LONG)
+  VZ     $   48.35  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   21.93  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   27.56  LONG  (regime=LONG  multi=LONG)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  107.10  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.70  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.09  LONG  (regime=LONG  multi=LONG)
+  WTMF   2026-05-25 16:57:16  ERROR    
+1 Failed download:
+2026-05-25 16:57:16  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.22  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.17  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   55.33  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 12 names selected, target gross $92,312
+  SELL COST    4.821 sh @ $1028.24  P&L -$321  [rebalance_drop]
+  BUY  DBA     428.598 sh @ $27.56  ($11,812)  [rebalance_open]
+  BUY  GLD     5.219 sh @ $413.82  ($2,160)  [rebalance_topup]
+  BUY  XLU     77.781 sh @ $45.35  ($3,527)  [rebalance_topup]
+
+====================================================
+  Portfolio value : $ 99,327.89
+  Cash            : $  3,202.92
+  Positions       : 11
+  Daily return    :    -0.11%
+  Total return    :    -0.67%
+====================================================
+2026-05-25 16:57:17  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  745.64  LONG  (regime=LONG  multi=LONG)
+  IWM    $  285.12  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   65.88  LONG  (regime=LONG  multi=LONG)
+  EFA    $  103.98  LONG  (regime=LONG  multi=LONG)
+  VWO    $   58.98  LONG  (regime=LONG  multi=LONG)
+  TLT      [TLT] short signal on bond — keeping flat for paper trading
+$   84.68  FLAT  (regime=LONG  multi=LONG)
+  HYG    $   79.91  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  110.38  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  413.82  LONG  (regime=LONG  multi=LONG)
+  DBC    $   30.54  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.77  LONG  (regime=LONG  multi=LONG)
+  XLE    $   59.49  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   45.35  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.94  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   96.77  LONG  (regime=LONG  multi=LONG)
+  XLK    $  180.39  LONG  (regime=LONG  multi=LONG)
+  XLV    $  149.89  FLAT  (regime=FLAT  multi=FLAT)
+  XLI    2026-05-25 17:11:48  ERROR    
+1 Failed download:
+2026-05-25 17:11:48  ERROR    ['XLI']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLC    $  115.46  LONG  (regime=LONG  multi=LONG)
+  XLP    $   84.80  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  306.38  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  234.34  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  154.92  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  266.32  LONG  (regime=LONG  multi=LONG)
+  NEE    $   88.55  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  486.38  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  996.73  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1028.24  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  418.57  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  215.33  LONG  (regime=LONG  multi=LONG)
+  GE     $  302.84  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  119.84  LONG  (regime=LONG  multi=LONG)
+  VZ     $   48.35  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   21.93  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   27.56  LONG  (regime=LONG  multi=LONG)
+  FXE      [FXE] short signal on commodity — keeping flat for paper trading
+$  107.10  FLAT  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.70  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.09  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.09  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.22  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.17  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   55.33  FLAT  (regime=FLAT  multi=FLAT)
+2026-05-25 17:12:03  WARNING  Data validation flagged tickers: ['XLI']
+2026-05-25 17:12:03  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  0 SELL  11 HOLD)
+2026-05-25 17:12:03  INFO     EOD pipeline complete
+2026-05-25 17:12:03  INFO     ============================================================
+2026-05-25 20:00:16  INFO     Heartbeat  |  ET 20:00  |  Portfolio $99,328  (-0.67%)  |  Next EOD: 16:45
+2026-05-25 21:30:25  INFO     Heartbeat  |  ET 21:30  |  Portfolio $99,328  (-0.67%)  |  Next EOD: 16:45
+2026-05-25 23:30:07  INFO     Heartbeat  |  ET 23:30  |  Portfolio $99,328  (-0.67%)  |  Next EOD: 16:45
+2026-05-26 07:00:10  INFO     Heartbeat  |  ET 07:00  |  Portfolio $99,328  (-0.67%)  |  Next EOD: 16:45
+2026-05-26 12:00:27  INFO     Heartbeat  |  ET 12:00  |  Portfolio $99,328  (-0.67%)  |  Next EOD: 16:45
+2026-05-26 16:48:20  INFO     ============================================================
+2026-05-26 16:48:20  INFO     EOD pipeline starting
+2026-05-26 16:48:20  INFO     Running EOD position update...
+
+End-of-day update  (2026-05-26)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  750.59  LONG  (regime=LONG  multi=LONG)
+  IWM    $  290.51  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   68.40  LONG  (regime=LONG  multi=LONG)
+  EFA    $  105.13  LONG  (regime=LONG  multi=LONG)
+  VWO    $   60.23  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.10  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   80.18  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  110.82  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  414.00  LONG  (regime=LONG  multi=LONG)
+  DBC    $   30.03  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.75  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.85  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   45.33  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.85  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   97.22  LONG  (regime=LONG  multi=LONG)
+  XLK    $  185.14  LONG  (regime=LONG  multi=LONG)
+  XLV    $  148.51  FLAT  (regime=FLAT  multi=FLAT)
+  XLI    $  174.30  LONG  (regime=LONG  multi=LONG)
+  XLC    $  115.55  LONG  (regime=LONG  multi=LONG)
+  XLP    $   83.63  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  306.74  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  230.18  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  149.81  FLAT  (regime=LONG  multi=FLAT)
+  AMZN   $  265.29  LONG  (regime=LONG  multi=LONG)
+  NEE    $   87.65  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  483.62  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  994.52  FLAT  (regime=LONG  multi=FLAT)
+  COST   2026-05-26 16:49:10  ERROR    
+1 Failed download:
+2026-05-26 16:49:10  ERROR    ['COST']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MSFT   $  416.03  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  214.86  LONG  (regime=LONG  multi=LONG)
+  GE     $  314.49  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  123.52  LONG  (regime=LONG  multi=LONG)
+  VZ     $   48.49  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   22.04  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   27.47  LONG  (regime=LONG  multi=LONG)
+  FXE    $  107.35  LONG  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.63  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.17  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.24  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.28  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.65  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   54.73  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 12 names selected, target gross $83,543
+  SELL DBA     428.598 sh @ $27.47  P&L -$44  [rebalance_drop]
+  SELL XLK     9.005 sh @ $185.14  P&L +$85  [rebalance_trim]
+  SELL UUP     129.901 sh @ $27.75  P&L +$4  [rebalance_trim]
+  SELL GLD     4.658 sh @ $414.00  P&L -$48  [rebalance_trim]
+  SELL XLU     46.493 sh @ $45.33  P&L +$10  [rebalance_trim]
+  BUY  JPM     17.456 sh @ $306.74  ($5,355)  [rebalance_open]
+  BUY  VGSH    59.055 sh @ $58.28  ($3,442)  [rebalance_open]
+  SELL VGSH    59.055 sh @ $58.28  P&L -$2  [floor_short_override]
+
+====================================================
+  Portfolio value : $ 99,743.57
+  Cash            : $ 18,913.47
+  Positions       : 11
+  Daily return    :    +0.42%
+  Total return    :    -0.26%
+====================================================
+2026-05-26 16:49:15  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  750.59  LONG  (regime=LONG  multi=LONG)
+  IWM    $  290.51  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   68.40  LONG  (regime=LONG  multi=LONG)
+  EFA    $  105.13  LONG  (regime=LONG  multi=LONG)
+  VWO    $   60.23  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.10  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   80.18  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  110.82  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  414.00  LONG  (regime=LONG  multi=LONG)
+  DBC    $   30.03  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.75  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.85  FLAT  (regime=LONG  multi=FLAT)
+  XLU    $   45.33  LONG  (regime=LONG  multi=LONG)
+  XLF    $   51.85  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   97.22  LONG  (regime=LONG  multi=LONG)
+  XLK    $  185.14  LONG  (regime=LONG  multi=LONG)
+  XLV    $  148.51  FLAT  (regime=FLAT  multi=FLAT)
+  XLI    $  174.30  LONG  (regime=LONG  multi=LONG)
+  XLC    $  115.55  LONG  (regime=LONG  multi=LONG)
+  XLP    $   83.63  FLAT  (regime=LONG  multi=FLAT)
+  JPM    $  306.74  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  230.18  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  149.81  FLAT  (regime=LONG  multi=FLAT)
+  AMZN   $  265.29  LONG  (regime=LONG  multi=LONG)
+  NEE    $   87.65  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  483.62  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $  994.52  FLAT  (regime=LONG  multi=FLAT)
+  COST   $ 1002.93  FLAT  (regime=FLAT  multi=FLAT)
+  MSFT   $  416.03  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  214.86  LONG  (regime=LONG  multi=LONG)
+  GE     $  314.49  FLAT  (regime=FLAT  multi=FLAT)
+  INTC   $  123.52  LONG  (regime=LONG  multi=LONG)
+  VZ     $   48.49  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   22.04  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   27.47  LONG  (regime=LONG  multi=LONG)
+  FXE    $  107.35  LONG  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.63  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.17  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.24  LONG  (regime=LONG  multi=LONG)
+  VGSH     [VGSH] short signal on bond — keeping flat for paper trading
+$   58.28  FLAT  (regime=LONG  multi=LONG)
+  MUB      [MUB] short signal on bond — keeping flat for paper trading
+$  106.65  FLAT  (regime=LONG  multi=LONG)
+  VXZ    $   54.73  FLAT  (regime=FLAT  multi=FLAT)
+2026-05-26 16:51:40  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (11 BUY  0 SELL  11 HOLD)
+2026-05-26 16:51:40  INFO     EOD pipeline complete
+2026-05-26 16:51:40  INFO     ============================================================
+2026-05-27 13:00:10  INFO     Heartbeat  |  ET 13:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-27 18:00:10  INFO     Heartbeat  |  ET 18:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-27 22:00:19  INFO     Heartbeat  |  ET 22:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-28 01:00:05  INFO     Heartbeat  |  ET 01:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-28 09:30:20  INFO     Heartbeat  |  ET 09:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-28 14:30:03  INFO     Heartbeat  |  ET 14:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-28 22:30:14  INFO     Heartbeat  |  ET 22:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-28 23:00:14  INFO     Heartbeat  |  ET 23:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-28 23:30:15  INFO     Heartbeat  |  ET 23:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-29 00:00:15  INFO     Heartbeat  |  ET 00:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-29 07:00:30  INFO     Heartbeat  |  ET 07:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-30 12:30:07  INFO     Heartbeat  |  ET 12:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-30 13:30:26  INFO     Heartbeat  |  ET 13:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-30 16:30:11  INFO     Heartbeat  |  ET 16:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-30 18:30:24  INFO     Heartbeat  |  ET 18:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-30 20:00:00  INFO     Heartbeat  |  ET 20:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-05-31 14:30:16  INFO     Heartbeat  |  ET 14:30  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-06-01 07:00:19  INFO     Heartbeat  |  ET 07:00  |  Portfolio $99,744  (-0.26%)  |  Next EOD: 16:45
+2026-06-01 16:58:22  INFO     ============================================================
+2026-06-01 16:58:22  INFO     EOD pipeline starting
+2026-06-01 16:58:22  INFO     Running EOD position update...
+
+End-of-day update  (2026-06-01)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  758.54  LONG  (regime=LONG  multi=LONG)
+  IWM    $  288.98  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   70.08  LONG  (regime=LONG  multi=LONG)
+  EFA    $  104.44  LONG  (regime=LONG  multi=LONG)
+  VWO    $   60.42  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.47  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.84  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  109.98  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  411.26  LONG  (regime=LONG  multi=LONG)
+  DBC    $   29.99  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.76  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.30  LONG  (regime=LONG  multi=LONG)
+  XLU    $   43.10  FLAT  (regime=FLAT  multi=FLAT)
+  XLF    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['XLF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VNQ    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['VNQ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLK    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['XLK']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLV    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['XLV']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLI    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['XLI']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLC    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['XLC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLP    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['XLP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JPM    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JNJ    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['JNJ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XOM    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  AMZN   2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['AMZN']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NEE    2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['NEE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BRK-B  2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['BRK-B']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GS     2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['GS']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  COST   2026-06-01 17:13:52  ERROR    
+1 Failed download:
+2026-06-01 17:13:52  ERROR    ['COST']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MSFT   2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['MSFT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NVDA   2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['NVDA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GE     2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['GE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  INTC   2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['INTC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VZ     2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['VZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BWX    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['BWX']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBA    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['DBA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXE    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXY    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['FXY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBMF   2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['DBMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  WTMF   2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VGSH   2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['VGSH']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MUB    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['VXZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+2026-06-01 17:13:53  ERROR    
+11 Failed downloads:
+2026-06-01 17:13:53  ERROR    ['SPY', 'XLK', 'XLU', 'JPM', 'NEE', 'INTC', 'UUP', 'NVDA', 'DBMF', 'GLD', 'WTMF']: TypeError("'NoneType' object is not subscriptable")
+  Top-N V2 (ADX22+momt+AC55): 6 names selected, target gross $55,185
+  SELL XLU     145.597 sh @ $43.10  P&L -$292  [rebalance_drop]
+  SELL UUP     305.601 sh @ $27.76  P&L +$11  [rebalance_drop]
+  BUY  XLE     255.744 sh @ $57.30  ($14,654)  [rebalance_open]
+  BUY  GLD     12.195 sh @ $411.26  ($5,015)  [rebalance_topup]
+  BUY  DBC     371.505 sh @ $29.99  ($11,141)  [rebalance_open]
+  SELL SPY     3.865 sh @ $758.54  P&L +$73  [rebalance_trim]
+  BUY  EEM     74.191 sh @ $70.08  ($5,199)  [rebalance_open]
+
+====================================================
+  Portfolio value : $ 98,500.51
+  Cash            : $    566.96
+  Positions       : 12
+  Daily return    :    -1.25%
+  Total return    :    -1.50%
+====================================================
+2026-06-01 17:13:53  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['SPY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  IWM    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['IWM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EEM    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['EEM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EFA    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['EFA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VWO    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['VWO']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TLT    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['TLT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  HYG    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['HYG']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TIP    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['TIP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GLD    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['GLD']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBC    2026-06-01 17:13:53  ERROR    
+1 Failed download:
+2026-06-01 17:13:53  ERROR    ['DBC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  UUP    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLE    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XLE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLU    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XLU']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLF    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XLF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VNQ    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['VNQ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLK    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XLK']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLV    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XLV']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLI    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XLI']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLC    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XLC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLP    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XLP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JPM    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JNJ    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['JNJ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XOM    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  AMZN   2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['AMZN']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NEE    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['NEE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BRK-B  2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['BRK-B']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GS     2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['GS']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  COST   2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['COST']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MSFT   2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['MSFT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NVDA   2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['NVDA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GE     2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['GE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  INTC   2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['INTC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VZ     2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['VZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BWX    2026-06-01 17:13:54  ERROR    
+1 Failed download:
+2026-06-01 17:13:54  ERROR    ['BWX']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBA    2026-06-01 17:13:55  ERROR    
+1 Failed download:
+2026-06-01 17:13:55  ERROR    ['DBA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXE    2026-06-01 17:13:55  ERROR    
+1 Failed download:
+2026-06-01 17:13:55  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXY    2026-06-01 17:13:55  ERROR    
+1 Failed download:
+2026-06-01 17:13:55  ERROR    ['FXY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBMF   2026-06-01 17:13:55  ERROR    
+1 Failed download:
+2026-06-01 17:13:55  ERROR    ['DBMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  WTMF   2026-06-01 17:13:55  ERROR    
+1 Failed download:
+2026-06-01 17:13:55  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VGSH   2026-06-01 17:13:55  ERROR    
+1 Failed download:
+2026-06-01 17:13:55  ERROR    ['VGSH']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MUB    2026-06-01 17:13:55  ERROR    
+1 Failed download:
+2026-06-01 17:13:55  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    2026-06-01 17:14:33  ERROR    
+1 Failed download:
+2026-06-01 17:14:33  ERROR    ['VXZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+2026-06-01 17:14:33  WARNING  Data validation flagged tickers: ['AMZN', 'BRK-B', 'BWX', 'COST', 'DBA', 'DBC', 'DBMF', 'EEM', 'EFA', 'FXE', 'FXY', 'GE', 'GLD', 'GS', 'HYG', 'INTC', 'IWM', 'JNJ', 'JPM', 'MSFT', 'MUB', 'NEE', 'NVDA', 'SPY', 'TIP', 'TLT', 'UUP', 'VGSH', 'VNQ', 'VWO', 'VXZ', 'VZ', 'WTMF', 'XLC', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XOM']
+2026-06-01 17:14:33  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  0 SELL  0 HOLD)
+2026-06-01 17:14:33  INFO     EOD pipeline complete
+2026-06-01 17:14:33  INFO     ============================================================
+2026-06-02 16:59:08  INFO     ============================================================
+2026-06-02 16:59:08  INFO     EOD pipeline starting
+2026-06-02 16:59:08  INFO     Running EOD position update...
+
+End-of-day update  (2026-06-02)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  759.57  LONG  (regime=LONG  multi=LONG)
+  IWM    $  291.66  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   70.80  LONG  (regime=LONG  multi=LONG)
+  EFA    $  105.02  LONG  (regime=LONG  multi=LONG)
+  VWO    $   61.19  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.65  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['HYG']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TIP    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['TIP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GLD    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['GLD']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBC    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['DBC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  UUP    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLE    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['XLE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLU    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['XLU']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLF    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['XLF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VNQ    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['VNQ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLK    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['XLK']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLV    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['XLV']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLI    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['XLI']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLC    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['XLC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLP    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['XLP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JPM    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JNJ    2026-06-02 17:16:33  ERROR    
+1 Failed download:
+2026-06-02 17:16:33  ERROR    ['JNJ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XOM    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  AMZN   2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['AMZN']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NEE    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['NEE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BRK-B  2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['BRK-B']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GS     2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['GS']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  COST   2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['COST']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MSFT   2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['MSFT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NVDA   2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['NVDA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GE     2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['GE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  INTC   2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['INTC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VZ     2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['VZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BWX    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['BWX']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBA    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['DBA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXE    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXY    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['FXY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBMF   2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['DBMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  WTMF   2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VGSH   2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['VGSH']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MUB    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['VXZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+2026-06-02 17:16:34  ERROR    
+12 Failed downloads:
+2026-06-02 17:16:34  ERROR    ['SPY', 'XLK', 'DBC', 'DBMF', 'JPM', 'XLE', 'INTC', 'NVDA', 'EEM', 'NEE', 'WTMF', 'GLD']: TypeError("'NoneType' object is not subscriptable")
+  Top-N V2 (ADX22+momt+AC55): 3 names selected, target gross $20,840
+
+====================================================
+  Portfolio value : $ 99,266.59
+  Cash            : $    566.96
+  Positions       : 12
+  Daily return    :    +0.78%
+  Total return    :    -0.73%
+====================================================
+2026-06-02 17:16:34  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['SPY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  IWM    2026-06-02 17:16:34  ERROR    
+1 Failed download:
+2026-06-02 17:16:34  ERROR    ['IWM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EEM    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['EEM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EFA    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['EFA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VWO    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['VWO']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TLT    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['TLT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  HYG    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['HYG']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TIP    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['TIP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GLD    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['GLD']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBC    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['DBC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  UUP    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLE    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XLE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLU    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XLU']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLF    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XLF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VNQ    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['VNQ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLK    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XLK']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLV    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XLV']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLI    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XLI']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLC    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XLC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLP    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XLP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JPM    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JNJ    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['JNJ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XOM    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  AMZN   2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['AMZN']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NEE    2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['NEE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BRK-B  2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['BRK-B']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GS     2026-06-02 17:16:35  ERROR    
+1 Failed download:
+2026-06-02 17:16:35  ERROR    ['GS']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  COST   2026-06-02 17:16:36  ERROR    
+1 Failed download:
+2026-06-02 17:16:36  ERROR    ['COST']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MSFT   2026-06-02 17:16:36  ERROR    
+1 Failed download:
+2026-06-02 17:16:36  ERROR    ['MSFT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NVDA   2026-06-02 17:16:36  ERROR    
+1 Failed download:
+2026-06-02 17:16:36  ERROR    ['NVDA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GE     2026-06-02 17:16:36  ERROR    
+1 Failed download:
+2026-06-02 17:16:36  ERROR    ['GE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  INTC   2026-06-02 17:16:36  ERROR    
+1 Failed download:
+2026-06-02 17:16:36  ERROR    ['INTC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VZ     2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['VZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BWX    2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['BWX']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBA    2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['DBA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXE    2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXY    2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['FXY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBMF   2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['DBMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  WTMF   2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VGSH   2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['VGSH']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MUB    2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    2026-06-02 17:17:16  ERROR    
+1 Failed download:
+2026-06-02 17:17:16  ERROR    ['VXZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+2026-06-02 17:17:16  WARNING  Data validation flagged tickers: ['AMZN', 'BRK-B', 'BWX', 'COST', 'DBA', 'DBC', 'DBMF', 'EEM', 'EFA', 'FXE', 'FXY', 'GE', 'GLD', 'GS', 'HYG', 'INTC', 'IWM', 'JNJ', 'JPM', 'MSFT', 'MUB', 'NEE', 'NVDA', 'SPY', 'TIP', 'TLT', 'UUP', 'VGSH', 'VNQ', 'VWO', 'VXZ', 'VZ', 'WTMF', 'XLC', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XOM']
+2026-06-02 17:17:16  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  0 SELL  0 HOLD)
+2026-06-02 17:17:16  INFO     EOD pipeline complete
+2026-06-02 17:17:16  INFO     ============================================================
+2026-06-02 18:00:03  INFO     Heartbeat  |  ET 18:00  |  Portfolio $99,267  (-0.73%)  |  Next EOD: 16:45
+2026-06-03 14:00:23  INFO     Heartbeat  |  ET 14:00  |  Portfolio $99,267  (-0.73%)  |  Next EOD: 16:45
+2026-06-03 16:54:11  INFO     ============================================================
+2026-06-03 16:54:11  INFO     EOD pipeline starting
+2026-06-03 16:54:11  INFO     Running EOD position update...
+
+End-of-day update  (2026-06-03)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  754.24  LONG  (regime=LONG  multi=LONG)
+  IWM    $  287.67  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   69.92  LONG  (regime=LONG  multi=LONG)
+  EFA    $  104.12  LONG  (regime=LONG  multi=LONG)
+  VWO    $   60.33  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.31  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.68  LONG  (regime=LONG  multi=LONG)
+  TIP    $  109.77  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  407.87  LONG  (regime=LONG  multi=LONG)
+  DBC    $   30.29  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.86  LONG  (regime=LONG  multi=LONG)
+  XLE    $   58.71  LONG  (regime=LONG  multi=LONG)
+  XLU    $   43.71  LONG  (regime=LONG  multi=LONG)
+  XLF    $   50.87  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   94.41  LONG  (regime=LONG  multi=LONG)
+  XLK    $  196.23  LONG  (regime=LONG  multi=LONG)
+  XLV    $  147.55  FLAT  (regime=FLAT  multi=FLAT)
+  XLI    $  174.05  LONG  (regime=LONG  multi=LONG)
+  XLC    $  112.08  FLAT  (regime=FLAT  multi=FLAT)
+  XLP    $   82.16  LONG  (regime=LONG  multi=LONG)
+  JPM    2026-06-03 16:59:49  ERROR    
+1 Failed download:
+2026-06-03 16:59:49  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JNJ    $  223.24  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  152.53  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  250.02  LONG  (regime=LONG  multi=LONG)
+  NEE    $   84.58  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  475.37  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $ 1041.02  FLAT  (regime=LONG  multi=FLAT)
+  COST   $  961.83  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  427.34  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  214.75  LONG  (regime=LONG  multi=LONG)
+  GE     $  314.64  LONG  (regime=LONG  multi=LONG)
+  INTC   $  112.71  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   46.65  LONG  (regime=LONG  multi=LONG)
+  BWX    $   21.89  FLAT  (regime=FLAT  multi=FLAT)
+  DBA    $   26.86  LONG  (regime=LONG  multi=LONG)
+  FXE    $  106.95  LONG  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.33  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.42  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.25  LONG  (regime=LONG  multi=LONG)
+  VGSH   $   58.11  FLAT  (regime=FLAT  multi=FLAT)
+  MUB    2026-06-03 17:03:33  ERROR    
+1 Failed download:
+2026-06-03 17:03:33  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    $   54.29  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 13 names selected, target gross $84,203
+  SELL NVDA    18.273 sh @ $214.75  P&L +$13  [rebalance_drop]
+  SELL INTC    19.153 sh @ $112.71  P&L +$74  [rebalance_drop]
+  SELL JPM     17.456 sh @ $300.85  P&L -$105  [rebalance_drop]
+  SELL XLE     255.744 sh @ $58.71  P&L +$353  [rebalance_drop]
+  SELL DBC     371.505 sh @ $30.29  P&L +$106  [rebalance_drop]
+  BUY  DBA     384.983 sh @ $26.86  ($10,341)  [rebalance_open]
+  BUY  VNQ     98.251 sh @ $94.41  ($9,276)  [rebalance_open]
+  BUY  XLU     184.400 sh @ $43.71  ($8,060)  [rebalance_open]
+  SELL XLK     13.315 sh @ $196.23  P&L +$274  [rebalance_trim]
+  BUY  XLP     89.475 sh @ $82.16  ($7,351)  [rebalance_open]
+  BUY  AMZN    20.583 sh @ $250.02  ($5,146)  [rebalance_open]
+  SELL GLD     22.535 sh @ $407.87  P&L -$257  [rebalance_trim]
+  BUY  VGSH    57.907 sh @ $58.11  ($3,365)  [rebalance_open]
+  BUY  GE      7.760 sh @ $314.64  ($2,442)  [rebalance_open]
+
+====================================================
+  Portfolio value : $ 99,970.41
+  Cash            : $  3,944.86
+  Positions       : 14
+  Daily return    :    +0.71%
+  Total return    :    -0.03%
+====================================================
+2026-06-03 17:03:34  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  754.24  LONG  (regime=LONG  multi=LONG)
+  IWM    $  287.67  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   69.92  LONG  (regime=LONG  multi=LONG)
+  EFA    $  104.12  LONG  (regime=LONG  multi=LONG)
+  VWO    $   60.33  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.31  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.68  LONG  (regime=LONG  multi=LONG)
+  TIP    $  109.77  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  407.87  LONG  (regime=LONG  multi=LONG)
+  DBC    $   30.29  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.86  LONG  (regime=LONG  multi=LONG)
+  XLE    $   58.71  LONG  (regime=LONG  multi=LONG)
+  XLU    $   43.71  LONG  (regime=LONG  multi=LONG)
+  XLF    2026-06-03 17:04:45  ERROR    
+1 Failed download:
+2026-06-03 17:04:45  ERROR    ['XLF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VNQ    $   94.41  LONG  (regime=LONG  multi=LONG)
+  XLK    $  196.23  LONG  (regime=LONG  multi=LONG)
+  XLV    $  147.55  FLAT  (regime=FLAT  multi=FLAT)
+  XLI    $  174.05  LONG  (regime=LONG  multi=LONG)
+  XLC    $  112.08  FLAT  (regime=FLAT  multi=FLAT)
+  XLP    $   82.16  LONG  (regime=LONG  multi=LONG)
+  JPM    $  300.85  FLAT  (regime=FLAT  multi=FLAT)
+  JNJ    $  223.24  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  152.53  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  250.02  LONG  (regime=LONG  multi=LONG)
+  NEE    $   84.58  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  475.37  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $ 1041.02  FLAT  (regime=LONG  multi=FLAT)
+  COST   $  961.83  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  427.34  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   2026-06-03 17:20:22  ERROR    
+1 Failed download:
+2026-06-03 17:20:22  ERROR    ['NVDA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GE     $  314.64  LONG  (regime=LONG  multi=LONG)
+  INTC   $  112.71  FLAT  (regime=LONG  multi=FLAT)
+  VZ     2026-06-03 17:27:49  ERROR    
+1 Failed download:
+2026-06-03 17:27:49  ERROR    ['VZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BWX    $   21.89  FLAT  (regime=FLAT  multi=FLAT)
+  DBA    $   26.86  LONG  (regime=LONG  multi=LONG)
+  FXE    $  106.95  LONG  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.33  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.42  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.25  LONG  (regime=LONG  multi=LONG)
+  VGSH   $   58.11  FLAT  (regime=FLAT  multi=FLAT)
+  MUB    $  107.01  LONG  (regime=LONG  multi=LONG)
+  VXZ    $   54.29  FLAT  (regime=FLAT  multi=FLAT)
+2026-06-03 18:25:02  WARNING  Data validation flagged tickers: ['NVDA', 'VZ', 'XLF']
+2026-06-03 18:25:02  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  1 SELL  13 HOLD)
+2026-06-03 18:25:02  INFO     EOD pipeline complete
+2026-06-03 18:25:02  INFO     ============================================================
+2026-06-03 19:00:11  INFO     Heartbeat  |  ET 19:00  |  Portfolio $99,970  (-0.03%)  |  Next EOD: 16:45
+2026-06-04 16:52:51  INFO     ============================================================
+2026-06-04 16:52:51  INFO     EOD pipeline starting
+2026-06-04 16:52:51  INFO     Running EOD position update...
+
+End-of-day update  (2026-06-04)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  757.09  LONG  (regime=LONG  multi=LONG)
+  IWM    $  292.01  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   69.10  LONG  (regime=LONG  multi=LONG)
+  EFA    $  104.95  LONG  (regime=LONG  multi=LONG)
+  VWO    $   60.31  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.50  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.83  LONG  (regime=LONG  multi=LONG)
+  TIP    $  109.78  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  411.27  LONG  (regime=LONG  multi=LONG)
+  DBC    $   29.88  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.84  LONG  (regime=LONG  multi=LONG)
+  XLE    $   58.75  LONG  (regime=LONG  multi=LONG)
+  XLU    $   43.94  LONG  (regime=LONG  multi=LONG)
+  XLF    $   52.19  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   96.10  LONG  (regime=LONG  multi=LONG)
+  XLK    $  193.17  LONG  (regime=LONG  multi=LONG)
+  XLV    $  152.08  LONG  (regime=LONG  multi=LONG)
+  XLI    $  176.16  LONG  (regime=LONG  multi=LONG)
+  XLC    $  113.11  LONG  (regime=LONG  multi=LONG)
+  XLP    $   82.04  LONG  (regime=LONG  multi=LONG)
+  JPM    $  310.89  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  228.17  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  152.04  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  253.79  LONG  (regime=LONG  multi=LONG)
+  NEE    $   85.68  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  478.63  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $ 1092.61  FLAT  (regime=LONG  multi=FLAT)
+  COST   $  972.35  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  428.05  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  218.66  LONG  (regime=LONG  multi=LONG)
+  GE     $  327.65  LONG  (regime=LONG  multi=LONG)
+  INTC   $  111.78  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   44.87  FLAT  (regime=FLAT  multi=FLAT)
+  BWX    $   21.93  FLAT  (regime=FLAT  multi=FLAT)
+  DBA    $   26.69  FLAT  (regime=FLAT  multi=FLAT)
+  FXE    $  107.15  LONG  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.35  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.29  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.21  LONG  (regime=LONG  multi=LONG)
+  VGSH   $   58.14  FLAT  (regime=FLAT  multi=FLAT)
+  MUB    $  107.19  LONG  (regime=LONG  multi=LONG)
+  VXZ    $   53.85  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 13 names selected, target gross $74,108
+  SELL DBA     384.983 sh @ $26.69  P&L -$71  [rebalance_drop]
+  SELL VNQ     98.251 sh @ $96.10  P&L +$161  [rebalance_drop]
+  BUY  MUB     79.404 sh @ $107.19  ($8,511)  [rebalance_open]
+  BUY  JPM     18.417 sh @ $310.89  ($5,726)  [rebalance_open]
+  SELL XLP     20.681 sh @ $82.04  P&L -$3  [rebalance_trim]
+  SELL XLU     68.209 sh @ $43.94  P&L +$14  [rebalance_trim]
+
+====================================================
+  Portfolio value : $100,103.95
+  Cash            : $ 14,099.61
+  Positions       : 14
+  Daily return    :    +0.13%
+  Total return    :    +0.10%
+====================================================
+2026-06-04 16:53:08  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  757.09  LONG  (regime=LONG  multi=LONG)
+  IWM    $  292.01  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   69.10  LONG  (regime=LONG  multi=LONG)
+  EFA    $  104.95  LONG  (regime=LONG  multi=LONG)
+  VWO    $   60.31  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.50  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.83  LONG  (regime=LONG  multi=LONG)
+  TIP    $  109.78  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  411.27  LONG  (regime=LONG  multi=LONG)
+  DBC    $   29.88  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.84  LONG  (regime=LONG  multi=LONG)
+  XLE    2026-06-04 17:04:30  ERROR    
+1 Failed download:
+2026-06-04 17:04:30  ERROR    ['XLE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLU    $   43.94  LONG  (regime=LONG  multi=LONG)
+  XLF    $   52.19  FLAT  (regime=FLAT  multi=FLAT)
+  VNQ    $   96.10  LONG  (regime=LONG  multi=LONG)
+  XLK    $  193.17  LONG  (regime=LONG  multi=LONG)
+  XLV    $  152.08  LONG  (regime=LONG  multi=LONG)
+  XLI    $  176.16  LONG  (regime=LONG  multi=LONG)
+  XLC    $  113.11  LONG  (regime=LONG  multi=LONG)
+  XLP    $   82.04  LONG  (regime=LONG  multi=LONG)
+  JPM    $  310.89  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  228.17  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  152.04  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  253.79  LONG  (regime=LONG  multi=LONG)
+  NEE    $   85.68  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  478.63  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $ 1092.61  FLAT  (regime=LONG  multi=FLAT)
+  COST   $  972.35  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  428.05  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  218.66  LONG  (regime=LONG  multi=LONG)
+  GE     $  327.65  LONG  (regime=LONG  multi=LONG)
+  INTC   $  111.78  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   44.87  FLAT  (regime=FLAT  multi=FLAT)
+  BWX    $   21.93  FLAT  (regime=FLAT  multi=FLAT)
+  DBA    $   26.69  FLAT  (regime=FLAT  multi=FLAT)
+  FXE    $  107.15  LONG  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.35  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   31.29  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   41.21  LONG  (regime=LONG  multi=LONG)
+  VGSH   $   58.14  FLAT  (regime=FLAT  multi=FLAT)
+  MUB    $  107.19  LONG  (regime=LONG  multi=LONG)
+  VXZ    $   53.85  FLAT  (regime=FLAT  multi=FLAT)
+2026-06-04 17:04:47  WARNING  Data validation flagged tickers: ['XLE']
+2026-06-04 17:04:47  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (12 BUY  1 SELL  13 HOLD)
+2026-06-04 17:04:47  INFO     EOD pipeline complete
+2026-06-04 17:04:47  INFO     ============================================================
+2026-06-05 03:00:17  INFO     Heartbeat  |  ET 03:00  |  Portfolio $100,104  (+0.10%)  |  Next EOD: 16:45
+2026-06-05 12:30:01  INFO     Heartbeat  |  ET 12:30  |  Portfolio $100,104  (+0.10%)  |  Next EOD: 16:45
+2026-06-06 03:00:16  INFO     Heartbeat  |  ET 03:00  |  Portfolio $100,104  (+0.10%)  |  Next EOD: 16:45
+2026-06-06 16:30:02  INFO     Heartbeat  |  ET 16:30  |  Portfolio $100,104  (+0.10%)  |  Next EOD: 16:45
+2026-06-06 22:00:26  INFO     Heartbeat  |  ET 22:00  |  Portfolio $100,104  (+0.10%)  |  Next EOD: 16:45
+2026-06-07 05:00:16  INFO     Heartbeat  |  ET 05:00  |  Portfolio $100,104  (+0.10%)  |  Next EOD: 16:45
+2026-06-10 20:30:27  INFO     Heartbeat  |  ET 20:30  |  Portfolio $100,104  (+0.10%)  |  Next EOD: 16:45
+2026-06-10 21:00:27  INFO     Heartbeat  |  ET 21:00  |  Portfolio $100,104  (+0.10%)  |  Next EOD: 16:45
+2026-06-11 16:54:35  INFO     ============================================================
+2026-06-11 16:54:35  INFO     EOD pipeline starting
+2026-06-11 16:54:35  INFO     Running EOD position update...
+
+End-of-day update  (2026-06-11)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  737.76  LONG  (regime=LONG  multi=LONG)
+  IWM    $  290.41  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   67.50  LONG  (regime=LONG  multi=LONG)
+  EFA    $  104.73  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.10  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.98  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.94  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  109.60  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  386.32  LONG  (regime=LONG  multi=LONG)
+  DBC    $   28.85  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.95  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.12  LONG  (regime=LONG  multi=LONG)
+  XLU    $   44.05  LONG  (regime=LONG  multi=LONG)
+  XLF    $   52.62  LONG  (regime=LONG  multi=LONG)
+  VNQ    $   97.61  LONG  (regime=LONG  multi=LONG)
+  XLK    $  183.21  FLAT  (regime=LONG  multi=FLAT)
+  XLV    $  154.09  LONG  (regime=LONG  multi=LONG)
+  XLI    $  175.15  LONG  (regime=LONG  multi=LONG)
+  XLC    $  112.12  LONG  (regime=LONG  multi=LONG)
+  XLP    $   85.27  LONG  (regime=LONG  multi=LONG)
+  JPM    $  313.49  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  238.33  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  146.60  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  241.51  LONG  (regime=LONG  multi=LONG)
+  NEE    $   84.84  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  485.79  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $ 1035.64  LONG  (regime=LONG  multi=LONG)
+  COST   $  975.69  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   2026-06-11 17:09:48  ERROR    
+1 Failed download:
+2026-06-11 17:09:48  ERROR    ['MSFT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NVDA   $  204.87  LONG  (regime=LONG  multi=LONG)
+  GE     $  332.76  LONG  (regime=LONG  multi=LONG)
+  INTC   $  116.96  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   46.94  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   21.94  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   26.30  LONG  (regime=LONG  multi=LONG)
+  FXE    $  106.88  LONG  (regime=LONG  multi=LONG)
+  FXY    $   57.43  FLAT  (regime=FLAT  multi=FLAT)
+  DBMF   $   30.74  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   40.69  LONG  (regime=LONG  multi=LONG)
+  VGSH   $   58.18  LONG  (regime=LONG  multi=LONG)
+  MUB    $  107.06  LONG  (regime=LONG  multi=LONG)
+  VXZ    $   53.93  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 13 names selected, target gross $94,908
+  SELL XLU     116.191 sh @ $44.05  P&L +$37  [rebalance_drop]
+  SELL XLP     68.794 sh @ $85.27  P&L +$211  [rebalance_drop]
+  SELL MUB     79.404 sh @ $107.06  P&L -$15  [rebalance_drop]
+  BUY  DBA     435.913 sh @ $26.30  ($11,465)  [rebalance_open]
+  BUY  GLD     17.421 sh @ $386.32  ($6,730)  [rebalance_topup]
+  BUY  SPY     3.505 sh @ $737.76  ($2,586)  [rebalance_topup]
+  BUY  JPM     5.213 sh @ $313.49  ($1,634)  [rebalance_topup]
+  BUY  NEE     43.860 sh @ $84.84  ($3,721)  [rebalance_topup]
+  BUY  VZ      98.494 sh @ $46.94  ($4,623)  [rebalance_open]
+  BUY  GE      5.768 sh @ $332.76  ($1,919)  [rebalance_topup]
+  SELL XLK     20.335 sh @ $183.21  P&L +$153  [rebalance_trim]
+
+====================================================
+  Portfolio value : $ 98,877.67
+  Cash            : $  4,603.95
+  Positions       : 13
+  Daily return    :    -1.23%
+  Total return    :    -1.12%
+====================================================
+2026-06-11 17:09:54  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  737.76  LONG  (regime=LONG  multi=LONG)
+  IWM    $  290.41  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   67.50  LONG  (regime=LONG  multi=LONG)
+  EFA    $  104.73  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.10  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.98  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.94  FLAT  (regime=FLAT  multi=FLAT)
+  TIP      [TIP] short signal on bond — keeping flat for paper trading
+$  109.60  FLAT  (regime=LONG  multi=LONG)
+  GLD    $  386.32  LONG  (regime=LONG  multi=LONG)
+  DBC    $   28.85  LONG  (regime=LONG  multi=LONG)
+  UUP    $   27.95  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.12  LONG  (regime=LONG  multi=LONG)
+  XLU    $   44.05  LONG  (regime=LONG  multi=LONG)
+  XLF    $   52.62  LONG  (regime=LONG  multi=LONG)
+  VNQ    $   97.61  LONG  (regime=LONG  multi=LONG)
+  XLK    $  183.21  FLAT  (regime=LONG  multi=FLAT)
+  XLV    $  154.09  LONG  (regime=LONG  multi=LONG)
+  XLI    $  175.15  LONG  (regime=LONG  multi=LONG)
+  XLC    $  112.12  LONG  (regime=LONG  multi=LONG)
+  XLP    $   85.27  LONG  (regime=LONG  multi=LONG)
+  JPM    $  313.49  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  238.33  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  146.60  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  241.51  LONG  (regime=LONG  multi=LONG)
+  NEE    $   84.84  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  485.79  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $ 1035.64  LONG  (regime=LONG  multi=LONG)
+  COST   $  975.69  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  390.34  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  204.87  LONG  (regime=LONG  multi=LONG)
+  GE     $  332.76  LONG  (regime=LONG  multi=LONG)
+  INTC   $  116.96  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   46.94  LONG  (regime=LONG  multi=LONG)
+  BWX      [BWX] short signal on bond — keeping flat for paper trading
+$   21.94  FLAT  (regime=LONG  multi=LONG)
+  DBA    $   26.30  LONG  (regime=LONG  multi=LONG)
+  FXE    $  106.88  LONG  (regime=LONG  multi=LONG)
+  FXY    $   57.43  FLAT  (regime=FLAT  multi=FLAT)
+  DBMF   $   30.74  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   40.69  LONG  (regime=LONG  multi=LONG)
+  VGSH   $   58.18  LONG  (regime=LONG  multi=LONG)
+  MUB    $  107.06  LONG  (regime=LONG  multi=LONG)
+  VXZ    $   53.93  FLAT  (regime=FLAT  multi=FLAT)
+2026-06-11 17:10:54  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  1 SELL  12 HOLD)
+2026-06-11 17:10:54  INFO     EOD pipeline complete
+2026-06-11 17:10:54  INFO     ============================================================
+2026-06-12 16:48:24  INFO     ============================================================
+2026-06-12 16:48:24  INFO     EOD pipeline starting
+2026-06-12 16:48:24  INFO     Running EOD position update...
+
+End-of-day update  (2026-06-12)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  741.75  LONG  (regime=LONG  multi=LONG)
+  IWM    $  292.95  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   67.88  LONG  (regime=LONG  multi=LONG)
+  EFA    $  105.02  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.55  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.77  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.94  LONG  (regime=LONG  multi=LONG)
+  TIP    $  109.61  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  386.54  LONG  (regime=LONG  multi=LONG)
+  DBC    $   28.55  FLAT  (regime=FLAT  multi=FLAT)
+  UUP    $   27.95  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.55  LONG  (regime=LONG  multi=LONG)
+  XLU    $   44.53  LONG  (regime=LONG  multi=LONG)
+  XLF    $   53.34  LONG  (regime=LONG  multi=LONG)
+  VNQ    $   98.51  LONG  (regime=LONG  multi=LONG)
+  XLK    $  184.80  FLAT  (regime=LONG  multi=FLAT)
+  XLV    $  153.81  LONG  (regime=LONG  multi=LONG)
+  XLI    $  176.18  LONG  (regime=LONG  multi=LONG)
+  XLC    2026-06-12 17:00:40  ERROR    
+1 Failed download:
+2026-06-12 17:00:40  ERROR    ['XLC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLP    $   85.82  LONG  (regime=LONG  multi=LONG)
+  JPM    $  320.72  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  240.87  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  147.01  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  238.55  LONG  (regime=LONG  multi=LONG)
+  NEE    $   85.99  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  489.25  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $ 1062.75  LONG  (regime=LONG  multi=LONG)
+  COST   $  982.35  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  390.74  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  205.19  LONG  (regime=LONG  multi=LONG)
+  GE     $  335.30  LONG  (regime=LONG  multi=LONG)
+  INTC   $  124.57  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   48.11  LONG  (regime=LONG  multi=LONG)
+  BWX    $   21.94  FLAT  (regime=FLAT  multi=FLAT)
+  DBA    $   26.24  LONG  (regime=LONG  multi=LONG)
+  FXE    $  106.83  LONG  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.26  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   30.82  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   40.93  LONG  (regime=LONG  multi=LONG)
+  VGSH   $   58.16  LONG  (regime=LONG  multi=LONG)
+  MUB    $  107.05  LONG  (regime=LONG  multi=LONG)
+  VXZ    $   53.62  FLAT  (regime=FLAT  multi=FLAT)
+  Top-N V2 (ADX22+momt+AC55): 13 names selected, target gross $90,903
+  SELL EEM     74.191 sh @ $67.88  P&L -$166  [rebalance_drop]
+  SELL WTMF    41.904 sh @ $40.93  P&L -$6  [rebalance_trim]
+  SELL DBA     72.091 sh @ $26.24  P&L -$5  [rebalance_trim]
+  SELL GLD     4.467 sh @ $386.54  P&L -$47  [rebalance_trim]
+
+====================================================
+  Portfolio value : $ 99,404.45
+  Cash            : $ 14,968.24
+  Positions       : 12
+  Daily return    :    +0.53%
+  Total return    :    -0.60%
+====================================================
+2026-06-12 17:00:49  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    $  741.75  LONG  (regime=LONG  multi=LONG)
+  IWM    $  292.95  FLAT  (regime=LONG  multi=FLAT)
+  EEM    $   67.88  LONG  (regime=LONG  multi=LONG)
+  EFA    $  105.02  LONG  (regime=LONG  multi=LONG)
+  VWO    $   59.55  LONG  (regime=LONG  multi=LONG)
+  TLT    $   85.77  FLAT  (regime=FLAT  multi=FLAT)
+  HYG    $   79.94  LONG  (regime=LONG  multi=LONG)
+  TIP    $  109.61  FLAT  (regime=FLAT  multi=FLAT)
+  GLD    $  386.54  LONG  (regime=LONG  multi=LONG)
+  DBC    $   28.55  FLAT  (regime=FLAT  multi=FLAT)
+  UUP    $   27.95  LONG  (regime=LONG  multi=LONG)
+  XLE    $   57.55  LONG  (regime=LONG  multi=LONG)
+  XLU    $   44.53  LONG  (regime=LONG  multi=LONG)
+  XLF    $   53.34  LONG  (regime=LONG  multi=LONG)
+  VNQ    $   98.51  LONG  (regime=LONG  multi=LONG)
+  XLK    $  184.80  FLAT  (regime=LONG  multi=FLAT)
+  XLV    $  153.81  LONG  (regime=LONG  multi=LONG)
+  XLI    $  176.18  LONG  (regime=LONG  multi=LONG)
+  XLC    $  111.65  LONG  (regime=LONG  multi=LONG)
+  XLP    $   85.82  LONG  (regime=LONG  multi=LONG)
+  JPM    $  320.72  LONG  (regime=LONG  multi=LONG)
+  JNJ    $  240.87  FLAT  (regime=LONG  multi=FLAT)
+  XOM    $  147.01  LONG  (regime=LONG  multi=LONG)
+  AMZN   $  238.55  LONG  (regime=LONG  multi=LONG)
+  NEE    $   85.99  LONG  (regime=LONG  multi=LONG)
+  BRK-B  $  489.25  FLAT  (regime=FLAT  multi=FLAT)
+  GS     $ 1062.75  LONG  (regime=LONG  multi=LONG)
+  COST   $  982.35  FLAT  (regime=LONG  multi=FLAT)
+  MSFT   $  390.74  FLAT  (regime=FLAT  multi=FLAT)
+  NVDA   $  205.19  LONG  (regime=LONG  multi=LONG)
+  GE     $  335.30  LONG  (regime=LONG  multi=LONG)
+  INTC   $  124.57  FLAT  (regime=LONG  multi=FLAT)
+  VZ     $   48.11  LONG  (regime=LONG  multi=LONG)
+  BWX    $   21.94  FLAT  (regime=FLAT  multi=FLAT)
+  DBA    $   26.24  LONG  (regime=LONG  multi=LONG)
+  FXE    $  106.83  LONG  (regime=LONG  multi=LONG)
+  FXY      [FXY] short signal on commodity — keeping flat for paper trading
+$   57.26  FLAT  (regime=LONG  multi=LONG)
+  DBMF   $   30.82  LONG  (regime=LONG  multi=LONG)
+  WTMF   $   40.93  LONG  (regime=LONG  multi=LONG)
+  VGSH   $   58.16  LONG  (regime=LONG  multi=LONG)
+  MUB    $  107.05  LONG  (regime=LONG  multi=LONG)
+  VXZ    $   53.62  FLAT  (regime=FLAT  multi=FLAT)
+2026-06-12 17:01:07  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (18 BUY  1 SELL  11 HOLD)
+2026-06-12 17:01:07  INFO     EOD pipeline complete
+2026-06-12 17:01:07  INFO     ============================================================
+2026-06-13 08:00:05  INFO     Heartbeat  |  ET 08:00  |  Portfolio $99,404  (-0.60%)  |  Next EOD: 16:45
+2026-06-19 16:55:29  INFO     ============================================================
+2026-06-19 16:55:29  INFO     EOD pipeline starting
+2026-06-19 16:55:29  INFO     Running EOD position update...
+
+End-of-day update  (2026-06-19)
+
+Running strategy pipeline on live data...
+
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['SPY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  IWM    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['IWM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EEM    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['EEM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EFA    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['EFA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VWO    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['VWO']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TLT    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['TLT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  HYG    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['HYG']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TIP    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['TIP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GLD    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['GLD']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBC    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['DBC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  UUP    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLE    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['XLE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLU    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['XLU']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLF    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['XLF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VNQ    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['VNQ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLK    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['XLK']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLV    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['XLV']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLI    2026-06-19 16:55:29  ERROR    
+1 Failed download:
+2026-06-19 16:55:29  ERROR    ['XLI']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLC    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['XLC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLP    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['XLP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JPM    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JNJ    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['JNJ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XOM    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  AMZN   2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['AMZN']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NEE    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['NEE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BRK-B  2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['BRK-B']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GS     2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['GS']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  COST   2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['COST']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MSFT   2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['MSFT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NVDA   2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['NVDA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GE     2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['GE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  INTC   2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['INTC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VZ     2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['VZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BWX    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['BWX']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBA    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['DBA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXE    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXY    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['FXY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBMF   2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['DBMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  WTMF   2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VGSH   2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['VGSH']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MUB    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    2026-06-19 16:55:30  ERROR    
+1 Failed download:
+2026-06-19 16:55:30  ERROR    ['VXZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+2026-06-19 16:55:31  ERROR    
+12 Failed downloads:
+2026-06-19 16:55:31  ERROR    ['DBA', 'VGSH', 'SPY', 'GE', 'DBMF', 'NEE', 'JPM', 'AMZN', 'VZ', 'GLD', 'XLK', 'WTMF']: TypeError("'NoneType' object is not subscriptable")
+  Top-N V2 (ADX22+momt+AC55): 0 names selected, target gross $0
+
+====================================================
+  Portfolio value : $100,091.89
+  Cash            : $ 14,968.24
+  Positions       : 12
+  Daily return    :    +0.69%
+  Total return    :    +0.09%
+====================================================
+2026-06-19 16:55:31  INFO     Fetching signals for order sheet and data validation...
+  Strategy: top11_adx22_momt_ac55_cap1  (signal=signal_multi)
+
+  SPY    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['SPY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  IWM    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['IWM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EEM    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['EEM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  EFA    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['EFA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VWO    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['VWO']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TLT    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['TLT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  HYG    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['HYG']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  TIP    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['TIP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GLD    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['GLD']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBC    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['DBC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  UUP    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLE    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XLE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLU    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XLU']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLF    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XLF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VNQ    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['VNQ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLK    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XLK']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLV    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XLV']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLI    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XLI']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLC    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XLC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XLP    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XLP']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JPM    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  JNJ    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['JNJ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  XOM    2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['XOM']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  AMZN   2026-06-19 16:55:31  ERROR    
+1 Failed download:
+2026-06-19 16:55:31  ERROR    ['AMZN']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NEE    2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['NEE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BRK-B  2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['BRK-B']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GS     2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['GS']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  COST   2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['COST']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MSFT   2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['MSFT']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  NVDA   2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['NVDA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  GE     2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['GE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  INTC   2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['INTC']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VZ     2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['VZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  BWX    2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['BWX']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBA    2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['DBA']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXE    2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  FXY    2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['FXY']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  DBMF   2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['DBMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  WTMF   2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VGSH   2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['VGSH']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  MUB    2026-06-19 16:55:32  ERROR    
+1 Failed download:
+2026-06-19 16:55:32  ERROR    ['MUB']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+  VXZ    2026-06-19 17:10:36  ERROR    
+1 Failed download:
+2026-06-19 17:10:36  ERROR    ['VXZ']: TypeError("'NoneType' object is not subscriptable")
+no signal data
+2026-06-19 17:10:37  WARNING  Data validation flagged tickers: ['AMZN', 'BRK-B', 'BWX', 'COST', 'DBA', 'DBC', 'DBMF', 'EEM', 'EFA', 'FXE', 'FXY', 'GE', 'GLD', 'GS', 'HYG', 'INTC', 'IWM', 'JNJ', 'JPM', 'MSFT', 'MUB', 'NEE', 'NVDA', 'SPY', 'TIP', 'TLT', 'UUP', 'VGSH', 'VNQ', 'VWO', 'VXZ', 'VZ', 'WTMF', 'XLC', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XOM']
+2026-06-19 17:10:37  INFO     Order sheet → data/v1/paper_trading_v4nf_3mo/orders_tomorrow.json  (0 BUY  0 SELL  0 HOLD)
+2026-06-19 17:10:37  INFO     EOD pipeline complete
+2026-06-19 17:10:37  INFO     ============================================================
+2026-06-20 13:30:13  INFO     Heartbeat  |  ET 13:30  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 14:00:13  INFO     Heartbeat  |  ET 14:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 14:30:14  INFO     Heartbeat  |  ET 14:30  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 15:00:14  INFO     Heartbeat  |  ET 15:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 15:30:14  INFO     Heartbeat  |  ET 15:30  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 16:00:15  INFO     Heartbeat  |  ET 16:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 16:30:15  INFO     Heartbeat  |  ET 16:30  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 17:00:23  INFO     Heartbeat  |  ET 17:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 17:30:23  INFO     Heartbeat  |  ET 17:30  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 18:00:23  INFO     Heartbeat  |  ET 18:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 19:00:27  INFO     Heartbeat  |  ET 19:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 19:30:00  INFO     Heartbeat  |  ET 19:30  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 20:00:13  INFO     Heartbeat  |  ET 20:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 20:30:13  INFO     Heartbeat  |  ET 20:30  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-20 21:00:21  INFO     Heartbeat  |  ET 21:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-21 02:00:20  INFO     Heartbeat  |  ET 02:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-21 10:00:17  INFO     Heartbeat  |  ET 10:00  |  Portfolio $100,092  (+0.09%)  |  Next EOD: 16:45
+2026-06-21 12:00:06  INFO     Heartbeat  |  ET 12:00  |  Portfolio $98,499  (-1.50%)  |  Next EOD: 16:45

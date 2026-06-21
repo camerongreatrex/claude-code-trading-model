@@ -40,6 +40,17 @@ END_DATE = "2026-01-01"
 V1_PRODUCTION_METHOD = "top11_adx22_momt_ac55_cap1"
 V1_PRODUCTION_LABEL  = "V4N-F"
 
+# Live paper-trader execution (no daily top-up/trim).
+# rank_rotate: enter top-N on signal; exit on signal=0 or rank drop after min hold.
+# Walk-forward OOS (42-ticker panel): ~20% net ann, ~640 trades/yr, Sharpe ~2.0.
+LIVE_REBALANCE_MODE  = "signal_only"
+LIVE_REBALANCE_DAYS  = 21
+LIVE_MIN_HOLD_DAYS   = 5    # min hold before rank_exit (matches signal pipeline)
+# Top-N slots. Walk-forward execution study (2026-05): top11 beats top14 on
+# net OOS return after fees on current 42-ticker panel; revisit after run.py
+# builds features for Phase-9 names.
+LIVE_TOP_N           = 11
+
 # ── V2 Configuration ──────────────────────────────────────────────────────────
 # Macro regime rotation: cross-asset ETF allocation driven by hybrid regime
 # classifier (realized macro + market-implied signals).

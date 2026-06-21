@@ -9,6 +9,7 @@ Usage: `python scheduler.py` (foreground) or `pythonw scheduler.py` (Windows bg)
 import time
 import json
 import logging
+import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -20,7 +21,8 @@ from v1.pipeline.data_pipeline import TICKER_LIST, ASSET_CLASS
 from v1.scripts.paper_trader import (
     load_state, load_history, end_of_day_update,
     compute_live_signals, _fetch_daily, _atr_size,
-    catchup, INITIAL_CAPITAL, PT_DIR,
+    catchup, catchup_all_instances, use_pt_instance,
+    INITIAL_CAPITAL, PT_DIR, ALL_PT_INSTANCES,
 )
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -158,9 +160,18 @@ def generate_order_sheet(signals: dict, state: dict):
             else:
                 orders.append({"ticker": ticker, "action": "FLAT", "reason": "signal FLAT"})
 
+    # Order sheet is generated AFTER day-T's EOD update and lists the orders
+    # the strategy expects to execute on day T+1 (next weekday).  The previous
+    # `date.today()` was both timezone-naive and pointed at day T, both wrong.
+    _now_et   = datetime.now(ET_ZONE)
+    _next_day = _now_et.date()
+    for _ in range(7):
+        _next_day = _next_day + pd.Timedelta(days=1).to_pytimedelta()
+        if _next_day.weekday() < 5:
+            break
     sheet = {
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "for_date"    : str(date.today()),
+        "generated_at": _now_et.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "for_date"    : str(_next_day),
         "kill_switch" : check_kill_switch(),
         "portfolio"   : {
             "value"      : round(pv, 2),
@@ -198,10 +209,11 @@ def _et_now() -> datetime:
 # ── Main EOD job ──────────────────────────────────────────────────────────────
 
 def run_eod_job():
-    """Full EOD pipeline: kill-switch -> update -> validate -> order sheet.
-    Runs once per trading day at EOD_HOUR:EOD_MINUTE ET."""
+    """Full EOD pipeline for the currently selected PT instance."""
+    from v1.scripts import paper_trader as _pt
+    inst = _pt._PT_INSTANCE or "main"
     log.info("=" * 60)
-    log.info("EOD pipeline starting")
+    log.info(f"EOD pipeline starting ({inst})")
 
     # Kill switch
     if check_kill_switch():
@@ -240,13 +252,14 @@ def main():
     log.info(f"Kill-switch threshold: {KILL_SWITCH_DD*100:.0f}% rolling 20-day loss")
     log.info(f"Log file: {LOG_FILE}")
 
-    # Catch up on missed trading days; runs synchronously before main loop.
+    # Catch up all instances on startup (main + V4N-F 3mo).
     try:
-        n = catchup()
-        if n:
-            log.info(f"Catch-up complete — {n} missed day(s) replayed.")
-        else:
-            log.info("Catch-up: portfolio is up to date.")
+        caught = catchup_all_instances()
+        for label, n in caught.items():
+            if n:
+                log.info(f"Catch-up ({label}): {n} day(s) replayed.")
+            else:
+                log.info(f"Catch-up ({label}): up to date.")
     except Exception as e:
         log.error(f"Catch-up failed: {e}", exc_info=True)
 
@@ -264,10 +277,17 @@ def main():
             and last_run_date != today_str
         ):
             last_run_date = today_str
-            try:
-                run_eod_job()
-            except Exception as e:
-                log.error(f"EOD job failed: {e}", exc_info=True)
+            for inst in ALL_PT_INSTANCES:
+                label = inst or "main"
+                try:
+                    with use_pt_instance(inst):
+                        if not load_state():
+                            log.info(f"EOD skip ({label}): not initialised")
+                            continue
+                        log.info("=" * 60)
+                        run_eod_job()
+                except Exception as e:
+                    log.error(f"EOD job failed ({label}): {e}", exc_info=True)
 
         # Heartbeat every 30 min
         if now.minute % 30 == 0 and now.second < 31:

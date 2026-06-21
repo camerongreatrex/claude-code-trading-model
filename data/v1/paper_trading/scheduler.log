@@ -558,3 +558,168 @@ Traceback (most recent call last):
   File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1115, in wrapper
     raise WebSocketClosedError()
 tornado.websocket.WebSocketClosedError
+2026-05-13 11:03:58  ERROR    Task exception was never retrieved
+future: <Task finished name='Task-132750' coro=<WebSocketProtocol13.write_message.<locals>.wrapper() done, defined at /opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py:1111> exception=WebSocketClosedError()>
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/streamlit/web/bootstrap.py", line 347, in run
+    if asyncio.get_running_loop().is_running():
+       ~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: no running event loop
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1113, in wrapper
+    await fut
+tornado.iostream.StreamClosedError: Stream is closed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1115, in wrapper
+    raise WebSocketClosedError()
+tornado.websocket.WebSocketClosedError
+2026-05-13 12:14:08  ERROR    
+1 Failed download:
+2026-05-13 12:14:08  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-13 15:31:45  ERROR    
+1 Failed download:
+2026-05-13 15:31:45  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-13 18:33:45  ERROR    
+1 Failed download:
+2026-05-13 18:33:45  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 02:06:46  ERROR    
+1 Failed download:
+2026-05-16 02:06:46  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 02:39:32  ERROR    
+1 Failed download:
+2026-05-16 02:39:32  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 04:55:26  ERROR    
+1 Failed download:
+2026-05-16 04:55:26  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 06:40:41  ERROR    
+1 Failed download:
+2026-05-16 06:40:41  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 07:15:01  ERROR    
+1 Failed download:
+2026-05-16 07:15:01  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 08:23:01  ERROR    
+1 Failed download:
+2026-05-16 08:23:01  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 08:39:18  ERROR    
+1 Failed download:
+2026-05-16 08:39:18  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 08:39:48  ERROR    
+1 Failed download:
+2026-05-16 08:39:48  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 15:16:42  ERROR    
+1 Failed download:
+2026-05-16 15:16:42  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 15:31:09  ERROR    
+1 Failed download:
+2026-05-16 15:31:09  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 15:32:18  ERROR    
+1 Failed download:
+2026-05-16 15:32:18  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 17:26:07  ERROR    
+1 Failed download:
+2026-05-16 17:26:07  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 19:07:24  ERROR    
+1 Failed download:
+2026-05-16 19:07:24  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 20:12:23  ERROR    
+1 Failed download:
+2026-05-16 20:12:23  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 21:52:26  ERROR    
+1 Failed download:
+2026-05-16 21:52:26  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-16 22:35:46  ERROR    
+1 Failed download:
+2026-05-16 22:35:46  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 01:19:03  ERROR    
+1 Failed download:
+2026-05-17 01:19:03  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 01:47:42  ERROR    
+1 Failed download:
+2026-05-17 01:47:42  ERROR    ['JPM']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 02:05:08  ERROR    
+1 Failed download:
+2026-05-17 02:05:08  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 04:18:25  ERROR    
+1 Failed download:
+2026-05-17 04:18:25  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 06:44:14  ERROR    
+1 Failed download:
+2026-05-17 06:44:14  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 08:37:47  ERROR    
+1 Failed download:
+2026-05-17 08:37:47  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 09:17:57  ERROR    
+1 Failed download:
+2026-05-17 09:17:57  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 10:24:21  ERROR    
+1 Failed download:
+2026-05-17 10:24:21  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 10:25:06  ERROR    
+1 Failed download:
+2026-05-17 10:25:06  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 10:36:31  ERROR    
+1 Failed download:
+2026-05-17 10:36:31  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 10:46:04  ERROR    
+1 Failed download:
+2026-05-17 10:46:04  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 11:08:04  ERROR    
+1 Failed download:
+2026-05-17 11:08:04  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 12:56:13  ERROR    
+1 Failed download:
+2026-05-17 12:56:13  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 15:48:16  ERROR    
+1 Failed download:
+2026-05-17 15:48:16  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 18:45:26  ERROR    
+1 Failed download:
+2026-05-17 18:45:26  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 20:13:26  ERROR    
+1 Failed download:
+2026-05-17 20:13:26  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 20:14:07  ERROR    
+1 Failed download:
+2026-05-17 20:14:07  ERROR    ['XLE']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 20:47:13  ERROR    
+1 Failed download:
+2026-05-17 20:47:13  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-17 21:48:14  ERROR    
+1 Failed download:
+2026-05-17 21:48:14  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 02:12:38  ERROR    
+1 Failed download:
+2026-05-18 02:12:38  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 03:17:14  ERROR    
+1 Failed download:
+2026-05-18 03:17:14  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 06:14:18  ERROR    
+1 Failed download:
+2026-05-18 06:14:18  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 07:15:52  ERROR    
+1 Failed download:
+2026-05-18 07:15:52  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 08:06:40  ERROR    
+1 Failed download:
+2026-05-18 08:06:40  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 13:27:53  ERROR    
+1 Failed download:
+2026-05-18 13:27:53  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 14:36:30  ERROR    
+1 Failed download:
+2026-05-18 14:36:30  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 18:34:10  ERROR    
+1 Failed download:
+2026-05-18 18:34:10  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 19:55:32  ERROR    
+1 Failed download:
+2026-05-18 19:55:32  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-05-18 20:09:46  ERROR    
+1 Failed download:
+2026-05-18 20:09:46  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")

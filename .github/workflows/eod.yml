@@ -41,9 +41,12 @@ jobs:
       - name: Run catch-up and end-of-day update
         run: |
           python -c "
-          from v1.scripts.paper_trader import catchup, end_of_day_update
-          catchup()
-          end_of_day_update()
+          from v1.scripts.paper_trader import catchup_all_instances, end_of_day_update, use_pt_instance, load_state, ALL_PT_INSTANCES
+          catchup_all_instances()
+          for inst in ALL_PT_INSTANCES:
+              with use_pt_instance(inst):
+                  if load_state():
+                      end_of_day_update()
           "
 
       - name: Commit and push portfolio state
@@ -51,6 +54,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/v1/paper_trading/state.json data/v1/paper_trading/history.csv data/v1/paper_trading/trades.csv
+          git add data/v1/paper_trading_v4nf_3mo/state.json data/v1/paper_trading_v4nf_3mo/history.csv data/v1/paper_trading_v4nf_3mo/trades.csv
           # Only commit if something actually changed (avoids empty commits on holidays)
           git diff --staged --quiet && exit 0
           git commit -m "EOD update $(date -u '+%Y-%m-%d')"

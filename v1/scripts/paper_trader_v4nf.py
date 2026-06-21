@@ -17,6 +17,7 @@ Test window: 2026-05-11 → 2026-08-11.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -410,3 +411,11 @@ def compute_v4nf_targets(
         s = (max_gross * pv) / gross2
         out = {t: v * s for t, v in out.items()}
     return out
+
+
+if __name__ == "__main__":
+    os.environ.setdefault("PT_INSTANCE", "v4nf_3mo")
+    from v1.scripts import paper_trader as _pt  # noqa: E402
+
+    with _pt.use_pt_instance("v4nf_3mo"):
+        _pt.main_cli()

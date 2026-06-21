@@ -18,16 +18,26 @@ import streamlit as st
 from contextlib import contextmanager
 from pathlib import Path as _Path
 from datetime import datetime
+import importlib
 import v1.scripts.paper_trader as _pt_module
+if not hasattr(_pt_module, "catchup_all_instances"):
+    importlib.reload(_pt_module)
 from v1.config.params import V1_PRODUCTION_METHOD, V1_PRODUCTION_LABEL
 from v1.scripts.live_signals import get_live_signals
-from v1.scripts.paper_trader import (
-    load_state, load_trades, load_history, catchup,
-    get_intraday_curve, end_of_day_update, INITIAL_CAPITAL as PT_INITIAL_CAPITAL,
-    compute_live_portfolio_metrics, get_production_method, correct_history_baseline,
-    fetch_intraday_batch,
-    STRATEGIES,
-)
+
+load_state = _pt_module.load_state
+load_trades = _pt_module.load_trades
+load_history = _pt_module.load_history
+catchup = _pt_module.catchup
+catchup_all_instances = _pt_module.catchup_all_instances
+get_intraday_curve = _pt_module.get_intraday_curve
+end_of_day_update = _pt_module.end_of_day_update
+PT_INITIAL_CAPITAL = _pt_module.INITIAL_CAPITAL
+compute_live_portfolio_metrics = _pt_module.compute_live_portfolio_metrics
+get_production_method = _pt_module.get_production_method
+correct_history_baseline = _pt_module.correct_history_baseline
+fetch_intraday_batch = _pt_module.fetch_intraday_batch
+STRATEGIES = _pt_module.STRATEGIES
 
 
 @contextmanager
@@ -106,9 +116,9 @@ st.markdown(CSS, unsafe_allow_html=True)
 # ── Startup catch-up ──────────────────────────────────────────────────────────
 
 @st.cache_resource(ttl=3600, show_spinner=False)
-def _startup_catchup() -> int:
-    """Replay missed trading days on first load (once per hour)."""
-    return catchup()
+def _startup_catchup() -> dict[str, int]:
+    """Replay missed trading days for main + V4N-F 3mo instances (once/hour)."""
+    return catchup_all_instances()
 
 
 @st.cache_resource(ttl=86400, show_spinner=False)
@@ -121,7 +131,8 @@ def main():
     """Streamlit entry point: load cached data, render header + tabs."""
     # Replay missed trading days once/hour (idempotent).
     with st.spinner("Catching up missed trading days..."):
-        n_caught_up = _startup_catchup()
+        caught = _startup_catchup()
+        n_caught_up = sum(caught.values())
     if n_caught_up and "_catchup_done" not in st.session_state:
         st.cache_data.clear()
         st.session_state["_catchup_done"] = True
@@ -284,6 +295,19 @@ def main():
     _EXCLUDE_DEFAULT = {"half_kelly"}
 
     with tab_bt:
+        st.markdown("### Backtest — historical performance vs other strategies")
+        st.markdown(
+            "<span style='color:#888;font-size:.82rem'>"
+            "<b>What this tab shows:</b> if you had run each strategy on the full historical "
+            "price record (2015–2025), what would the equity curve have looked like? "
+            "<b>Production V4N-F (★)</b> is highlighted — every other line is a candidate that "
+            "lost the bake-off. Drawdown chart below shows worst peak-to-trough loss per strategy. "
+            "The summary table ranks every method by out-of-sample Sharpe."
+            "</span>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
         _visible_methods = TIER_SHOW | TIER_AVAILABLE
         _options = [c for c in df_port.columns if c in _visible_methods]
         _default = [c for c in df_port.columns if c in TIER_SHOW]
@@ -293,9 +317,11 @@ def main():
             "Comparison mode",
             ["Actual dollars (zero-leverage)", "Risk-adjusted (equal volatility)"],
             index=0, horizontal=True,
-            help="'Actual dollars' is the unlevered $-curve. 'Risk-adjusted' "
-                 "scales each strategy to the same vol so the higher-Sharpe "
-                 "method visibly outperforms."
+            help="'Actual dollars' is the unlevered $-curve — what you'd actually see in the account. "
+                 "'Risk-adjusted' rescales each strategy to the same volatility, so a strategy with "
+                 "higher Sharpe but lower vol visibly outperforms one with lower Sharpe and higher vol. "
+                 "Use risk-adjusted to compare *quality* of returns; use actual dollars to compare "
+                 "*size* of returns."
         )
         _selected_cols = st.multiselect(
             "Methods to display",
@@ -325,9 +351,23 @@ def main():
         )
 
         st.plotly_chart(chart_drawdown(df_port, columns=_selected_cols), theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
+        st.caption(
+            "Drawdown = how far below the prior peak the strategy fell. "
+            "Closer to 0% = smoother ride; deep dips = painful periods to hold through. "
+            "V4N-F's worst OOS drawdown is around −4%."
+        )
 
         st.markdown('<div class="section-head">All portfolio methods — summary</div>',
                     unsafe_allow_html=True)
+        st.markdown(
+            "<span style='color:#888;font-size:.82rem'>"
+            "Each row is one candidate strategy. <b>Sharpe</b> = return per unit of risk "
+            "(higher = better, &gt;1.0 is good, &gt;2.0 is excellent). <b>Ann Return</b> = "
+            "annualised return. <b>Max DD</b> = worst peak-to-trough loss. <b>Calmar</b> = "
+            "Ann Return ÷ |Max DD|, the gold-standard ratio for trend-following systems."
+            "</span>",
+            unsafe_allow_html=True,
+        )
         tbl = metrics_table(df_port, oos_sel=oos_sel)
         st.dataframe(
             tbl.style.map(
@@ -358,6 +398,17 @@ def main():
     # ── Validation / Alpha Decomposition ────────────────────────────────────────
     with v_alpha:
         st.markdown("### Alpha Decomposition")
+        st.markdown(
+            "<span style='color:#888;font-size:.82rem'>"
+            "<b>What this tab shows:</b> is V4N-F's edge real, or is it just leveraged S&P? "
+            "Alpha = the return left over after removing the part explained by the market (beta × SPY). "
+            "Positive alpha with low beta = genuine signal edge. The metrics below pin to the "
+            "production sizer; the rolling-beta chart shows how market-correlated each top method is "
+            "over time."
+            "</span>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
         _corr_diag   = load_correlation_diagnostic()
         _regime_corr = load_regime_correlation()
         _df_dw       = load_dead_weight()
@@ -498,11 +549,15 @@ def main():
 
     # ── Risk / Monte Carlo ───────────────────────────────────────────────────────
     with r_mc:
+        st.markdown("### Monte Carlo — alternative histories")
         st.markdown(
             "<span style='color:#888;font-size:.82rem'>"
-            "Block-bootstrap resampling of historical daily returns — preserves the "
-            "autocorrelation and fat-tail structure of the actual return distribution. "
-            "Each path is an equally-plausible alternative history using the same signal edge."
+            "<b>What this tab shows:</b> we take the strategy's actual daily returns, shuffle them "
+            "in blocks (to preserve real autocorrelation and fat tails), and replay history "
+            "thousands of times in random order. Each path is one plausible alternate timeline. "
+            "The fan chart shows the range of outcomes; the percentiles below tell you the "
+            "near-worst-case (5th), median, and near-best-case (95th) total returns. "
+            "If the 5th percentile is still positive, the edge is robust to bad luck."
             "</span>",
             unsafe_allow_html=True,
         )
@@ -565,12 +620,15 @@ def main():
 
     # ── Validation / Walk-Forward ────────────────────────────────────────────────
     with v_wf:
+        st.markdown("### Walk-Forward Validation")
         st.markdown(
             "<span style='color:#888;font-size:.82rem'>"
-            "<b>Walk-forward validation</b>: train on 3 years, test on the next 1 year (rolling). "
-            "Each test period is genuinely unseen data. "
-            "Mean OOS Sharpe close to in-sample = low overfitting. "
-            "A large IS→OOS gap means the method overfit the training period."
+            "<b>What this tab shows:</b> the most important test in quant trading. We train the "
+            "strategy on 3 years of data, then test it on the NEXT 1 year it has never seen. "
+            "Then roll forward and repeat. Every test result is genuine out-of-sample (OOS) — "
+            "if it works here, it's not just curve-fit. "
+            "<b>Mean OOS Sharpe close to in-sample</b> = the strategy generalises. "
+            "<b>Large IS→OOS gap</b> = overfit; ignore that method."
             "</span>",
             unsafe_allow_html=True,
         )
@@ -738,13 +796,19 @@ def main():
         if macro.empty:
             st.warning("Macro data not found. Run `python macro_features.py`.")
         else:
+            st.markdown("### Macro Overlay — how the model reacts to fear and the yield curve")
             st.markdown(
                 "<span style='color:#888;font-size:.82rem'>"
-                "VIX gate (z-score > 2.5) blocks all signals on extreme fear days. "
-                "Inverted yield curve reduces position sizes via macro_score multiplier."
+                "<b>What this tab shows:</b> the model doesn't just look at price — it also watches "
+                "the broader economy. <b>VIX</b> is the fear gauge: when it spikes (z-score &gt; 2.5), "
+                "the model blocks new entries entirely. <b>Yield curve</b> (10Y − 2Y): when inverted "
+                "(below 0), historically a recession warning, the macro multiplier shrinks position "
+                "sizes. The chart below overlays portfolio equity with these regime signals so you "
+                "can see how the model behaves through different market environments."
                 "</span>",
                 unsafe_allow_html=True,
             )
+            st.markdown("")
             st.plotly_chart(chart_macro_overlay(df_port, macro, fred=fred,
                                                 primary_method=_prod_method),
                             theme=None, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True})
@@ -942,8 +1006,10 @@ def main():
                         "Unrealized (today)", f"${today_unrealized:+,.0f}",
                         delta=f"{today_unrealized_pct:+.2f}%",
                         delta_color="normal",
-                        help="Change in open position values today vs yesterday's close. "
-                             "Not locked in — fluctuates until positions are sold. Arrow = % version.",
+                        help="Today's mark-to-market P&L (everything that isn't realized). "
+                             "Identity: PV change today = Realized today + Unrealized today, "
+                             "so this always reconciles with the daily return on the vs-S&P tab. "
+                             "Includes intraday MTM on held and newly-bought positions, minus today's buy fees.",
                     )
                 with d2:
                     st.metric(
@@ -1241,7 +1307,9 @@ def main():
                         if len(_daily_ret) >= 21:
                             _roll_mean = _daily_ret.rolling(21).mean()
                             _roll_std  = _daily_ret.rolling(21).std()
-                            _roll_sharpe = (_roll_mean / _roll_std * np.sqrt(252)).dropna()
+                            _roll_sharpe = (_roll_mean / _roll_std.replace(0, np.nan)
+                                            * np.sqrt(252))
+                            _roll_sharpe = _roll_sharpe.replace([np.inf, -np.inf], np.nan).dropna()
                             _fig_rs = go.Figure()
                             _fig_rs.add_trace(go.Scatter(
                                 x=_roll_sharpe.index, y=_roll_sharpe.values,
@@ -1304,7 +1372,11 @@ def main():
                         st.plotly_chart(_fig_pie, theme=None, use_container_width=True)
                     with _alloc_c2:
                         _alloc_detail = _alloc_df.copy()
-                        _alloc_detail["pct"] = _alloc_detail["value"] / _alloc_detail["value"].sum() * 100
+                        _alloc_total = float(_alloc_detail["value"].sum())
+                        _alloc_detail["pct"] = (
+                            _alloc_detail["value"] / _alloc_total * 100
+                            if _alloc_total > 0 else 0.0
+                        )
                         _alloc_detail = _alloc_detail.sort_values("value", ascending=False)
                         st.dataframe(
                             _alloc_detail[["ticker", "asset_class", "value", "pct"]].style.format(
@@ -1382,8 +1454,12 @@ def main():
             st.markdown("### Universe Signal State")
             st.markdown(
                 "<span style='color:#888;font-size:.82rem'>"
-                "MA crossover logic mirrors the backtest. Signal flips at daily close. "
-                "Cached 5 min."
+                "<b>What this tab shows:</b> the live signal score for every ticker in the universe — "
+                "green <b>LONG</b> rows are the names the model wants to own right now, "
+                "grey <b>FLAT</b> rows are skipped this cycle. The signal uses a moving-average "
+                "crossover (mirrors the backtest) and only flips at daily close. "
+                "Prices are pulled live from Yahoo Finance and cached for 5 minutes, so the table "
+                "auto-refreshes every minute without hammering the API."
                 "</span>",
                 unsafe_allow_html=True,
             )
@@ -1409,16 +1485,42 @@ def main():
             if live_df.empty:
                 st.error("Could not fetch live data. Check your internet connection.")
             else:
+                _ts_str = (fetch_ts.strftime("%H:%M:%S")
+                           if hasattr(fetch_ts, "strftime") else str(fetch_ts))
+                st.caption(
+                    f"Auto-refresh: 60s · Last fetched: {_ts_str} ET · "
+                    f"Source: Yahoo Finance (~15 min delay)"
+                )
+
                 n_long  = (live_df["Signal"] == "LONG").sum()
                 n_flat  = (live_df["Signal"] == "FLAT").sum()
                 exp_pct = n_long / len(live_df) * 100
 
                 lv1, lv2, lv3, lv4 = st.columns(4)
-                with lv1: st.metric("Long signals",   str(n_long))
-                with lv2: st.metric("Flat (cash)",    str(n_flat))
-                with lv3: st.metric("Gross exposure", f"{exp_pct:.0f}%")
-                avg_rsi_long = live_df.loc[live_df["Signal"] == "LONG", "RSI"].mean()
-                with lv4: st.metric("Avg RSI (longs)", f"{avg_rsi_long:.1f}" if n_long > 0 else "—")
+                with lv1:
+                    st.metric("Long signals", str(n_long),
+                              help="Tickers currently firing a LONG signal. These are the "
+                                   "candidates the model would buy at next EOD close. The "
+                                   "production sizer then picks the TOP 11 by signal strength.")
+                with lv2:
+                    st.metric("Flat (cash)", str(n_flat),
+                              help="Tickers with no signal — held flat (no position). "
+                                   "Capital sits in cash for these names.")
+                with lv3:
+                    st.metric("Gross exposure", f"{exp_pct:.0f}%",
+                              help="Fraction of the universe currently in LONG. NOT the actual "
+                                   "portfolio gross — production caps at 11 names regardless. "
+                                   "High % here = broad-market trend ON; low % = risk-off regime.")
+                if "RSI" in live_df.columns:
+                    avg_rsi_long = live_df.loc[live_df["Signal"] == "LONG", "RSI"].mean()
+                else:
+                    avg_rsi_long = float("nan")
+                _have_rsi = n_long > 0 and pd.notna(avg_rsi_long)
+                with lv4:
+                    st.metric("Avg RSI (longs)", f"{avg_rsi_long:.1f}" if _have_rsi else "—",
+                              help="Mean RSI-14 across LONG names. >70 = many longs are overbought "
+                                   "(late-trend). <50 = longs entering with fresh momentum. "
+                                   "Entry filter blocks new BUYs when a name's RSI ≥ 70.")
 
                 st.plotly_chart(chart_ma_spread(live_df), theme=None, use_container_width=True,
                                 config={"scrollZoom": True, "displayModeBar": True})
@@ -1464,6 +1566,25 @@ def main():
                     .format({k: v for k, v in _live_fmt.items() if k in live_df.columns}),
                     use_container_width=True, hide_index=True,
                 )
+
+                with st.expander("Column reference — what each field means"):
+                    st.markdown(
+                        """
+- **Signal** — `LONG` means the model wants the position; `FLAT` means stay in cash.
+- **Price** — last trade from Yahoo Finance (≈15 min delay).
+- **Day Chg %** — change since yesterday's close.
+- **MA Spread %** — `(MA50 − MA200) / price`. Positive = uptrend (golden cross),
+  negative = downtrend. Bigger spread = stronger trend.
+- **RSI** — relative strength index (14-day). >70 overbought, <30 oversold.
+  Entry filter blocks new BUYs when RSI ≥ 70.
+- **20d Ret % / 60d Ret %** — trailing returns. The 63-day momentum tilt
+  (overlay B) uses ~60d to scale position sizes up or down.
+- **Dist High %** — distance below the rolling 200-day high. Closer to 0 = name
+  is breaking out; very negative = name is deep in a drawdown.
+- **Breakout / Squeeze / Fast / Mom Rank** *(if shown)* — supplementary signals
+  used by experimental sizers; not directly part of V4N-F.
+                        """
+                    )
 
         _signals_fragment()
 
@@ -1932,7 +2053,7 @@ def _v4nf_intraday_curve(positions_tuple: tuple, cash: float) -> dict:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _v4nf_spy_benchmark(start_date: str, current_pv: float) -> dict:
+def _v4nf_spy_benchmark(start_date: str) -> dict:
     """
     Compute a $100k SPY buy-and-hold benchmark from V4N-F start (2026-05-11
     market OPEN) to today's close.  Cached 5min so dashboard renders fast.
@@ -1941,39 +2062,36 @@ def _v4nf_spy_benchmark(start_date: str, current_pv: float) -> dict:
       dates     — list of trading dates
       spy_eq    — list of SPY-only portfolio values (starting at $100k)
       spy_total — total return % since inception
-      alpha     — V4N-F return - SPY return (pp)
+    Alpha (V4N-F return − SPY return) is computed at the call site since it
+    depends on a live portfolio value that would otherwise bust the cache on
+    every tick.
     """
     import yfinance as yf
-    out = {"dates": [], "spy_eq": [], "spy_total": None, "alpha": None}
+    out = {"dates": [], "spy_eq": [], "spy_total": None}
     try:
         hist = yf.Ticker("SPY").history(
             start=start_date, auto_adjust=False, interval="1d")
         if hist.empty:
             return out
-        # Force-filter to >= start_date — yfinance occasionally returns a few
-        # pre-start bars depending on how `start=` is parsed, which made the
-        # SPY benchmark appear to start before V4N-F inception.
         hist.index = pd.to_datetime(hist.index).tz_localize(None)
         start_ts = pd.Timestamp(start_date)
         hist = hist[hist.index >= start_ts]
         if hist.empty:
             return out
-        # Use OPEN of inception as entry (matches V4N-F init at market open),
-        # mark to CLOSE thereafter.
         open0 = float(hist["Open"].iloc[0])
+        if open0 <= 0:
+            return out
         shares = 100_000.0 / open0
         eq = [shares * float(hist["Close"].iloc[i]) for i in range(len(hist))]
         out["dates"]     = [str(d.date()) for d in hist.index]
         out["spy_eq"]    = eq
-        spy_total        = eq[-1] / 100_000 - 1
-        v4nf_total       = current_pv / 100_000 - 1
-        out["spy_total"] = spy_total
-        out["alpha"]     = v4nf_total - spy_total
+        out["spy_total"] = eq[-1] / 100_000 - 1
     except Exception:
         pass
     return out
 
 
+@st.fragment(run_every=30)
 def _v4nf_test_section():
     """
     Render the V4N-F 3-month live test instance using the same dark/colour-
@@ -2030,8 +2148,10 @@ def _v4nf_test_section():
     days_left  = max(0, days_total - days_in)
     pct_done   = min(100.0, days_in / days_total * 100) if days_total else 0.0
     # Pin daily-chart x-axis range so Plotly doesn't auto-pad before inception
-    # when there are only a handful of data points.
-    _xaxis_range = [START_DATE, max(today, START_DATE + pd.Timedelta(days=1))]
+    # when there are only a handful of data points.  Starts at May-10 so the
+    # $100k anchor day is visible alongside the May-11 day-1 climb.
+    _xaxis_range = [START_DATE - pd.Timedelta(days=1),
+                    max(today, START_DATE + pd.Timedelta(days=1))]
 
     eod_pv      = float(state.get("portfolio_value", 100_000))
     cash        = float(state.get("cash", 100_000))
@@ -2059,66 +2179,98 @@ def _v4nf_test_section():
         st.warning("V4N-F live metrics unavailable (state may be incomplete).")
         return
 
-    live_pv         = _pm["pv"]
-    cash            = _pm["cash"]
-    n_pos           = _pm["n_positions"]
-    prev_pv         = _pm["prev_pv"]
-    daily_ret_pct   = _pm["daily_ret_pct"]
-    daily_pnl_usd   = _pm["daily_pnl_usd"]
-    tot_invested    = _pm["tot_invested"]
-    tot_cur_val     = _pm["tot_cur_val"]
-    tot_unreal      = _pm["tot_unreal"]
-    tot_chg_pct     = _pm["tot_chg_pct"]
-    today_unreal    = _pm["today_unrealized"]
-    today_unreal_p  = _pm["today_unrealized_pct"]
-    intraday_df     = _pm["intraday_df"]
-    live_prices     = _pm["live_prices"]
-    spy_curve_intra = _pm["spy_curve"]
-    spy_pct_from_prev = _pm["spy_pct_from_prev"]
-    spy_today_pct   = _pm["spy_today_pct"]
-    alpha_today     = _pm["alpha_today"]
+    pv                   = _pm["pv"]
+    cash                 = _pm["cash"]
+    n_pos                = _pm["n_positions"]
+    prev_pv              = _pm["prev_pv"]
+    daily_ret_pct        = _pm["daily_ret_pct"]
+    daily_pnl_usd        = _pm["daily_pnl_usd"]
+    tot_invested         = _pm["tot_invested"]
+    tot_cur_val          = _pm["tot_cur_val"]
+    tot_unreal           = _pm["tot_unreal"]
+    tot_chg_pct          = _pm["tot_chg_pct"]
+    today_unrealized     = _pm["today_unrealized"]
+    today_unrealized_pct = _pm["today_unrealized_pct"]
+    today_realized       = _pm["today_realized"]
+    all_realized         = _pm["all_realized"]
+    realized_gains       = _pm["realized_gains"]
+    realized_losses      = _pm["realized_losses"]
+    total_fees           = _pm["total_fees"]
+    buy_fees             = _pm["buy_fees"]
+    sell_fees            = _pm["sell_fees"]
+    intraday_df          = _pm["intraday_df"]
+    live_prices          = _pm["live_prices"]
 
-    invested = live_pv - cash
-    cum_ret  = live_pv / 100_000 - 1
+    _PT_INITIAL = 100_000
+    _incep_ret_pct = (pv / _PT_INITIAL - 1) * 100
+    _incep_ret_usd = pv - _PT_INITIAL
 
-    # ── Section A: status row (live, same logic as Portfolio tab) ───────────
-    st.markdown('<div class="section-head">Status (live)</div>', unsafe_allow_html=True)
-    s1, s2, s3, s4, s5 = st.columns(5)
-    with s1: st.metric("Portfolio Value", f"${live_pv:,.0f}",
-                       delta=f"{cum_ret*100:+.2f}%",
-                       help="Live mark-to-market via compute_live_portfolio_metrics() "
-                            "(same function the production Portfolio tab uses).")
-    with s2: st.metric("Cash", f"${cash:,.0f}",
-                       help="Uninvested cash balance.")
-    with s3: st.metric("Invested", f"${invested:,.0f}",
-                       help="Sum of all open position market values at latest price.")
-    with s4: st.metric("Open Positions", n_pos)
-    with s5: st.metric("Days Elapsed", f"{days_in} / {days_total}",
-                       delta=f"{pct_done:.0f}% complete",
-                       help=f"{days_left} trading days remaining until {END_DATE.date()}.")
+    # ── GROUP 1: Portfolio Overview ──────────────────────────────────────────
+    st.markdown('<div class="section-head">Portfolio Overview</div>', unsafe_allow_html=True)
+    pm1, pm2, pm3, pm4, pm5, pm6 = st.columns(6)
+    with pm1:
+        st.metric("Portfolio Value", f"${pv:,.0f}",
+                  help="Live mark-to-market value: cash + market value of all open positions.")
+    with pm2:
+        st.metric("Total Return",
+                  f"{_incep_ret_pct:+.2f}% (${_incep_ret_usd:+,.0f})",
+                  help="Return on the $100k deployed at the May-11 open. "
+                       "Reconciles with Capital Flow: Realized + Unrealized − Entry Fees.")
+    with pm3:
+        st.metric("Realized P&L", f"${all_realized:+,.0f}",
+                  help="Locked-in P&L from all closed trades, net of sell commissions.")
+    with pm4:
+        st.metric("Cash", f"${cash:,.0f}",
+                  help="Uninvested cash after all trades and commissions.")
+    with pm5:
+        st.metric("Total Fees", f"${total_fees:,.2f}",
+                  help=f"Cumulative commissions (0.05% per trade). "
+                       f"Entry: ${buy_fees:,.2f} · Exit: ${sell_fees:,.2f}.")
+    with pm6:
+        st.metric("Open Positions", str(n_pos),
+                  help=f"Number of open long positions. "
+                       f"Day {days_in} of {days_total} ({pct_done:.0f}% of the 3-month test).")
 
-    # ── Section A1: today vs S&P 500 (same as vs-S&P tab Overall row) ───────
-    st.markdown('<div class="section-head">Today vs S&P 500</div>',
+    # ── GROUP 2: Today's P&L ────────────────────────────────────────────────
+    st.markdown('<div class="section-head">Today\'s P&L</div>', unsafe_allow_html=True)
+    d1, d2 = st.columns(2)
+    with d1:
+        st.metric("Unrealized (today)", f"${today_unrealized:+,.0f}",
+                  delta=f"{today_unrealized_pct:+.2f}%",
+                  delta_color="normal",
+                  help="Today's mark-to-market P&L (everything that isn't realized). "
+                       "Identity: PV change today = Realized today + Unrealized today, "
+                       "so this always reconciles with the daily return on the vs-S&P tab. "
+                       "Includes intraday MTM on held and newly-bought positions, minus today's buy fees.")
+    with d2:
+        st.metric("Realized (today)", f"${today_realized:+,.0f}",
+                  help="P&L from positions actually closed today. Zero if no SELL orders fired.")
+
+    # ── GROUP 2b: Capital Flow ──────────────────────────────────────────────
+    _cf_check = (_PT_INITIAL + realized_gains + realized_losses + tot_unreal - buy_fees)
+    st.markdown('<div class="section-head">Capital Flow (from $100k deployed)</div>',
                 unsafe_allow_html=True)
-    _last_bar_str = ""
-    if hasattr(spy_curve_intra, "empty") and not spy_curve_intra.empty:
-        _last_bar = spy_curve_intra.index[-1]
-        _last_bar_str = (pd.Timestamp(_last_bar).strftime("%H:%M")
-                         if hasattr(_last_bar, "strftime") else str(_last_bar)[-5:])
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric(f"{V1_PRODUCTION_LABEL} Today", f"{daily_ret_pct:+.2f}%",
-                        help="V4N-F's intraday % change vs yesterday's close.")
-    with c2:
-        _spy_help = (
-            "^GSPC (S&P 500 index) % change from yesterday's close — "
-            "matches Yahoo Finance and TradingView exactly. "
-            f"Last bar: {_last_bar_str} ET. Data: Yahoo Finance free tier "
-            "(≈15 min delay).")
-        st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%", help=_spy_help)
-    with c3: st.metric("Alpha (today)", f"{alpha_today:+.2f}%",
-                        help="V4N-F return minus S&P return today. Positive = beating index.")
-    with c4: st.metric("Daily P&L", f"${daily_pnl_usd:+,.0f}",
-                        help="Live $ change vs yesterday's close.")
+    wf1, wf2, wf3, wf4, wf5 = st.columns(5)
+    with wf1:
+        st.metric("Capital Deployed", f"${_PT_INITIAL:,.0f}",
+                  help="$100k deployed at the May-11 market open. "
+                       "All P&L figures measure from this base.")
+    with wf2:
+        st.metric("Realized Gains", f"${realized_gains:+,.0f}",
+                  help="Sum of positive P&L from closed trades, net of sell commissions.")
+    with wf3:
+        st.metric("Realized Losses", f"${realized_losses:+,.0f}",
+                  help="Sum of negative P&L from closed trades, net of sell commissions.")
+    with wf4:
+        st.metric("Unrealized P&L", f"${tot_unreal:+,.0f}",
+                  help="Open positions: current market value minus original cost basis.")
+    with wf5:
+        st.metric("Entry Fees", f"-${buy_fees:,.2f}",
+                  help="Buy-side commissions (0.05% per entry). Shown negative — paid from cash. "
+                       "Sell commissions are already deducted inside Realized P&L. "
+                       f"Check: ${_PT_INITIAL:,.0f} {realized_gains:+,.0f} "
+                       f"{realized_losses:+,.0f} {tot_unreal:+,.0f} − "
+                       f"${buy_fees:,.2f} = ${_cf_check:,.0f}")
 
     st.markdown(
         f"<span style='color:#666;font-size:.78rem'>"
@@ -2128,303 +2280,310 @@ def _v4nf_test_section():
         f"</span>", unsafe_allow_html=True,
     )
 
-    # ── Section A2: intraday equity vs ^GSPC ────────────────────────────────
-    if not intraday_df.empty:
-        st.markdown('<div class="section-head">Intraday equity vs S&P 500</div>',
-                    unsafe_allow_html=True)
-        intraday_fig = go.Figure()
-        intraday_fig.add_trace(go.Scatter(
-            x=intraday_df.index, y=intraday_df["close"],
-            mode="lines", name=V1_PRODUCTION_LABEL,
-            line=dict(color=V4NF_COLOR, width=2.2),
-            hovertemplate="<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
-        ))
-        if hasattr(spy_curve_intra, "empty") and not spy_curve_intra.empty:
-            intraday_fig.add_trace(go.Scatter(
-                x=spy_curve_intra.index, y=spy_curve_intra.values,
-                mode="lines", name="^GSPC (rebased)",
-                line=dict(color=PALETTE["buy_hold"], width=1.6, dash="dot"),
-                hovertemplate="<b>%{x}</b><br>S&P $%{y:,.0f}<extra></extra>",
-            ))
-        intraday_fig.update_layout(**_layout(
-            height=280,
-            yaxis=dict(tickprefix="$", tickformat=",", title=None),
-            xaxis=dict(title=None),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        ))
-        st.plotly_chart(intraday_fig, theme=None, use_container_width=True,
-                        config={"scrollZoom": True, "displayModeBar": True})
-
-    # Use loaded history (already from v4nf_3mo via the context manager above)
+    # ── Portfolio equity chart (May-10 $100k anchor + live tip) ─────────────
     hist = pt_history.copy() if not pt_history.empty else pd.DataFrame()
 
-    # ── Section B: full-period metrics row (9 metrics, matches portfolio tab) ─
-    st.markdown('<div class="section-head">Performance metrics (full test-to-date)</div>',
+    st.markdown('<div class="section-head">Portfolio value</div>',
                 unsafe_allow_html=True)
 
-    if hist.empty or len(hist) < 2:
-        st.info("Performance metrics will populate after the first full EOD update.")
-        m_v4nf = {}
+    if hist.empty:
+        st.info("Portfolio history will populate after the first EOD update.")
     else:
-        daily_rets = hist["portfolio_value"].pct_change().dropna()
-        m_v4nf     = metrics(daily_rets) if not daily_rets.empty else {}
+        hist_dates = pd.to_datetime(hist["date"]).copy()
+        hist_vals  = hist["portfolio_value"].astype(float).copy()
+        _today_ts  = pd.Timestamp(today.date())
+        if pv > 0 and _today_ts not in set(hist_dates):
+            hist_dates = pd.concat([hist_dates, pd.Series([_today_ts])], ignore_index=True)
+            hist_vals  = pd.concat([hist_vals, pd.Series([pv])], ignore_index=True)
+        elif pv > 0:
+            hist_vals.iloc[-1] = pv
 
-    def _fmt_pct(v, decimals=2):
-        return "—" if v is None or (isinstance(v, float) and pd.isna(v)) \
-                   else f"{v*100:+.{decimals}f}%"
-    def _fmt_num(v, decimals=2):
-        return "—" if v is None or (isinstance(v, float) and pd.isna(v)) \
-                   else f"{v:.{decimals}f}"
+        # Prepend May-10 $100k anchor so the day-1 climb from open is visible.
+        _anchor_dt = START_DATE - pd.Timedelta(days=1)
+        hist_dates = pd.concat([pd.Series([_anchor_dt]), hist_dates], ignore_index=True)
+        hist_vals  = pd.concat([pd.Series([100_000.0]), hist_vals], ignore_index=True)
 
-    p1, p2, p3, p4, p5, p6, p7, p8, p9 = st.columns(9)
-    with p1: st.metric("Total Return", _fmt_pct(cum_ret),
-                        help="Cumulative return since 2026-05-11 inception.")
-    with p2: st.metric("Ann. Return", _fmt_pct(m_v4nf.get("ann_r")),
-                        help="Annualised CAGR — early-test estimate, noisy until ≥30 days.")
-    with p3: st.metric("Sharpe", _fmt_num(m_v4nf.get("sharpe")),
-                        help="Annualised Sharpe of daily returns. Target ≥ 2.0 (V4N-F OOS = 2.63).")
-    with p4: st.metric("Volatility", _fmt_pct(m_v4nf.get("vol"), decimals=1),
-                        help="Annualised σ of daily returns.")
-    with p5: st.metric("Max Drawdown", _fmt_pct(m_v4nf.get("max_dd")),
-                        delta_color="inverse",
-                        help="Largest peak-to-trough loss since inception.")
-    with p6: st.metric("Calmar", _fmt_num(m_v4nf.get("calmar")),
-                        help="Ann. return ÷ |max DD|. Higher = shallower drawdowns.")
-    with p7: st.metric("Win Rate", _fmt_pct(m_v4nf.get("win_rate"), decimals=0),
-                        help="% of active trading days with positive return.")
-    with p8: st.metric("VaR 95% (1d)", _fmt_pct(m_v4nf.get("var_95"), decimals=2),
-                        delta_color="inverse",
-                        help="1-day 95% VaR — daily loss exceeded only 5% of days.")
-    with p9: st.metric("Days Live", f"{len(hist)}",
-                        help="Number of EOD snapshots recorded so far.")
-
-    # ── Section B2: S&P 500 benchmark callout (alpha since inception) ───────
-    spy_bench = _v4nf_spy_benchmark(str(START_DATE.date()), live_pv)
-    if spy_bench.get("spy_total") is not None:
-        spy_total = spy_bench["spy_total"]
-        alpha     = spy_bench["alpha"]
-        b1, b2, b3 = st.columns(3)
-        with b1: st.metric(f"{V1_PRODUCTION_LABEL} Total",
-                            _fmt_pct(cum_ret),
-                            help="V4N-F cumulative return since inception (live mark).")
-        with b2: st.metric("S&P 500 Total",
-                            _fmt_pct(spy_total),
-                            help="SPY buy-and-hold from 2026-05-11 open — same $100k start.")
-        with b3: st.metric("Alpha vs S&P 500",
-                            _fmt_pct(alpha),
-                            delta=f"{alpha*100:+.2f}pp",
-                            help="V4N-F total return − SPY total return (percentage points).")
-
-    # ── Section C: equity + drawdown charts (palette-styled) ────────────────
-    if not hist.empty:
-        st.markdown('<div class="section-head">Equity curve vs S&P 500</div>',
-                    unsafe_allow_html=True)
         eq_fig = go.Figure()
         eq_fig.add_trace(go.Scatter(
-            x=hist["date"], y=hist["portfolio_value"],
+            x=hist_dates, y=hist_vals,
             mode="lines+markers", name=V1_PRODUCTION_LABEL,
-            line=dict(color=V4NF_COLOR, width=2.2),
-            marker=dict(size=5, color=V4NF_COLOR),
+            line=dict(color=V4NF_COLOR, width=2.4),
+            marker=dict(size=6, color=V4NF_COLOR),
             hovertemplate="<b>%{x|%Y-%m-%d}</b><br>$%{y:,.0f}<extra></extra>",
         ))
-        if spy_bench.get("spy_eq"):
-            eq_fig.add_trace(go.Scatter(
-                x=pd.to_datetime(spy_bench["dates"]),
-                y=spy_bench["spy_eq"],
-                mode="lines", name="S&P 500 ($100k start)",
-                line=dict(color=PALETTE["buy_hold"], width=1.8, dash="dot"),
-                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>SPY $%{y:,.0f}<extra></extra>",
-            ))
         eq_fig.add_hline(y=100_000,
                          line=dict(dash="dash", color="#666", width=1),
-                         annotation_text="$100k baseline",
+                         annotation_text="$100k deployed",
                          annotation_position="bottom right",
                          annotation=dict(font=dict(color="#888", size=10)))
         eq_fig.update_layout(**_layout(
-            height=340,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
+            height=380, showlegend=False,
             yaxis=dict(tickprefix="$", tickformat=",", title=None),
-            xaxis=dict(title=None, range=_xaxis_range, type="date"),
+            xaxis=dict(title=None, range=_xaxis_range, type="date",
+                       tickformat="%b %d"),
         ))
         st.plotly_chart(eq_fig, theme=None, use_container_width=True,
-                        config={"scrollZoom": True, "displayModeBar": True})
+                        config={"scrollZoom": True, "displayModeBar": True},
+                        key="v4nf_portfolio_line")
 
-        # Drawdown
-        if len(hist) >= 2:
-            peak    = hist["portfolio_value"].cummax()
-            dd_pct  = (hist["portfolio_value"] / peak - 1) * 100
-            dd_fig  = go.Figure()
-            dd_fig.add_trace(go.Scatter(
-                x=hist["date"], y=dd_pct,
-                mode="lines", name="Drawdown",
-                line=dict(color=PALETTE["neg"], width=1.6),
-                fill="tozeroy", fillcolor="rgba(255,85,85,0.18)",
-                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>%{y:.2f}%<extra></extra>",
-            ))
-            dd_fig.update_layout(**_layout(
-                height=200, showlegend=False,
-                yaxis=dict(ticksuffix="%", title="Drawdown"),
-                xaxis=dict(title=None, range=_xaxis_range, type="date"),
-            ))
-            st.plotly_chart(dd_fig, theme=None, use_container_width=True,
-                            config={"scrollZoom": True, "displayModeBar": True})
-
-    # ── Section D: rolling metrics (Sharpe / vol / cumulative return) ───────
-    if not hist.empty and len(hist) >= 5:
-        st.markdown('<div class="section-head">Rolling metrics</div>',
+    # ── GROUP 3: Open Positions ──────────────────────────────────────────────
+    _long_positions = {t: p for t, p in pt_state.get("positions", {}).items()
+                       if t != "_SPY_HEDGE"}
+    if _long_positions:
+        st.markdown('<div class="section-head">Open Positions</div>',
                     unsafe_allow_html=True)
-        # Adaptive window: as much as 21d, but never more than data we have
-        window = min(21, max(5, len(hist) - 1))
-        daily  = hist.set_index("date")["portfolio_value"].pct_change()
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            st.metric("Total Invested", f"${tot_invested:,.0f}",
+                      help="Sum of cost basis (dollars deployed) across all open positions.")
+        with t2:
+            st.metric("Market Value", f"${tot_cur_val:,.0f}",
+                      delta=f"{tot_chg_pct:+.2f}%", delta_color="normal",
+                      help="Current market value of all open positions. "
+                           "Arrow = % gain/loss vs cost basis.")
+        with t3:
+            st.metric("Unrealized P&L", f"${tot_unreal:+,.0f}",
+                      delta=f"{tot_chg_pct:+.2f}%", delta_color="normal",
+                      help="Market Value minus cost basis — unrealized until sold.")
 
-        roll_sharpe = (daily.rolling(window).mean()
-                       / daily.rolling(window).std()) * np.sqrt(252)
-        roll_vol    = daily.rolling(window).std() * np.sqrt(252) * 100
-        cum_ret_pct = ((1 + daily.fillna(0)).cumprod() - 1) * 100
-
-        rcol1, rcol2 = st.columns(2)
-        with rcol1:
-            f1 = go.Figure()
-            f1.add_trace(go.Scatter(
-                x=roll_sharpe.index, y=roll_sharpe.values,
-                mode="lines", name=f"Rolling Sharpe ({window}d)",
-                line=dict(color=V4NF_COLOR, width=2),
-                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Sharpe %{y:.2f}<extra></extra>",
-            ))
-            f1.add_hline(y=2.0, line=dict(dash="dash", color="#50fa7b", width=1),
-                         annotation_text="OOS target 2.0",
-                         annotation=dict(font=dict(color="#50fa7b", size=10)))
-            f1.add_hline(y=0.0, line=dict(color="#444", width=1))
-            f1.update_layout(**_layout(
-                height=260, showlegend=False, title=f"Rolling Sharpe ({window}-day)",
-                yaxis=dict(title="Sharpe"),
-                xaxis=dict(title=None, range=_xaxis_range, type="date"),
-            ))
-            st.plotly_chart(f1, theme=None, use_container_width=True,
-                            config={"displayModeBar": False})
-
-        with rcol2:
-            f2 = go.Figure()
-            f2.add_trace(go.Scatter(
-                x=roll_vol.index, y=roll_vol.values,
-                mode="lines", name=f"Rolling Vol ({window}d)",
-                line=dict(color=PALETTE["vol_target"], width=2),
-                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Ann vol %{y:.1f}%<extra></extra>",
-            ))
-            f2.update_layout(**_layout(
-                height=260, showlegend=False, title=f"Rolling Volatility ({window}-day, ann.)",
-                yaxis=dict(ticksuffix="%", title=None),
-                xaxis=dict(title=None, range=_xaxis_range, type="date"),
-            ))
-            st.plotly_chart(f2, theme=None, use_container_width=True,
-                            config={"displayModeBar": False})
-
-        # Daily-return bar chart (green/red coded)
-        st.markdown('<div class="section-head">Daily returns</div>',
-                    unsafe_allow_html=True)
-        bar_fig = go.Figure()
-        bar_fig.add_trace(go.Bar(
-            x=hist["date"],
-            y=hist["daily_return"] if "daily_return" in hist.columns else (daily * 100).values,
-            marker=dict(color=[PALETTE["pos"] if v >= 0 else PALETTE["neg"]
-                               for v in (hist["daily_return"]
-                                         if "daily_return" in hist.columns
-                                         else (daily * 100).values)]),
-            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>%{y:+.2f}%<extra></extra>",
-            name="Daily %",
-        ))
-        bar_fig.add_hline(y=0, line=dict(color="#444", width=1))
-        bar_fig.update_layout(**_layout(
-            height=220, showlegend=False,
-            yaxis=dict(ticksuffix="%", title=None),
-            xaxis=dict(title=None, range=_xaxis_range, type="date"),
-        ))
-        st.plotly_chart(bar_fig, theme=None, use_container_width=True,
-                        config={"displayModeBar": False})
-    elif not hist.empty:
-        st.caption(f"Rolling metrics activate after ≥5 EOD snapshots "
-                   f"(currently {len(hist)}).")
-
-    # ── Section E: open positions (LIVE prices, same logic as Portfolio tab) ─
-    # Uses live_prices from compute_live_portfolio_metrics() — identical to the
-    # production Portfolio tab's positions table.  Σ(shares × current price) +
-    # cash exactly ties out to the live PV shown in the status row above.
-    positions = pt_state.get("positions", {})
-    if positions:
-        px_source = "live (5-min)" if live_prices else "last EOD close"
-        st.markdown(
-            f'<div class="section-head">Open positions · prices = {px_source}</div>',
-            unsafe_allow_html=True,
-        )
-        rows = []
-        for t, p in positions.items():
-            if t == "_SPY_HEDGE":
+        pos_rows = []
+        for ticker, pos in pt_state["positions"].items():
+            if ticker == "_SPY_HEDGE":
                 continue
-            shares = float(p.get("shares", 0))
-            entry  = float(p.get("entry_price", 0))
-            last   = float(live_prices.get(t) or p.get("last_close") or entry)
-            cur_v  = shares * last
-            pnl    = (last - entry) * shares
-            pnl_p  = (last / entry - 1) * 100 if entry else 0.0
-            rows.append({
-                "Ticker": t,
-                "Class" : ASSET_CLASS.get(t, "—"),
-                "Shares": f"{shares:.3f}",
-                "Entry" : f"${entry:.2f}",
-                "Last"  : f"${last:.2f}",
-                "Value" : f"${cur_v:,.0f}",
-                "P&L $" : f"${pnl:+,.0f}",
-                "P&L %" : f"{pnl_p:+.2f}%",
+            cur = (live_prices.get(ticker)
+                   or pos.get("last_close")
+                   or pos["entry_price"])
+            cur_val    = pos["shares"] * cur
+            unreal_pnl = cur_val - pos["cost_basis"]
+            unreal_pct = (cur / pos["entry_price"] - 1) * 100
+            pos_rows.append({
+                "Ticker"     : ticker,
+                "Entry Time" : pos.get("entry_date", "—"),
+                "Invested"   : round(pos["cost_basis"], 2),
+                "Entry $"    : round(pos["entry_price"], 2),
+                "Current $"  : round(cur, 2),
+                "Chg %"      : round(unreal_pct, 2),
+                "Unreal P&L" : round(unreal_pnl, 2),
             })
-        if rows:
-            df_pos = pd.DataFrame(rows).sort_values(
-                "P&L %", key=lambda s: s.str.replace("%", "").astype(float),
-                ascending=False,
-            )
-            st.dataframe(
-                df_pos.style.map(
-                    lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("+")) else
-                              "color:#ff5555" if (isinstance(v, str) and v.startswith("-")) else "",
-                    subset=["P&L $", "P&L %"],
-                ),
-                use_container_width=True, hide_index=True,
-            )
+        pos_df = pd.DataFrame(pos_rows)
 
-    # ── Section F: recent trades ────────────────────────────────────────────
+        def _color_pnl(v):
+            if isinstance(v, (int, float)):
+                if v > 0: return "color:#50fa7b"
+                if v < 0: return "color:#ff5555"
+            return ""
+
+        st.dataframe(
+            pos_df.style
+            .map(_color_pnl, subset=["Chg %", "Unreal P&L"])
+            .format({"Invested": "${:,.2f}", "Entry $": "${:.2f}",
+                     "Current $": "${:.2f}", "Chg %": "{:+.2f}%",
+                     "Unreal P&L": "${:+,.2f}"}),
+            use_container_width=True, hide_index=True,
+        )
+
+    # ── Recent trades ────────────────────────────────────────────────────────
     if not pt_trades.empty:
-        try:
-            trades = pt_trades
-            if not trades.empty:
-                st.markdown('<div class="section-head">Recent trades (last 25)</div>',
-                            unsafe_allow_html=True)
-                _t = trades.tail(25).iloc[::-1].copy()
-                # Format numeric columns for readability + colour coding
-                if "value" in _t.columns:
-                    _t["value"] = _t["value"].apply(lambda v: f"${float(v):,.0f}")
-                if "price" in _t.columns:
-                    _t["price"] = _t["price"].apply(lambda v: f"${float(v):.2f}")
-                if "shares" in _t.columns:
-                    _t["shares"] = _t["shares"].apply(lambda v: f"{float(v):.3f}")
-                if "pnl" in _t.columns:
-                    _t["pnl"] = _t["pnl"].apply(
-                        lambda v: f"${float(v):+,.2f}" if pd.notna(v) and float(v) != 0 else "—")
-                # Colour BUY green, SELL red
-                def _action_color(v):
-                    if not isinstance(v, str):
-                        return ""
-                    return "color:#50fa7b" if v.upper() == "BUY" else \
-                           "color:#ff5555" if v.upper() == "SELL" else ""
-                styled = _t.style.map(_action_color, subset=["action"])
-                if "pnl" in _t.columns:
-                    styled = styled.map(
-                        lambda v: "color:#50fa7b" if (isinstance(v, str) and v.startswith("$+")) else
-                                  "color:#ff5555" if (isinstance(v, str) and v.startswith("$-")) else "",
-                        subset=["pnl"],
-                    )
-                st.dataframe(styled, use_container_width=True, hide_index=True)
-        except Exception:
-            pass
+        st.markdown('<div class="section-head">Recent trades</div>',
+                    unsafe_allow_html=True)
+        recent = pt_trades.sort_values("date", ascending=False).head(20)
+
+        def _color_action(v):
+            if v == "BUY":  return "color:#50fa7b;font-weight:600"
+            if v == "SELL": return "color:#ff5555;font-weight:600"
+            return ""
+
+        for _col in ["shares", "price", "value", "commission", "pnl"]:
+            if _col in recent.columns:
+                recent[_col] = pd.to_numeric(recent[_col], errors="coerce")
+        _tfmt = {"shares": "{:.2f}"}
+        for _col in ["price", "value", "commission", "pnl"]:
+            if _col in recent.columns:
+                _tfmt[_col] = "${:,.2f}"
+        st.dataframe(
+            recent.style
+            .map(_color_action, subset=["action"])
+            .format(_tfmt, na_rep="—"),
+            use_container_width=True, hide_index=True,
+        )
+
+    # ── Trade Analytics ──────────────────────────────────────────────────────
+    if not pt_trades.empty and "pnl" in pt_trades.columns:
+        sells_only = pt_trades[
+            (pt_trades["action"] == "SELL")
+            & pt_trades["pnl"].notna()
+            & (pt_trades["pnl"].astype(str).str.strip() != "")
+        ].copy()
+        if not sells_only.empty:
+            sells_only["pnl_num"] = pd.to_numeric(sells_only["pnl"], errors="coerce").fillna(0)
+            wins   = sells_only[sells_only["pnl_num"] > 0]
+            losses = sells_only[sells_only["pnl_num"] < 0]
+            win_rate = len(wins) / len(sells_only) * 100 if len(sells_only) else 0
+            avg_win  = wins["pnl_num"].mean()  if len(wins)   else 0
+            avg_loss = losses["pnl_num"].mean() if len(losses) else 0
+            profit_factor = (wins["pnl_num"].sum() / abs(losses["pnl_num"].sum())
+                             if len(losses) and losses["pnl_num"].sum() != 0 else float("inf"))
+            largest_win  = wins["pnl_num"].max()   if len(wins)   else 0
+            largest_loss = losses["pnl_num"].min() if len(losses) else 0
+            avg_hold = None
+            try:
+                _buy_dates  = pt_trades[pt_trades["action"] == "BUY"].groupby("ticker")["date"].first()
+                _sell_dates = sells_only.groupby("ticker")["date"].first()
+                _common = _buy_dates.index.intersection(_sell_dates.index)
+                if len(_common):
+                    _holds = (pd.to_datetime(_sell_dates[_common])
+                              - pd.to_datetime(_buy_dates[_common])).dt.days
+                    avg_hold = _holds.mean()
+            except Exception:
+                avg_hold = None
+
+            st.markdown('<div class="section-head">Trade Analytics</div>',
+                        unsafe_allow_html=True)
+            ta1, ta2, ta3, ta4, ta5, ta6, ta7 = st.columns(7)
+            with ta1: st.metric("Win Rate", f"{win_rate:.0f}%",
+                                help=f"{len(wins)} wins / {len(sells_only)} closed trades")
+            with ta2: st.metric("Avg Win", f"${avg_win:+,.0f}",
+                                help="Average dollar P&L on winning trades.")
+            with ta3: st.metric("Avg Loss", f"${avg_loss:+,.0f}",
+                                help="Average dollar P&L on losing trades.")
+            with ta4: st.metric("Profit Factor",
+                                f"{profit_factor:.2f}" if profit_factor < 100 else "∞",
+                                help="Gross profit / gross loss. >1.5 is good, >2.0 is exceptional.")
+            with ta5: st.metric("Best Trade",  f"${largest_win:+,.0f}")
+            with ta6: st.metric("Worst Trade", f"${largest_loss:+,.0f}")
+            with ta7:
+                _avg_hold_str = f"{avg_hold:.1f}d" if avg_hold is not None else "—"
+                st.metric("Avg Hold", _avg_hold_str,
+                          help="Average days between first BUY and first SELL per ticker.")
+
+    # ── Drawdown + Rolling Sharpe ────────────────────────────────────────────
+    if not pt_history.empty and len(pt_history) >= 2:
+        _pv_s = pt_history.set_index("date")["portfolio_value"]
+        _pv_s.index = pd.to_datetime(_pv_s.index)
+        # Prepend May-10 $100k anchor so day-1 (May 11) is included in both
+        # drawdown and rolling-Sharpe series (otherwise pct_change drops it).
+        _anchor_dt = START_DATE - pd.Timedelta(days=1)
+        if _anchor_dt not in _pv_s.index:
+            _pv_s = pd.concat([
+                pd.Series([100_000.0], index=[_anchor_dt]),
+                _pv_s,
+            ]).sort_index()
+        _chart_cols = st.columns(2)
+        with _chart_cols[0]:
+            _peak = _pv_s.cummax()
+            _dd_pct = ((_pv_s - _peak) / _peak * 100)
+            _fig_dd = go.Figure()
+            _fig_dd.add_trace(go.Scatter(
+                x=_dd_pct.index, y=_dd_pct.values,
+                fill="tozeroy", fillcolor="rgba(255,85,85,0.15)",
+                line=dict(color="#ff5555", width=1.2),
+                hovertemplate="<b>%{x|%b %d}</b><br>DD: %{y:.1f}%<extra></extra>",
+            ))
+            _fig_dd.add_hline(y=-12, line_color="#ffb86c", line_dash="dash",
+                              annotation_text="  -12% circuit breaker",
+                              annotation_font_color="#ffb86c")
+            _fig_dd.update_layout(
+                paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
+                font=dict(color="#c0c0c0", size=11), height=220,
+                dragmode="pan", uirevision="v4nf_drawdown",
+                title=dict(text="Portfolio Drawdown", font=dict(size=12)),
+                yaxis=dict(title="DD %", gridcolor="#2a2a2a"),
+                xaxis=dict(gridcolor="#2a2a2a"),
+                margin=dict(l=50, r=20, t=35, b=30), showlegend=False,
+            )
+            st.plotly_chart(_fig_dd, theme=None, use_container_width=True,
+                            config={"scrollZoom": True, "displayModeBar": False},
+                            key="v4nf_drawdown_chart")
+
+        with _chart_cols[1]:
+            _daily_ret = _pv_s.pct_change().dropna()
+            # Use a 21-day window when enough history exists; otherwise scale
+            # the window down so the chart starts rendering on day ~3 of the
+            # 3-month test instead of waiting a month for 21 trading days.
+            _win = min(21, max(3, len(_daily_ret) // 2 + 1)) if len(_daily_ret) >= 3 else 0
+            if _win >= 3:
+                _roll_mean = _daily_ret.rolling(_win).mean()
+                _roll_std  = _daily_ret.rolling(_win).std()
+                _roll_sharpe = (_roll_mean / _roll_std.replace(0, np.nan)
+                                * np.sqrt(252))
+                _roll_sharpe = _roll_sharpe.replace([np.inf, -np.inf], np.nan).dropna()
+                _fig_rs = go.Figure()
+                _fig_rs.add_trace(go.Scatter(
+                    x=_roll_sharpe.index, y=_roll_sharpe.values,
+                    line=dict(color="#4a9eff", width=1.2),
+                    hovertemplate="<b>%{x|%b %d}</b><br>Sharpe: %{y:.2f}<extra></extra>",
+                ))
+                _fig_rs.add_hline(y=0, line_color="#555", line_dash="dot")
+                _fig_rs.add_hline(y=1, line_color="#50fa7b", line_dash="dot", line_width=0.8)
+                _fig_rs.update_layout(
+                    paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
+                    font=dict(color="#c0c0c0", size=11), height=220,
+                    dragmode="pan", uirevision="v4nf_rolling_sharpe",
+                    title=dict(text=f"Rolling {_win}-Day Sharpe"
+                                    f"{' (will widen to 21d as history grows)' if _win < 21 else ''}",
+                               font=dict(size=12)),
+                    yaxis=dict(title="Sharpe", gridcolor="#2a2a2a"),
+                    xaxis=dict(gridcolor="#2a2a2a"),
+                    margin=dict(l=50, r=20, t=35, b=30), showlegend=False,
+                )
+                st.plotly_chart(_fig_rs, theme=None, use_container_width=True,
+                                config={"scrollZoom": True, "displayModeBar": False},
+                                key="v4nf_rolling_sharpe_chart")
+            else:
+                st.info("Rolling Sharpe needs ≥3 daily-return points (≈4 EOD updates).")
+
+    # ── Allocation by Asset Class ────────────────────────────────────────────
+    if _long_positions:
+        st.markdown('<div class="section-head">Allocation by Asset Class</div>',
+                    unsafe_allow_html=True)
+        _alloc_rows = []
+        for _t, _p in pt_state["positions"].items():
+            if _t == "_SPY_HEDGE":
+                continue
+            _cur_price = (live_prices.get(_t)
+                          or _p.get("last_close")
+                          or _p["entry_price"])
+            _mkt_val = _p["shares"] * _cur_price
+            _ac = ASSET_CLASS.get(_t, "other")
+            _alloc_rows.append({"asset_class": _ac, "ticker": _t, "value": _mkt_val})
+        _alloc_df = pd.DataFrame(_alloc_rows)
+        _ac_totals = _alloc_df.groupby("asset_class")["value"].sum()
+
+        _alloc_c1, _alloc_c2 = st.columns([1, 2])
+        with _alloc_c1:
+            _ac_colors = {
+                "equity_index": "#4a9eff", "sector_etf": "#50fa7b",
+                "stock": "#ffb86c", "bond": "#bd93f9",
+                "commodity": "#ff79c6", "other": "#888",
+            }
+            _fig_pie = go.Figure(go.Pie(
+                labels=_ac_totals.index.tolist(),
+                values=[round(v, 2) for v in _ac_totals.values.tolist()],
+                marker=dict(colors=[_ac_colors.get(a, "#888") for a in _ac_totals.index]),
+                textinfo="label+percent", textfont=dict(size=11), hole=0.4,
+                hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
+            ))
+            _fig_pie.update_layout(
+                paper_bgcolor="#1c1c1c", plot_bgcolor="#1c1c1c",
+                font=dict(color="#c0c0c0", size=11), height=250,
+                margin=dict(l=10, r=10, t=10, b=10), showlegend=False,
+            )
+            st.plotly_chart(_fig_pie, theme=None, use_container_width=True,
+                            key="v4nf_alloc_pie")
+        with _alloc_c2:
+            _alloc_detail = _alloc_df.copy()
+            _alloc_total = float(_alloc_detail["value"].sum())
+            _alloc_detail["pct"] = (
+                _alloc_detail["value"] / _alloc_total * 100
+                if _alloc_total > 0 else 0.0
+            )
+            _alloc_detail = _alloc_detail.sort_values("value", ascending=False)
+            st.dataframe(
+                _alloc_detail[["ticker", "asset_class", "value", "pct"]].style.format(
+                    {"value": "${:,.0f}", "pct": "{:.1f}%"}
+                ),
+                use_container_width=True, hide_index=True, height=250,
+            )
 
     st.caption(
         f"Hands-off 3-month test of {V1_PRODUCTION_LABEL} (frozen sizer at "
@@ -2486,8 +2645,8 @@ def _v4nf_vs_sp_section():
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric(f"{V1_PRODUCTION_LABEL} Today", f"{port_today_pct:+.2f}%",
-                  help="V4N-F's intraday % change vs yesterday's close.")
+        st.metric("Portfolio Today", f"{port_today_pct:+.2f}%",
+                  help="Portfolio's intraday % change vs yesterday's close.")
     with c2:
         _spy_help = (
             "^GSPC (S&P 500 index) % change from yesterday's close — "
@@ -2498,31 +2657,42 @@ def _v4nf_vs_sp_section():
         st.metric("S&P 500 Today", f"{spy_today_pct:+.2f}%", help=_spy_help)
     with c3:
         st.metric("Alpha (today)", f"{alpha_today:+.2f}%",
-                  help="V4N-F return minus S&P return today. Positive = beating the index.")
+                  help="Portfolio return minus S&P return today. Positive = beating the index.")
     with c4:
         st.metric("Portfolio Value", f"${pv:,.0f}",
-                  help="Live V4N-F portfolio value (cash + open position market value).")
+                  help="Live portfolio value (cash + open position market value).")
 
-    # Daily alpha bar chart — all trading days including today
+    # Daily alpha bar chart — all trading days including May 11 (day 1).
+    # Both series anchored at $100k on May 10 (the day BEFORE inception) so
+    # the first pct_change row captures the May-11 open→close move for both
+    # the portfolio and SPY.  Without the anchor, pct_change() would drop
+    # May 11 and the chart would start at May 12.
     _alpha_chart_shown = False
-    if not pt_history.empty and len(pt_history) >= 2:
-        _bar_start = str(pt_history["date"].min().date())
-        _bar_spy = _spy_history(_bar_start)
-        if not _bar_spy.empty:
+    if not pt_history.empty:
+        _INCEPTION = pd.Timestamp("2026-05-11")
+        _ANCHOR    = _INCEPTION - pd.Timedelta(days=1)
+        _spy_bench = _v4nf_spy_benchmark(str(_INCEPTION.date()))
+        if _spy_bench.get("spy_eq"):
             _bar_hist = pt_history.set_index("date")["portfolio_value"].copy()
             _bar_hist.index = pd.to_datetime(_bar_hist.index)
             _bar_hist = _bar_hist[~_bar_hist.index.duplicated(keep='last')]
             _bar_today = pd.Timestamp(now_et.date())
             if pv > 0:
                 _bar_hist[_bar_today] = pv
-            _bar_dates = _bar_spy.index.intersection(
-                pd.date_range(_bar_hist.index.min(), _bar_hist.index.max(), freq="B")
-            )
-            _bar_hf = _bar_hist.reindex(_bar_dates).ffill()
-            _bar_sa = _bar_spy.reindex(_bar_dates).ffill()
-            _bar_valid = _bar_hf.notna() & _bar_sa.notna()
-            _bar_hf = _bar_hf[_bar_valid]
-            _bar_sa = _bar_sa[_bar_valid]
+
+            _spy_dates = pd.to_datetime(_spy_bench["dates"])
+            _spy_eq    = pd.Series(_spy_bench["spy_eq"], index=_spy_dates)
+
+            # Prepend $100k anchor at May 10 for both port and SPY
+            _bar_hf = pd.concat([
+                pd.Series([float(PT_INITIAL_CAPITAL)], index=[_ANCHOR]),
+                _bar_hist[_bar_hist.index >= _INCEPTION].astype(float),
+            ]).sort_index()
+            _bar_sa = pd.concat([
+                pd.Series([float(PT_INITIAL_CAPITAL)], index=[_ANCHOR]),
+                _spy_eq[_spy_eq.index >= _INCEPTION].astype(float),
+            ]).sort_index()
+
             if len(_bar_hf) >= 2:
                 _bar_pr = _bar_hf.pct_change().dropna() * 100
                 _bar_sr = _bar_sa.pct_change().dropna() * 100
@@ -2553,7 +2723,7 @@ def _v4nf_vs_sp_section():
                         dragmode="pan",
                         hovermode="closest",
                         title=dict(
-                            text=f"Daily Alpha vs S&P 500 ({V1_PRODUCTION_LABEL} − Index)",
+                            text="Daily Alpha vs S&P 500 (Portfolio Return − Index Return)",
                             font=dict(size=12),
                         ),
                         yaxis=dict(title="Alpha %", gridcolor="#2a2a2a",
@@ -2577,20 +2747,25 @@ def _v4nf_vs_sp_section():
     st.markdown('<div class="section-head">Historical Record vs S&P 500</div>',
                 unsafe_allow_html=True)
 
-    if pt_history.empty or len(pt_history) < 2:
+    if pt_history.empty:
         st.info(
-            "Only one day of history so far — historical comparison will appear "
-            "after the scheduler runs the first EOD update tonight. "
-            "Check back after 4:45 PM ET."
+            "No history yet — historical comparison will appear after the first "
+            "EOD update tonight (after 4:45 PM ET)."
         )
         return
 
-    start_date = str(pt_history["date"].min().date())
-    with st.spinner("Fetching S&P 500 history…"):
-        spy_closes = _spy_history(start_date)
+    # ── Anchor BOTH series to $100k at inception OPEN (2026-05-11 deployment) ─
+    # This counts the May-11 day-1 gain (open → close) in the headline return,
+    # matching the Portfolio Value badge above.  Uses _v4nf_spy_benchmark which
+    # explicitly buys SPY at May-11 OPEN with $100k and marks-to-close daily.
+    INCEPTION_DT = pd.Timestamp("2026-05-11")
+    ANCHOR_DT    = INCEPTION_DT - pd.Timedelta(days=1)  # off-screen visual anchor
 
-    if spy_closes.empty:
-        st.error("Could not fetch ^GSPC data.")
+    with st.spinner("Fetching S&P 500 history…"):
+        spy_bench = _v4nf_spy_benchmark(str(INCEPTION_DT.date()))
+
+    if not spy_bench.get("spy_eq"):
+        st.error("Could not fetch ^GSPC benchmark.")
         return
 
     hist = pt_history.set_index("date")["portfolio_value"].copy()
@@ -2600,35 +2775,30 @@ def _v4nf_vs_sp_section():
     if pv > 0:
         hist[_today_ts] = pv
 
-    all_dates = spy_closes.index.intersection(
-        pd.date_range(hist.index.min(), hist.index.max(), freq="B")
-    )
-    hist_full = hist.reindex(all_dates).ffill()
-    spy_close_aligned = spy_closes.reindex(all_dates).ffill()
+    spy_dates = pd.to_datetime(spy_bench["dates"])
+    spy_eq    = pd.Series(spy_bench["spy_eq"], index=spy_dates)
 
-    _valid = hist_full.notna() & spy_close_aligned.notna()
-    hist_full = hist_full[_valid]
-    spy_close_aligned = spy_close_aligned[_valid]
+    # Prepend $100k anchor at ANCHOR_DT for both series.  First pct_change from
+    # anchor → May-11 close captures the day-1 open→close gain.
+    port_norm = pd.concat([
+        pd.Series([float(PT_INITIAL_CAPITAL)], index=[ANCHOR_DT]),
+        hist[hist.index >= INCEPTION_DT].astype(float),
+    ]).sort_index()
+    spy_norm = pd.concat([
+        pd.Series([float(PT_INITIAL_CAPITAL)], index=[ANCHOR_DT]),
+        spy_eq[spy_eq.index >= INCEPTION_DT].astype(float),
+    ]).sort_index()
 
-    if hist_full.empty or spy_close_aligned.empty:
-        st.warning("No aligned portfolio/market data available for this period.")
-        return
+    _inception_date = INCEPTION_DT
 
-    _inception_date = hist_full.index[0]
+    port_total  = (port_norm.iloc[-1] / PT_INITIAL_CAPITAL - 1) * 100
+    spy_total   = (spy_norm.iloc[-1]  / PT_INITIAL_CAPITAL - 1) * 100
+    total_alpha = port_total - spy_total
 
-    _port_scale = PT_INITIAL_CAPITAL / hist_full.iloc[0] if hist_full.iloc[0] else 1
-    port_norm   = hist_full * _port_scale
-
-    _spy_scale = PT_INITIAL_CAPITAL / spy_close_aligned.iloc[0] if spy_close_aligned.iloc[0] else 1
-    spy_norm   = spy_close_aligned * _spy_scale
-
-    port_ret = hist_full.pct_change().dropna() * 100
-    spy_ret  = spy_close_aligned.pct_change().dropna() * 100
+    port_ret = port_norm.pct_change().dropna() * 100
+    spy_ret  = spy_norm.pct_change().dropna()  * 100
     common   = port_ret.index.intersection(spy_ret.index)
 
-    port_total  = (hist_full.iloc[-1] / hist_full.iloc[0] - 1) * 100
-    spy_total   = (spy_close_aligned.iloc[-1] / spy_close_aligned.iloc[0] - 1) * 100
-    total_alpha = port_total - spy_total
     if len(common):
         win_days   = int((port_ret.reindex(common).values > spy_ret.reindex(common).values).sum())
         total_days = len(common)
@@ -2642,28 +2812,30 @@ def _v4nf_vs_sp_section():
         beta = None
 
     h1, h2, h3, h4, h5 = st.columns(5)
-    with h1: st.metric(f"{V1_PRODUCTION_LABEL} Return", f"{port_total:+.2f}%",
-                       help="Total return since V4N-F test inception.")
+    with h1: st.metric("Portfolio Return", f"{port_total:+.2f}%",
+                       help="Total return on $100k deployed at the May-11 market open. "
+                            "Includes the day-1 open→close gain.")
     with h2: st.metric("S&P 500 Return",  f"{spy_total:+.2f}%",
-                       help="^GSPC (S&P 500 index) return over the same period.")
+                       help="$100k buy-and-hold SPY purchased at the May-11 market open. "
+                            "Same anchor as the portfolio — apples-to-apples comparison.")
     with h3: st.metric("Total Alpha",     f"{total_alpha:+.2f}%",
-                       help="V4N-F return minus ^GSPC return.")
+                       help="Portfolio return minus SPY return (both from May-11 open).")
     with h4: st.metric("Beta", f"{beta:.2f}" if beta is not None else "N/A",
                        help="Requires 5+ trading days of data."
                             if beta is None else
                             "Portfolio sensitivity to S&P moves. "
                             "1.0 = moves with the market.")
     with h5: st.metric("Days Beating S&P", f"{win_days}/{total_days}",
-                       help="Trading days where V4N-F daily return exceeded ^GSPC.")
+                       help="Trading days where portfolio daily return exceeded ^GSPC.")
 
     fig_hist = go.Figure()
     fig_hist.add_trace(go.Scatter(
         x=port_norm.index, y=port_norm.values,
-        name=V1_PRODUCTION_LABEL,
+        name="My Portfolio",
         mode="lines+markers",
         line=dict(color="#4a9eff", width=2.5),
         marker=dict(size=7, color="#4a9eff"),
-        hovertemplate="<b>V4N-F</b><br>%{x|%b %d}  $%{y:,.0f}<extra></extra>",
+        hovertemplate="<b>Portfolio</b><br>%{x|%b %d}  $%{y:,.0f}<extra></extra>",
     ))
     fig_hist.add_trace(go.Scatter(
         x=spy_norm.index, y=spy_norm.values,
@@ -2679,7 +2851,7 @@ def _v4nf_vs_sp_section():
     fig_hist.update_layout(**_layout(
         height=350, uirevision="vs_spy_v4nf_hist",
         dragmode="pan",
-        title=dict(text=f"{V1_PRODUCTION_LABEL} vs S&P 500 — both normalized to $100k at inception",
+        title=dict(text="Portfolio vs S&P 500 — both normalized to $100k at inception",
                    font=dict(size=12)),
         yaxis=dict(tickprefix="$", tickformat=",.0f", autorange=True),
         xaxis=dict(type="date", tickformat="%b %d",
@@ -2694,13 +2866,12 @@ def _v4nf_vs_sp_section():
     st.markdown('<div class="section-head">Daily Breakdown</div>',
                 unsafe_allow_html=True)
     tbl_rows = []
-    for d in reversed(list(hist_full.index)):
-        pr = float(port_ret[d]) if d in port_ret.index else 0.0
-        sr = float(spy_ret[d])  if d in spy_ret.index  else 0.0
-        if d == _inception_date:
-            pr, sr = 0.0, 0.0
+    # Iterate only over real trading days (skip the off-screen $100k anchor)
+    _table_dates = [d for d in port_norm.index if d >= INCEPTION_DT]
+    for d in reversed(_table_dates):
+        pr   = float(port_ret[d]) if d in port_ret.index else 0.0
+        sr   = float(spy_ret[d])  if d in spy_ret.index  else 0.0
         pv_d = float(port_norm[d])
-        sv_d = float(spy_norm[d]) if d in spy_norm.index else 0.0
         tbl_rows.append({
             "Date"         : d.strftime("%Y-%m-%d"),
             "Portfolio $"  : round(pv_d, 0),
@@ -2734,8 +2905,9 @@ def _v4nf_vs_sp_section():
 
     st.caption(
         "Beta requires 5+ trading days of data. "
-        "Alpha = V4N-F daily return − ^GSPC daily return. "
-        "Both series normalized to $100k at V4N-F inception (2026-05-11)."
+        "Alpha = portfolio daily return − ^GSPC daily return. "
+        "Both series anchored at $100k on the May-11 market open — the day-1 "
+        "open→close gain is included in the headline Portfolio Return."
     )
 
 

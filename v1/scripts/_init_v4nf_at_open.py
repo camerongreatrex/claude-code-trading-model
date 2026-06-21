@@ -12,7 +12,6 @@ Run with: PT_INSTANCE=v4nf_3mo PYTHONPATH=. python v1/scripts/_init_v4nf_at_open
 from __future__ import annotations
 
 import os
-from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -47,7 +46,7 @@ print("\nFetching today's OPEN and CLOSE per ticker...")
 ohlc = {}
 for t in targets:
     try:
-        h = yf.Ticker(t).history(period="2d", auto_adjust=False)
+        h = yf.Ticker(t).history(period="2d", auto_adjust=True)
         if h.empty:
             print(f"  {t}: no data — skipping")
             continue
@@ -59,7 +58,7 @@ for t in targets:
         print(f"  {t}: fetch failed ({e}) — skipping")
 
 # ── 4. Buy at OPEN, build state ──────────────────────────────────────────────
-today = str(date.today())
+today = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
 state = {
     "cash"            : INITIAL_CAPITAL,
     "positions"       : {},

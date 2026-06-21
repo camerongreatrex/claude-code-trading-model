@@ -1,236 +1,180 @@
 {
-  "generated_at": "2026-05-12 17:26:53",
-  "for_date": "2026-05-12",
+  "generated_at": "2026-06-19 17:10:37",
+  "for_date": "2026-06-19",
   "kill_switch": false,
   "portfolio": {
-    "value": 100139.6,
-    "cash": 6956.24,
-    "n_positions": 14
+    "value": 100091.89,
+    "cash": 14968.24,
+    "n_positions": 12
   },
   "orders": [
     {
       "ticker": "SPY",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 13.0
+      "action": "NO_DATA"
     },
     {
       "ticker": "IWM",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "EEM",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": -217.3
+      "action": "NO_DATA"
     },
     {
       "ticker": "EFA",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "VWO",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": -134.37
+      "action": "NO_DATA"
     },
     {
       "ticker": "TLT",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "HYG",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "TIP",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "GLD",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": -13.12
+      "action": "NO_DATA"
     },
     {
       "ticker": "DBC",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 274.12
+      "action": "NO_DATA"
     },
     {
       "ticker": "UUP",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "XLE",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "XLU",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 17.04
+      "action": "NO_DATA"
     },
     {
       "ticker": "XLF",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "VNQ",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "XLK",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": -46.33
+      "action": "NO_DATA"
     },
     {
       "ticker": "XLV",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "XLI",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "XLC",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "XLP",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "JPM",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 0.0
+      "action": "NO_DATA"
     },
     {
       "ticker": "JNJ",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "XOM",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "AMZN",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": -88.05
+      "action": "NO_DATA"
     },
     {
       "ticker": "NEE",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "BRK-B",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "GS",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "COST",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "MSFT",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "NVDA",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 125.17
+      "action": "NO_DATA"
     },
     {
       "ticker": "GE",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 16.21
+      "action": "NO_DATA"
     },
     {
       "ticker": "INTC",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "VZ",
-      "action": "SKIP",
-      "reason": "signal LONG but insufficient cash (need $12,017, have $6,956)"
+      "action": "NO_DATA"
     },
     {
       "ticker": "BWX",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "DBA",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 151.38
+      "action": "NO_DATA"
     },
     {
       "ticker": "FXE",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "FXY",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "DBMF",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 19.67
+      "action": "NO_DATA"
     },
     {
       "ticker": "WTMF",
-      "action": "HOLD",
-      "reason": "signal LONG \u2014 hold",
-      "unrealised_pnl": 36.88
+      "action": "NO_DATA"
     },
     {
       "ticker": "VGSH",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "MUB",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     },
     {
       "ticker": "VXZ",
-      "action": "FLAT",
-      "reason": "signal FLAT"
+      "action": "NO_DATA"
     }
   ]
 }
