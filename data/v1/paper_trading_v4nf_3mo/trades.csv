@@ -45,3 +45,5 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-12,GE,SELL,0.724604,365.33,264.72,0.13,-11.65,catchup_signal_exit
 2026-08-12,WTMF,SELL,16.742172,41.51,694.97,0.35,3.17,catchup_signal_exit
 2026-08-12,VNQ,BUY,5.769558,97.31,561.44,0.28,,catchup_signal_entry
+2026-08-13,NEE,SELL,3.019516,86.01,259.71,0.13,4.13,rank_exit
+2026-08-13,BWX,BUY,26.240329,21.83,572.83,0.29,,signal_entry
