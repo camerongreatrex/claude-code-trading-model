@@ -723,3 +723,81 @@ tornado.websocket.WebSocketClosedError
 2026-05-18 20:09:46  ERROR    
 1 Failed download:
 2026-05-18 20:09:46  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-07-16 19:49:36  ERROR    Task exception was never retrieved
+future: <Task finished name='Task-3929' coro=<WebSocketProtocol13.write_message.<locals>.wrapper() done, defined at /opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py:1111> exception=WebSocketClosedError()>
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/streamlit/web/bootstrap.py", line 347, in run
+    if asyncio.get_running_loop().is_running():
+       ~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: no running event loop
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1113, in wrapper
+    await fut
+tornado.iostream.StreamClosedError: Stream is closed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/anaconda3/lib/python3.13/site-packages/tornado/websocket.py", line 1115, in wrapper
+    raise WebSocketClosedError()
+tornado.websocket.WebSocketClosedError
+2026-08-04 00:26:52  ERROR    
+1 Failed download:
+2026-08-04 00:26:52  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+2026-08-05 00:30:12  ERROR    
+1 Failed download:
+2026-08-05 00:30:12  ERROR    ['EEM']: TypeError("'NoneType' object is not subscriptable")
+2026-08-06 02:40:30  ERROR    
+1 Failed download:
+2026-08-06 02:40:30  ERROR    ['VNQ']: TypeError("'NoneType' object is not subscriptable")
+2026-08-06 02:56:00  ERROR    
+1 Failed download:
+2026-08-06 02:56:00  ERROR    ['FXE']: TypeError("'NoneType' object is not subscriptable")
+2026-08-06 06:34:41  ERROR    
+1 Failed download:
+2026-08-06 06:34:41  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-08-08 06:34:37  ERROR    
+1 Failed download:
+2026-08-08 06:34:37  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-08-08 06:55:28  ERROR    
+1 Failed download:
+2026-08-08 06:55:28  ERROR    ['HYG']: TypeError("'NoneType' object is not subscriptable")
+2026-08-08 10:04:00  ERROR    
+1 Failed download:
+2026-08-08 10:04:00  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-08-09 03:36:33  ERROR    
+1 Failed download:
+2026-08-09 03:36:33  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+2026-08-11 00:18:03  ERROR    
+1 Failed download:
+2026-08-11 00:18:03  ERROR    ['JNJ']: TypeError("'NoneType' object is not subscriptable")
+2026-08-11 06:50:00  ERROR    
+1 Failed download:
+2026-08-11 06:50:00  ERROR    ['NEE']: TypeError("'NoneType' object is not subscriptable")
+2026-08-11 07:06:53  ERROR    
+1 Failed download:
+2026-08-11 07:06:53  ERROR    ['WTMF']: TypeError("'NoneType' object is not subscriptable")
+2026-08-11 08:54:26  ERROR    
+1 Failed download:
+2026-08-11 08:54:26  ERROR    ['INDA']: TypeError("'NoneType' object is not subscriptable")
+2026-08-11 08:57:06  ERROR    
+1 Failed download:
+2026-08-11 08:57:06  ERROR    ['VGSH']: TypeError("'NoneType' object is not subscriptable")
+2026-08-11 09:13:30  ERROR    
+1 Failed download:
+2026-08-11 09:13:30  ERROR    ['DBMF']: TypeError("'NoneType' object is not subscriptable")
+2026-08-12 00:39:00  ERROR    
+1 Failed download:
+2026-08-12 00:39:00  ERROR    ['UUP']: TypeError("'NoneType' object is not subscriptable")
+2026-08-12 00:40:45  ERROR    
+1 Failed download:
+2026-08-12 00:40:45  ERROR    ['NVDA']: TypeError("'NoneType' object is not subscriptable")
+2026-08-12 10:20:37  ERROR    
+1 Failed download:
+2026-08-12 10:20:37  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")
+2026-08-12 22:13:11  ERROR    
+1 Failed download:
+2026-08-12 22:13:11  ERROR    ['^GSPC']: TypeError("'NoneType' object is not subscriptable")

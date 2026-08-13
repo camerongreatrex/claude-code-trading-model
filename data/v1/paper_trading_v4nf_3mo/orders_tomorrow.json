@@ -1,0 +1,242 @@
+{
+  "generated_at": "2026-07-29 16:53:31",
+  "for_date": "2026-07-29",
+  "kill_switch": false,
+  "portfolio": {
+    "value": 100561.59,
+    "cash": 3781.34,
+    "n_positions": 15
+  },
+  "orders": [
+    {
+      "ticker": "SPY",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "IWM",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "EEM",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": 0.0
+    },
+    {
+      "ticker": "EFA",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "VWO",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "TLT",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "HYG",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "TIP",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "GLD",
+      "action": "SELL",
+      "price_last": 371.08,
+      "reason": "signal_exit (death cross / trailing stop / RSI filter)",
+      "entry_price": 364.9599914550781,
+      "unrealised_pnl": 68.03
+    },
+    {
+      "ticker": "DBC",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": 0.0
+    },
+    {
+      "ticker": "UUP",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "XLE",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": 242.7
+    },
+    {
+      "ticker": "XLU",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "XLF",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "VNQ",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": -16.46
+    },
+    {
+      "ticker": "XLK",
+      "action": "SELL",
+      "price_last": 166.57,
+      "reason": "signal_exit (death cross / trailing stop / RSI filter)",
+      "entry_price": 177.52000427246094,
+      "unrealised_pnl": -185.35
+    },
+    {
+      "ticker": "XLV",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "XLI",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "XLC",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "XLP",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "JPM",
+      "action": "NO_DATA"
+    },
+    {
+      "ticker": "JNJ",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "XOM",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": 633.67
+    },
+    {
+      "ticker": "AMZN",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": -108.17
+    },
+    {
+      "ticker": "NEE",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": -62.43
+    },
+    {
+      "ticker": "BRK-B",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "GS",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "COST",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "MSFT",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "NVDA",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "GE",
+      "action": "SKIP",
+      "reason": "signal LONG but insufficient cash (need $12,067, have $3,781)"
+    },
+    {
+      "ticker": "INTC",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": -309.42
+    },
+    {
+      "ticker": "VZ",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": 1020.89
+    },
+    {
+      "ticker": "BWX",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "DBA",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": -92.54
+    },
+    {
+      "ticker": "FXE",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "FXY",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "DBMF",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": 10.7
+    },
+    {
+      "ticker": "WTMF",
+      "action": "HOLD",
+      "reason": "signal LONG \u2014 hold",
+      "unrealised_pnl": -101.23
+    },
+    {
+      "ticker": "VGSH",
+      "action": "SELL",
+      "price_last": 58.12,
+      "reason": "signal_exit (death cross / trailing stop / RSI filter)",
+      "entry_price": 58.02000045776367,
+      "unrealised_pnl": 5.42
+    },
+    {
+      "ticker": "MUB",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    },
+    {
+      "ticker": "VXZ",
+      "action": "FLAT",
+      "reason": "signal FLAT"
+    }
+  ]
+}
