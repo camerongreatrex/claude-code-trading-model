@@ -349,3 +349,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-12,GE,SELL,9.894,365.33,3614.57,1.81,-159.02,catchup_signal_exit
 2026-08-13,NEE,SELL,41.085807,86.01,3533.79,1.77,56.16,rank_exit
 2026-08-13,BWX,BUY,356.804669,21.83,7789.05,3.89,,signal_entry
+2026-08-14,UUP,SELL,451.680128,28.11,12696.73,6.35,-28.93,rank_exit
+2026-08-14,IWM,BUY,15.08868,305.09,4603.41,2.3,,signal_entry
+2026-08-14,XLE,BUY,49.37555,61.91,3056.84,1.53,,signal_entry
