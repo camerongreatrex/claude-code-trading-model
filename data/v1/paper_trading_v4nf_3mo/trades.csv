@@ -54,3 +54,8 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-17,XLV,SELL,4.190546,167.05,700.03,0.35,-6.17,rank_exit
 2026-08-17,BWX,SELL,26.240329,21.77,571.25,0.29,-1.86,signal_exit
 2026-08-17,UUP,BUY,34.308414,28.1,964.07,0.48,,signal_entry
+2026-08-18,XLF,SELL,14.998042,57.84,867.49,0.43,-2.83,rank_exit
+2026-08-18,DBC,BUY,10.52169,30.48,320.7,0.16,,signal_entry
+2026-08-18,XLV,BUY,2.858897,169.73,485.24,0.24,,signal_entry
+2026-08-18,BRK-B,BUY,1.069297,502.96,537.81,0.27,,signal_entry
+2026-08-18,MSFT,BUY,0.642994,481.63,309.69,0.15,,signal_entry

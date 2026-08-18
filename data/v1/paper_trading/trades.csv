@@ -357,3 +357,5 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-17,BWX,SELL,356.804669,21.77,7767.64,3.88,-25.29,signal_exit
 2026-08-17,UUP,BUY,467.246293,28.1,13129.62,6.56,,signal_entry
 2026-08-17,MSFT,BUY,4.711441,480.35,2263.14,1.13,,signal_entry
+2026-08-18,XLF,SELL,204.788618,57.84,11844.97,5.92,-38.69,rank_exit
+2026-08-18,DBC,BUY,70.688746,30.48,2154.59,1.08,,signal_entry
