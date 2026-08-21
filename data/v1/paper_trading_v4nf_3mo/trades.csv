@@ -66,3 +66,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-19,DBA,BUY,15.932244,28.29,450.72,0.23,,signal_entry
 2026-08-20,SPY,SELL,0.829061,762.6,632.24,0.32,17.02,rank_exit
 2026-08-20,UUP,BUY,34.87294,27.91,973.3,0.49,,signal_entry
+2026-08-21,EFA,SELL,5.994357,108.24,648.83,0.32,4.95,rank_exit
+2026-08-21,IWM,SELL,1.109708,299.96,332.87,0.17,-5.86,rank_exit
+2026-08-21,XLI,BUY,2.016865,180.25,363.54,0.18,,signal_entry
