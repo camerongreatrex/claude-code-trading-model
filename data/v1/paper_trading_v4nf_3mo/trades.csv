@@ -69,3 +69,5 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-21,EFA,SELL,5.994357,108.24,648.83,0.32,4.95,rank_exit
 2026-08-21,IWM,SELL,1.109708,299.96,332.87,0.17,-5.86,rank_exit
 2026-08-21,XLI,BUY,2.016865,180.25,363.54,0.18,,signal_entry
+2026-08-24,BWX,SELL,23.779472,21.95,521.96,0.26,-0.97,signal_exit
+2026-08-24,XLI,SELL,2.016865,179.0,361.02,0.18,-2.7,signal_exit
