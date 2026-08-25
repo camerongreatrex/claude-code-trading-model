@@ -372,3 +372,7 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-24,XLI,SELL,27.517898,179.0,4925.7,2.46,-36.86,signal_exit
 2026-08-24,VZ,BUY,48.813361,50.15,2447.99,1.22,,signal_entry
 2026-08-24,COPX,BUY,25.629218,94.53,2422.73,1.21,,signal_entry
+2026-08-25,HACK,SELL,50.567584,108.09,5465.85,2.73,-334.46,rank_exit
+2026-08-25,XLK,BUY,27.44167,181.74,4987.25,2.49,,signal_entry
+2026-08-25,XLI,BUY,24.456389,178.4,4363.02,2.18,,signal_entry
+2026-08-25,BWX,BUY,279.912821,22.04,6169.28,3.08,,signal_entry
