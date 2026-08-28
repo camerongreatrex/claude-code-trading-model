@@ -379,3 +379,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-26,DBA,SELL,222.209865,28.59,6352.98,3.18,63.49,rank_exit
 2026-08-26,BWX,SELL,279.912821,21.93,6138.49,3.07,-33.86,signal_exit
 2026-08-26,HACK,BUY,25.38117,109.61,2782.03,1.39,,signal_entry
+2026-08-27,DBC,SELL,70.688746,30.86,2181.45,1.09,25.77,catchup_signal_exit
+2026-08-27,GE,BUY,13.141312,342.73,4503.92,2.25,,catchup_signal_entry
+2026-08-27,DBA,BUY,286.274449,28.82,8250.43,4.13,,catchup_signal_entry
