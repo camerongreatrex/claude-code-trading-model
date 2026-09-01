@@ -1,108 +1,115 @@
 {
-  "cash": 23888.80566036972,
+  "cash": 16262.702230824445,
   "positions": {
     "DBMF": {
       "shares": 458.8579240312904,
       "entry_price": 30.700000762939453,
       "entry_date": "2026-05-04",
       "cost_basis": 14189.30658462578,
-      "last_close": 31.3799991607666
+      "last_close": 31.59000015258789
     },
     "VGSH": {
       "shares": 61.24105346120166,
       "entry_price": 58.130001068115234,
       "entry_date": "2026-07-30",
       "cost_basis": 3559.9425031121546,
-      "last_close": 58.060001373291016
+      "last_close": 57.84000015258789
     },
     "XLV": {
       "shares": 57.650013594851984,
       "entry_price": 168.00999450683594,
       "entry_date": "2026-08-11",
       "cost_basis": 9685.778467390099,
-      "last_close": 170.5399932861328
+      "last_close": 171.6699981689453
     },
     "XLE": {
       "shares": 49.3755500512483,
       "entry_price": 61.90999984741211,
       "entry_date": "2026-08-14",
       "cost_basis": 3056.840296138671,
-      "last_close": 63.959999084472656
+      "last_close": 64.7699966430664
     },
     "MSFT": {
       "shares": 4.7114406030060545,
       "entry_price": 480.3500061035156,
       "entry_date": "2026-08-17",
       "cost_basis": 2263.1405224103096,
-      "last_close": 507.2900085449219
+      "last_close": 501.0199890136719
     },
     "UUP": {
       "shares": 475.320710012682,
       "entry_price": 27.90999984741211,
       "entry_date": "2026-08-20",
       "cost_basis": 13266.20094392577,
-      "last_close": 28.1200008392334
+      "last_close": 28.209999084472656
     },
     "VZ": {
       "shares": 48.81336085726615,
       "entry_price": 50.150001525878906,
       "entry_date": "2026-08-24",
       "cost_basis": 2447.990121475175,
-      "last_close": 50.02000045776367
+      "last_close": 50.29999923706055
     },
     "COPX": {
       "shares": 25.62921755365749,
       "entry_price": 94.52999877929688,
       "entry_date": "2026-08-24",
       "cost_basis": 2422.7299040615767,
-      "last_close": 92.86000061035156
+      "last_close": 89.23999786376953
     },
     "XLK": {
       "shares": 27.4416698643108,
       "entry_price": 181.74000549316406,
       "entry_date": "2026-08-25",
       "cost_basis": 4987.249231881439,
-      "last_close": 186.5
+      "last_close": 183.63999938964844
     },
     "XLI": {
       "shares": 24.456389068440174,
       "entry_price": 178.39999389648438,
       "entry_date": "2026-08-25",
       "cost_basis": 4363.019660539774,
-      "last_close": 175.1300048828125
+      "last_close": 172.72999572753906
     },
     "HACK": {
       "shares": 25.381170385060113,
       "entry_price": 109.61000061035156,
       "entry_date": "2026-08-26",
       "cost_basis": 2782.030101397876,
-      "last_close": 116.97000122070312
+      "last_close": 111.8499984741211
     },
     "GE": {
       "shares": 13.141312110366199,
       "entry_price": 342.7300109863281,
       "entry_date": "2026-08-27",
       "cost_basis": 4503.922043960574,
-      "last_close": 335.7099914550781
+      "last_close": 331.0899963378906
     },
     "DBA": {
       "shares": 286.27444938270804,
       "entry_price": 28.81999969482422,
       "entry_date": "2026-08-27",
       "cost_basis": 8250.429543845617,
-      "last_close": 29.31999969482422
+      "last_close": 29.489999771118164
     },
     "IWM": {
       "shares": 30.148125626418064,
       "entry_price": 293.92999267578125,
       "entry_date": "2026-08-31",
       "cost_basis": 8861.438344561595,
-      "last_close": 293.92999267578125
+      "last_close": 290.57000732421875
+    },
+    "DBC": {
+      "shares": 238.71882901823884,
+      "entry_price": 31.93000030517578,
+      "entry_date": "2026-09-01",
+      "cost_basis": 7622.292283403571,
+      "last_close": 31.93000030517578
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-03-20",
-  "last_eod_date": "2026-08-31",
-  "portfolio_value": 109447.20403221426,
+  "last_eod_date": "2026-09-01",
+  "portfolio_value": 109185.07252695772,
   "strategy": "top11_adx22_momt_ac55_cap1"
 }

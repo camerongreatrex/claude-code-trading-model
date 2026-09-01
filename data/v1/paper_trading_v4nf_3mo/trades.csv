@@ -86,3 +86,4 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-27,COPX,BUY,2.858397,96.45,275.69,0.14,,catchup_signal_entry
 2026-08-31,XOM,SELL,2.624004,160.95,422.33,0.21,2.81,rank_exit
 2026-08-31,IWM,BUY,2.212864,293.93,650.43,0.33,,signal_entry
+2026-09-01,DBC,BUY,17.49522,31.93,558.62,0.28,,signal_entry
