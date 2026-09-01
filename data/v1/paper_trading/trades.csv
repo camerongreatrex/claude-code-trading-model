@@ -382,3 +382,5 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-27,DBC,SELL,70.688746,30.86,2181.45,1.09,25.77,catchup_signal_exit
 2026-08-27,GE,BUY,13.141312,342.73,4503.92,2.25,,catchup_signal_entry
 2026-08-27,DBA,BUY,286.274449,28.82,8250.43,4.13,,catchup_signal_entry
+2026-08-31,XOM,SELL,35.91495,160.95,5780.51,2.89,38.41,rank_exit
+2026-08-31,IWM,BUY,30.148126,293.93,8861.44,4.43,,signal_entry
