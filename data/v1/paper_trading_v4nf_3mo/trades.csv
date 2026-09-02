@@ -87,3 +87,8 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-08-31,XOM,SELL,2.624004,160.95,422.33,0.21,2.81,rank_exit
 2026-08-31,IWM,BUY,2.212864,293.93,650.43,0.33,,signal_entry
 2026-09-01,DBC,BUY,17.49522,31.93,558.62,0.28,,signal_entry
+2026-09-02,XLV,SELL,2.858897,172.95,494.45,0.25,8.96,rank_exit
+2026-09-02,HACK,SELL,1.863913,109.38,203.87,0.1,-0.53,rank_exit
+2026-09-02,COPX,SELL,2.858397,89.9,256.97,0.13,-18.85,signal_exit
+2026-09-02,XLU,BUY,8.320923,42.67,355.05,0.18,,signal_entry
+2026-09-02,VNQ,BUY,6.434222,95.78,616.27,0.31,,signal_entry
