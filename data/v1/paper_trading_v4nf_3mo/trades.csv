@@ -92,3 +92,4 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-02,COPX,SELL,2.858397,89.9,256.97,0.13,-18.85,signal_exit
 2026-09-02,XLU,BUY,8.320923,42.67,355.05,0.18,,signal_entry
 2026-09-02,VNQ,BUY,6.434222,95.78,616.27,0.31,,signal_entry
+2026-09-03,IYR,BUY,6.231976,102.88,641.15,0.32,,signal_entry

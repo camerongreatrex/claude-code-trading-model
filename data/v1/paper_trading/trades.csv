@@ -390,3 +390,4 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-02,HACK,SELL,25.38117,109.38,2776.19,1.39,-7.23,rank_exit
 2026-09-02,XLU,BUY,113.538727,42.67,4844.7,2.42,,signal_entry
 2026-09-02,VNQ,BUY,87.794758,95.78,8408.98,4.2,,signal_entry
+2026-09-03,IYR,BUY,84.965911,102.88,8741.29,4.37,,signal_entry

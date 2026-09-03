@@ -1,108 +1,115 @@
 {
-  "cash": 1948.4725716655917,
+  "cash": 1307.0062755223548,
   "positions": {
     "DBMF": {
       "shares": 8.032571300776102,
       "entry_price": 31.389999389648438,
       "entry_date": "2026-07-22",
       "cost_basis": 252.1424082286694,
-      "last_close": 31.5
+      "last_close": 31.40999984741211
     },
     "VGSH": {
       "shares": 4.507723642401075,
       "entry_price": 58.130001068115234,
       "entry_date": "2026-07-30",
       "cost_basis": 262.03398014754276,
-      "last_close": 57.875
+      "last_close": 57.91999816894531
     },
     "XLE": {
       "shares": 3.6313612130450794,
       "entry_price": 61.90999984741211,
       "entry_date": "2026-08-14",
       "cost_basis": 224.8175721455191,
-      "last_close": 65.0999984741211
+      "last_close": 64.62000274658203
     },
     "MSFT": {
       "shares": 0.642993649809637,
       "entry_price": 481.6300048828125,
       "entry_date": "2026-08-18",
       "cost_basis": 309.6850346974329,
-      "last_close": 496.82000732421875
+      "last_close": 510.1199951171875
     },
     "UUP": {
       "shares": 34.87293964384773,
       "entry_price": 27.90999984741211,
       "entry_date": "2026-08-20",
       "cost_basis": 973.3037401386018,
-      "last_close": 28.170000076293945
+      "last_close": 28.010000228881836
     },
     "XLK": {
       "shares": 2.0143010271354873,
       "entry_price": 181.74000549316406,
       "entry_date": "2026-08-25",
       "cost_basis": 366.07907973648946,
-      "last_close": 183.60000610351562
+      "last_close": 185.97000122070312
     },
     "XLI": {
       "shares": 1.7951724462895173,
       "entry_price": 178.39999389648438,
       "entry_date": "2026-08-25",
       "cost_basis": 320.2587534611868,
-      "last_close": 172.77999877929688
+      "last_close": 174.55999755859375
     },
     "VZ": {
       "shares": 4.0810828116690265,
       "entry_price": 50.189998626708984,
       "entry_date": "2026-08-26",
       "cost_basis": 204.8295407131541,
-      "last_close": 50.220001220703125
+      "last_close": 50.59000015258789
     },
     "GE": {
       "shares": 0.9652287902615323,
       "entry_price": 342.7300109863281,
       "entry_date": "2026-08-27",
       "cost_basis": 330.81287389065517,
-      "last_close": 329.5
+      "last_close": 333.4800109863281
     },
     "DBA": {
       "shares": 21.026845579787203,
       "entry_price": 28.81999969482422,
       "entry_date": "2026-08-27",
       "cost_basis": 605.9936831925831,
-      "last_close": 29.270000457763672
+      "last_close": 29.09000015258789
     },
     "IWM": {
       "shares": 2.212864092517369,
       "entry_price": 293.92999267578125,
       "entry_date": "2026-08-31",
       "cost_basis": 650.4271265061296,
-      "last_close": 294.010009765625
+      "last_close": 295.19000244140625
     },
     "DBC": {
       "shares": 17.49521981510689,
       "entry_price": 31.93000030517578,
       "entry_date": "2026-09-01",
       "cost_basis": 558.6223740354803,
-      "last_close": 31.93000030517578
+      "last_close": 31.959999084472656
     },
     "XLU": {
       "shares": 8.320922874410227,
       "entry_price": 42.66999816894531,
       "entry_date": "2026-09-02",
       "cost_basis": 355.0537638150196,
-      "last_close": 42.66999816894531
+      "last_close": 43.029998779296875
     },
     "VNQ": {
       "shares": 6.434222361994434,
       "entry_price": 95.77999877929688,
       "entry_date": "2026-09-02",
       "cost_basis": 616.2698099775515,
-      "last_close": 95.77999877929688
+      "last_close": 96.66000366210938
+    },
+    "IYR": {
+      "shares": 6.231976481320281,
+      "entry_price": 102.87999725341797,
+      "entry_date": "2026-09-03",
+      "cost_basis": 641.1457232815959,
+      "last_close": 102.87999725341797
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-06-21",
-  "last_eod_date": "2026-09-02",
-  "portfolio_value": 7999.603870262541,
+  "last_eod_date": "2026-09-03",
+  "portfolio_value": 8021.322059152593,
   "strategy": "top11_adx22_momt_ac55_cap1"
 }
