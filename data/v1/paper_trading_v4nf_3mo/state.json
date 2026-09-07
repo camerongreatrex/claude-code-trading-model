@@ -104,12 +104,12 @@
       "entry_price": 42.095001220703125,
       "entry_date": "2026-09-04",
       "cost_basis": 932.1633603649452,
-      "last_close": 42.095001220703125
+      "last_close": 42.099998474121094
     }
   },
   "initial_capital": 100000.0,
   "initialized_date": "2026-06-21",
-  "last_eod_date": "2026-09-04",
-  "portfolio_value": 8007.310013816424,
+  "last_eod_date": "2026-09-07",
+  "portfolio_value": 8007.420674379521,
   "strategy": "top11_adx22_momt_ac55_cap1"
 }
