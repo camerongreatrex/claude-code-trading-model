@@ -95,3 +95,7 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-03,IYR,BUY,6.231976,102.88,641.15,0.32,,signal_entry
 2026-09-04,UUP,SELL,34.87294,28.08,979.23,0.49,5.44,rank_exit
 2026-09-04,WTMF,BUY,22.144277,42.095,932.16,0.47,,signal_entry
+2026-09-09,XLK,SELL,2.014301,187.87,378.43,0.19,12.16,rank_exit
+2026-09-09,GE,SELL,0.965229,325.42,314.1,0.16,-16.87,signal_exit
+2026-09-09,XLU,SELL,8.320923,42.94,357.3,0.18,2.07,rank_exit
+2026-09-09,COPX,BUY,3.282124,95.27,312.69,0.16,,signal_entry
