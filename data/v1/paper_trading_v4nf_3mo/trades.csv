@@ -99,3 +99,5 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-09,GE,SELL,0.965229,325.42,314.1,0.16,-16.87,signal_exit
 2026-09-09,XLU,SELL,8.320923,42.94,357.3,0.18,2.07,rank_exit
 2026-09-09,COPX,BUY,3.282124,95.27,312.69,0.16,,signal_entry
+2026-09-10,VZ,SELL,4.081083,49.97,203.93,0.1,-1.0,rank_exit
+2026-09-10,GE,BUY,0.81148,324.15,263.04,0.13,,signal_entry
