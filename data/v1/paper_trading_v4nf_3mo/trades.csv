@@ -105,3 +105,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-11,MSFT,SELL,0.642994,495.63,318.69,0.16,8.84,rank_exit
 2026-09-11,XLK,BUY,1.265189,187.67,237.44,0.12,,signal_entry
 2026-09-11,XLV,BUY,3.815629,165.36,630.95,0.32,,signal_entry
+2026-09-14,XLE,SELL,3.631361,64.53,234.33,0.12,9.4,rank_exit
+2026-09-14,COPX,SELL,3.282124,85.62,281.02,0.14,-31.81,signal_exit
+2026-09-14,MSFT,BUY,0.869281,505.41,439.34,0.22,,signal_entry
