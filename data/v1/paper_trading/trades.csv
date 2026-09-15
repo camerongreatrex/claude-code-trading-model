@@ -407,3 +407,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-14,XLE,SELL,49.37555,64.53,3186.2,1.59,127.77,rank_exit
 2026-09-14,COPX,SELL,44.769828,85.62,3833.19,1.92,-433.95,signal_exit
 2026-09-14,MSFT,BUY,11.867053,505.41,5997.73,3.0,,signal_entry
+2026-09-15,DBA,SELL,286.274449,28.88,8267.61,4.13,13.04,rank_exit
+2026-09-15,VWO,BUY,127.296532,59.22,7538.5,3.77,,signal_entry
+2026-09-15,XOM,BUY,31.12185,169.32,5269.55,2.63,,signal_entry
