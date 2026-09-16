@@ -410,3 +410,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-15,DBA,SELL,286.274449,28.88,8267.61,4.13,13.04,rank_exit
 2026-09-15,VWO,BUY,127.296532,59.22,7538.5,3.77,,signal_entry
 2026-09-15,XOM,BUY,31.12185,169.32,5269.55,2.63,,signal_entry
+2026-09-16,WTMF,SELL,302.066296,42.3,12777.4,6.39,55.53,rank_exit
+2026-09-16,EFA,BUY,72.228907,105.02,7585.48,3.79,,signal_entry
+2026-09-16,UUP,BUY,400.641532,28.4,11378.22,5.69,,signal_entry
