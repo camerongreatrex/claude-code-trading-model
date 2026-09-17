@@ -115,3 +115,4 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-16,EFA,BUY,5.284394,105.02,554.97,0.28,,signal_entry
 2026-09-16,UUP,BUY,29.311637,28.4,832.45,0.42,,signal_entry
 2026-09-16,HACK,BUY,2.090143,119.46,249.69,0.12,,signal_entry
+2026-09-17,XLF,BUY,12.311878,55.88,687.99,0.34,,signal_entry
