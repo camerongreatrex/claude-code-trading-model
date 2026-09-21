@@ -117,3 +117,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-16,HACK,BUY,2.090143,119.46,249.69,0.12,,signal_entry
 2026-09-17,XLF,BUY,12.311878,55.88,687.99,0.34,,signal_entry
 2026-09-18,XLV,SELL,3.815629,168.39,642.51,0.32,11.24,rank_exit
+2026-09-21,DBC,SELL,17.49522,32.58,569.99,0.28,11.09,signal_exit
+2026-09-21,MSFT,SELL,0.869281,501.61,436.04,0.22,-3.52,rank_exit
+2026-09-21,WTMF,BUY,21.897063,44.0,963.47,0.48,,signal_entry
