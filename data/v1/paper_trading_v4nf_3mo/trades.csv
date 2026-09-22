@@ -120,3 +120,7 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-21,DBC,SELL,17.49522,32.58,569.99,0.28,11.09,signal_exit
 2026-09-21,MSFT,SELL,0.869281,501.61,436.04,0.22,-3.52,rank_exit
 2026-09-21,WTMF,BUY,21.897063,44.0,963.47,0.48,,signal_entry
+2026-09-22,VWO,SELL,9.316618,61.1,569.25,0.28,17.23,rank_exit
+2026-09-22,XOM,SELL,2.277756,158.71,361.5,0.18,-24.35,rank_exit
+2026-09-22,GS,BUY,0.30148,949.49,286.25,0.14,,signal_entry
+2026-09-22,VZ,BUY,9.101982,46.45,422.79,0.21,,signal_entry
