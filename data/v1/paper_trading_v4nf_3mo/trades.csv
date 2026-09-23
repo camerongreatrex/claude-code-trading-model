@@ -124,3 +124,6 @@ date,ticker,action,shares,price,value,commission,pnl,reason
 2026-09-22,XOM,SELL,2.277756,158.71,361.5,0.18,-24.35,rank_exit
 2026-09-22,GS,BUY,0.30148,949.49,286.25,0.14,,signal_entry
 2026-09-22,VZ,BUY,9.101982,46.45,422.79,0.21,,signal_entry
+2026-09-23,EFA,SELL,5.284394,104.8,553.8,0.28,-1.44,rank_exit
+2026-09-23,HACK,SELL,2.090143,124.07,259.32,0.13,9.51,rank_exit
+2026-09-23,DBC,BUY,22.956739,32.88,754.82,0.38,,signal_entry
